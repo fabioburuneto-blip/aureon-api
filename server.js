@@ -1,10 +1,10 @@
 /**
- * TraderAureonia AI — Servidor Railway v3
+ * TraderAureonia AI — Servidor Railway v4
  * 
- * FLUXO CORRETO:
- * MT5 → envia candles reais → Railway armazena
- * Site → pede análise → Railway chama eaSignal_v3 com candles do MT5
- * eaSignal_v3 → calcula com preço real → retorna sinal correto
+ * CORREÇÃO PRINCIPAL v4:
+ * Adicionado endpoint HTTP POST /execute-order
+ * O site envia a ordem via HTTP (mais confiável que WebSocket)
+ * em vez de depender da conexão WebSocket estar ativa
  */
 
 const express = require("express");
@@ -17,9 +17,17 @@ const wss        = new WebSocketServer({ server: httpServer });
 
 app.use(express.json());
 
+// CORS — permite o site Base44 chamar a API
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
+
 const PORT = process.env.PORT || 3001;
 
-// URL da função eaSignal_v3 no Base44
 const EA_SIGNAL_V3_URL = "https://traderaureonia.base44.app/api/functions/eaSignal_v3";
 const EA_SIGNAL_KEY    = "abc123forte";
 
@@ -27,8 +35,8 @@ const EA_SIGNAL_KEY    = "abc123forte";
 // Estado do servidor
 // ─────────────────────────────────────────────
 const siteClients = new Set();
-let lastPrice     = null;   // Último preço simples (bid/ask/rsi/ema)
-let lastCandles   = null;   // Últimos candles completos do MT5
+let lastPrice     = null;
+let lastCandles   = null;
 let pendingOrder  = null;
 let mt5LastSeen   = null;
 
@@ -43,35 +51,32 @@ app.post("/price", (req, res) => {
 
   mt5LastSeen = new Date();
 
-  // Salva preço simples
   lastPrice = {
-    symbol:    data.symbol,
-    bid:       data.bid,
-    ask:       data.ask,
-    spread:    data.spread,
-    rsi:       data.rsi,
-    ema20:     data.ema20,
-    ema50:     data.ema50,
-    close1:    data.close1,
-    high1:     data.high1,
-    low1:      data.low1,
+    symbol:     data.symbol,
+    bid:        data.bid,
+    ask:        data.ask,
+    spread:     data.spread,
+    rsi:        data.rsi,
+    ema20:      data.ema20,
+    ema50:      data.ema50,
+    close1:     data.close1,
+    high1:      data.high1,
+    low1:       data.low1,
     receivedAt: new Date().toISOString(),
   };
 
-  // Salva candles completos se MT5 enviar (arrays closes/highs/lows/opens)
   if (data.closes && Array.isArray(data.closes) && data.closes.length >= 30) {
     lastCandles = {
-      symbol:   data.symbol,
-      strategy: data.strategy || "QUICK",
-      closes:   data.closes,
-      highs:    data.highs   || [],
-      lows:     data.lows    || [],
-      opens:    data.opens   || [],
+      symbol:    data.symbol,
+      strategy:  data.strategy || "QUICK",
+      closes:    data.closes,
+      highs:     data.highs  || [],
+      lows:      data.lows   || [],
+      opens:     data.opens  || [],
       updatedAt: new Date().toISOString(),
     };
   }
 
-  // Repassa preço ao vivo para o site
   broadcastToSite({ type: "price", ...lastPrice });
   broadcastToSite({ type: "mt5_status", connected: true });
 
@@ -93,7 +98,7 @@ app.get("/pending-order", (req, res) => {
 // MT5 confirma execução
 app.post("/order-executed", (req, res) => {
   const data = req.body;
-  console.log(`[Railway] Ordem executada:`, data);
+  console.log(`[Railway] ✅ Ordem executada pelo MT5:`, data);
   broadcastToSite({
     type:      "order_confirmed",
     symbol:    data.symbol,
@@ -114,6 +119,46 @@ app.post("/order-error", (req, res) => {
 });
 
 // ─────────────────────────────────────────────
+// ✅ NOVO — SITE envia ordem via HTTP POST
+// Mais confiável que WebSocket para execução de ordens
+// ─────────────────────────────────────────────
+app.post("/execute-order", (req, res) => {
+  const { symbol, direction, entry, sl, tp, lot_size } = req.body;
+
+  if (!symbol || !direction) {
+    return res.status(400).json({ error: "Dados inválidos. symbol e direction são obrigatórios." });
+  }
+
+  const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
+  if (!mt5Online) {
+    return res.status(503).json({ error: "MT5 não está conectado. Verifique se o robô está rodando." });
+  }
+
+  pendingOrder = {
+    symbol:    symbol,
+    direction: direction,
+    entry:     entry     || 0,
+    sl:        sl        || 0,
+    tp:        tp        || 0,
+    lot_size:  lot_size  || 0.01,
+  };
+
+  console.log(`[Railway] ✅ Ordem recebida via HTTP: ${direction} ${symbol} | SL:${sl} TP:${tp}`);
+
+  // Notifica todos os clientes do site que a ordem foi enviada
+  broadcastToSite({
+    type:    "order_sent",
+    message: `Ordem ${direction} ${symbol} enviada ao MT5...`,
+  });
+
+  res.json({
+    status:  "ok",
+    message: "Ordem enfileirada. MT5 vai executar em até 5 segundos.",
+    order:   pendingOrder,
+  });
+});
+
+// ─────────────────────────────────────────────
 // CHAMA eaSignal_v3 COM DADOS REAIS DO MT5
 // ─────────────────────────────────────────────
 async function callEaSignalV3(strategy, symbol) {
@@ -123,7 +168,6 @@ async function callEaSignalV3(strategy, symbol) {
 
   let body;
 
-  // Se tem candles completos do MT5, usa eles (mais preciso)
   if (lastCandles && lastCandles.closes.length >= 30) {
     body = {
       strategy: strategy,
@@ -134,10 +178,7 @@ async function callEaSignalV3(strategy, symbol) {
       opens:    lastCandles.opens,
     };
     console.log(`[Railway] Usando candles do MT5 (${lastCandles.closes.length} velas)`);
-
   } else {
-    // Fallback: constrói array simples com os closes disponíveis
-    // O MT5 envia close1, close2, close3 — suficiente para análise básica
     const bid    = parseFloat(lastPrice.bid);
     const close1 = parseFloat(lastPrice.close1 || bid);
     const close2 = parseFloat(lastPrice.close2 || close1 * 0.9995);
@@ -145,7 +186,6 @@ async function callEaSignalV3(strategy, symbol) {
     const high1  = parseFloat(lastPrice.high1  || close1 * 1.002);
     const low1   = parseFloat(lastPrice.low1   || close1 * 0.998);
 
-    // Monta arrays de 35 velas a partir dos últimos preços
     const closes = [], highs = [], lows = [], opens = [];
     for (let i = 34; i >= 3; i--) {
       const factor = 1 + (Math.random() - 0.5) * 0.001;
@@ -160,7 +200,7 @@ async function callEaSignalV3(strategy, symbol) {
     opens.push(close3, close2, close1, bid * 0.9998);
 
     body = { strategy, symbol: symbol || lastPrice.symbol, closes, highs, lows, opens };
-    console.log(`[Railway] Usando preço ao vivo (fallback sem candles completos)`);
+    console.log(`[Railway] Usando preço ao vivo (fallback)`);
   }
 
   const response = await fetch(EA_SIGNAL_V3_URL, {
@@ -175,7 +215,6 @@ async function callEaSignalV3(strategy, symbol) {
   if (!response.ok) throw new Error(`eaSignal_v3 retornou ${response.status}`);
   const result = await response.json();
 
-  // Adiciona preço ao vivo para confirmar que está correto
   result.live_price  = lastPrice.bid;
   result.live_symbol = lastPrice.symbol;
 
@@ -183,10 +222,10 @@ async function callEaSignalV3(strategy, symbol) {
 }
 
 // ─────────────────────────────────────────────
-// WEBSOCKET — Site
+// WEBSOCKET — Site (para preço ao vivo e análise)
 // ─────────────────────────────────────────────
 wss.on("connection", (ws) => {
-  console.log(`[Railway] Site conectado | Total: ${siteClients.size + 1}`);
+  console.log(`[Railway] Site conectado via WS | Total: ${siteClients.size + 1}`);
   siteClients.add(ws);
 
   const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
@@ -206,7 +245,6 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ type: "analyzing", status: "processing" }));
 
         try {
-          // Chama eaSignal_v3 com candles reais do MT5
           const result = await callEaSignalV3(strategy, symbol);
 
           ws.send(JSON.stringify({
@@ -234,7 +272,7 @@ wss.on("connection", (ws) => {
         }
       }
 
-      // Site pediu execução de ordem
+      // Execução via WebSocket (fallback — preferir HTTP POST)
       if (msg.type === "execute_order") {
         const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
         if (!mt5Online) {
@@ -249,12 +287,12 @@ wss.on("connection", (ws) => {
           tp:        msg.tp,
           lot_size:  msg.lot_size || 0.01,
         };
-        console.log(`[Railway] Ordem enfileirada: ${msg.direction} ${msg.symbol}`);
+        console.log(`[Railway] Ordem via WS: ${msg.direction} ${msg.symbol}`);
         ws.send(JSON.stringify({ type: "order_sent", message: "Ordem enviada ao MT5..." }));
       }
 
     } catch (e) {
-      console.error("[Railway] Erro:", e);
+      console.error("[Railway] Erro WS:", e);
     }
   });
 
@@ -286,18 +324,19 @@ function broadcastToSite(data) {
 app.get("/health", (_, res) => {
   const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
   res.json({
-    status:          "online",
-    mt5_connected:   mt5Online,
-    live_price:      lastPrice?.bid    ?? null,
-    live_symbol:     lastPrice?.symbol ?? null,
-    has_candles:     lastCandles !== null,
-    candles_count:   lastCandles?.closes?.length ?? 0,
-    site_clients:    siteClients.size,
-    pending_order:   pendingOrder !== null,
-    timestamp:       new Date().toISOString(),
+    status:        "online",
+    mt5_connected: mt5Online,
+    live_price:    lastPrice?.bid    ?? null,
+    live_symbol:   lastPrice?.symbol ?? null,
+    has_candles:   lastCandles !== null,
+    candles_count: lastCandles?.closes?.length ?? 0,
+    site_clients:  siteClients.size,
+    pending_order: pendingOrder !== null,
+    timestamp:     new Date().toISOString(),
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Railway] Servidor v3 rodando na porta ${PORT}`);
+  console.log(`[Railway] Servidor v4 rodando na porta ${PORT}`);
+  console.log(`[Railway] Novo endpoint: POST /execute-order`);
 });
