@@ -129,7 +129,7 @@ app.post("/execute-order", (req, res) => {
     return res.status(400).json({ error: "Dados inválidos. symbol e direction são obrigatórios." });
   }
 
-  const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
+  const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 15000;
   if (!mt5Online) {
     return res.status(503).json({ error: "MT5 não está conectado. Verifique se o robô está rodando." });
   }
