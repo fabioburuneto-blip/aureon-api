@@ -1,10 +1,9 @@
 /**
- * TraderAureonia AI — Servidor Railway v4
+ * TraderAureonia AI — Servidor Railway v5
  * 
- * CORREÇÃO PRINCIPAL v4:
- * Adicionado endpoint HTTP POST /execute-order
- * O site envia a ordem via HTTP (mais confiável que WebSocket)
- * em vez de depender da conexão WebSocket estar ativa
+ * NOVIDADE v5:
+ * Manual Mode — quando usuário opera pelo site,
+ * o robô MT5 pausa automaticamente por 2 minutos
  */
 
 const express = require("express");
@@ -17,7 +16,7 @@ const wss        = new WebSocketServer({ server: httpServer });
 
 app.use(express.json());
 
-// CORS — permite o site Base44 chamar a API
+// CORS
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -31,14 +30,41 @@ const PORT = process.env.PORT || 3001;
 const EA_SIGNAL_V3_URL = "https://traderaureonia.base44.app/api/functions/eaSignal_v3";
 const EA_SIGNAL_KEY    = "abc123forte";
 
+const MANUAL_MODE_DURATION_MS = 2 * 60 * 1000; // 2 minutos
+const MT5_TIMEOUT_MS          = 15000;          // 15 segundos
+
 // ─────────────────────────────────────────────
 // Estado do servidor
 // ─────────────────────────────────────────────
-const siteClients = new Set();
-let lastPrice     = null;
-let lastCandles   = null;
-let pendingOrder  = null;
-let mt5LastSeen   = null;
+const siteClients  = new Set();
+let lastPrice      = null;
+let lastCandles    = null;
+let pendingOrder   = null;
+let mt5LastSeen    = null;
+let manualModeUntil = null; // Timestamp até quando o modo manual está ativo
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+function isMt5Online() {
+  return mt5LastSeen && (new Date() - mt5LastSeen) < MT5_TIMEOUT_MS;
+}
+
+function isManualMode() {
+  return manualModeUntil && new Date() < manualModeUntil;
+}
+
+function activateManualMode() {
+  manualModeUntil = new Date(Date.now() + MANUAL_MODE_DURATION_MS);
+  console.log(`[Railway] 🔴 Modo Manual ativado até ${manualModeUntil.toISOString()}`);
+  broadcastToSite({ type: "manual_mode", active: true, until: manualModeUntil.toISOString() });
+}
+
+function deactivateManualMode() {
+  manualModeUntil = null;
+  console.log(`[Railway] 🟢 Modo Manual desativado — robô pode operar`);
+  broadcastToSite({ type: "manual_mode", active: false });
+}
 
 // ─────────────────────────────────────────────
 // ROTAS HTTP — Robô MT5
@@ -83,6 +109,18 @@ app.post("/price", (req, res) => {
   res.json({ status: "ok" });
 });
 
+// ── MT5 consulta se está em modo manual ──
+// O robô chama isso antes de abrir qualquer ordem automática
+app.get("/robot-allowed", (req, res) => {
+  mt5LastSeen = new Date();
+  const manual = isManualMode();
+  res.json({
+    allowed: !manual,
+    manual_mode: manual,
+    manual_until: manualModeUntil?.toISOString() ?? null,
+  });
+});
+
 // MT5 busca ordem pendente
 app.get("/pending-order", (req, res) => {
   mt5LastSeen = new Date();
@@ -119,33 +157,54 @@ app.post("/order-error", (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ✅ NOVO — SITE envia ordem via HTTP POST
-// Mais confiável que WebSocket para execução de ordens
+// ROTAS HTTP — Site
 // ─────────────────────────────────────────────
-app.post("/execute-order", (req, res) => {
+
+// Site ativa o modo manual (antes de executar uma ordem)
+app.post("/pause-robot", (req, res) => {
+  activateManualMode();
+  res.json({
+    status:  "ok",
+    message: "Robô pausado por 2 minutos. Pode executar a ordem.",
+    until:   manualModeUntil.toISOString(),
+  });
+});
+
+// Site desativa o modo manual manualmente
+app.post("/resume-robot", (req, res) => {
+  deactivateManualMode();
+  res.json({ status: "ok", message: "Robô voltou a operar normalmente." });
+});
+
+// Site envia ordem via HTTP POST
+app.post("/execute-order", async (req, res) => {
   const { symbol, direction, entry, sl, tp, lot_size } = req.body;
 
   if (!symbol || !direction) {
-    return res.status(400).json({ error: "Dados inválidos. symbol e direction são obrigatórios." });
+    return res.status(400).json({ error: "symbol e direction são obrigatórios." });
   }
 
-  const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 15000;
-  if (!mt5Online) {
+  if (!isMt5Online()) {
     return res.status(503).json({ error: "MT5 não está conectado. Verifique se o robô está rodando." });
   }
+
+  // Ativa modo manual automaticamente ao executar ordem
+  activateManualMode();
+
+  // Aguarda 500ms para garantir que o robô recebeu o sinal de pausa
+  await new Promise(resolve => setTimeout(resolve, 500));
 
   pendingOrder = {
     symbol:    symbol,
     direction: direction,
-    entry:     entry     || 0,
-    sl:        sl        || 0,
-    tp:        tp        || 0,
-    lot_size:  lot_size  || 0.01,
+    entry:     entry    || 0,
+    sl:        sl       || 0,
+    tp:        tp       || 0,
+    lot_size:  lot_size || 0.01,
   };
 
-  console.log(`[Railway] ✅ Ordem recebida via HTTP: ${direction} ${symbol} | SL:${sl} TP:${tp}`);
+  console.log(`[Railway] ✅ Ordem do site: ${direction} ${symbol} | Entry:${entry} SL:${sl} TP:${tp}`);
 
-  // Notifica todos os clientes do site que a ordem foi enviada
   broadcastToSite({
     type:    "order_sent",
     message: `Ordem ${direction} ${symbol} enviada ao MT5...`,
@@ -153,10 +212,19 @@ app.post("/execute-order", (req, res) => {
 
   res.json({
     status:  "ok",
-    message: "Ordem enfileirada. MT5 vai executar em até 5 segundos.",
+    message: "Robô pausado e ordem enfileirada. MT5 vai executar em até 5 segundos.",
     order:   pendingOrder,
   });
 });
+
+// ─────────────────────────────────────────────
+// Desativa modo manual automaticamente após 2 min
+// ─────────────────────────────────────────────
+setInterval(() => {
+  if (manualModeUntil && new Date() >= manualModeUntil) {
+    deactivateManualMode();
+  }
+}, 10000); // Verifica a cada 10 segundos
 
 // ─────────────────────────────────────────────
 // CHAMA eaSignal_v3 COM DADOS REAIS DO MT5
@@ -222,14 +290,15 @@ async function callEaSignalV3(strategy, symbol) {
 }
 
 // ─────────────────────────────────────────────
-// WEBSOCKET — Site (para preço ao vivo e análise)
+// WEBSOCKET — Site
 // ─────────────────────────────────────────────
 wss.on("connection", (ws) => {
-  console.log(`[Railway] Site conectado via WS | Total: ${siteClients.size + 1}`);
+  console.log(`[Railway] Site conectado | Total: ${siteClients.size + 1}`);
   siteClients.add(ws);
 
-  const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
-  ws.send(JSON.stringify({ type: "mt5_status", connected: mt5Online }));
+  // Envia estado atual ao conectar
+  ws.send(JSON.stringify({ type: "mt5_status", connected: isMt5Online() }));
+  ws.send(JSON.stringify({ type: "manual_mode", active: isManualMode(), until: manualModeUntil?.toISOString() ?? null }));
   if (lastPrice) ws.send(JSON.stringify({ type: "price", ...lastPrice }));
 
   ws.on("message", async (raw) => {
@@ -246,7 +315,6 @@ wss.on("connection", (ws) => {
 
         try {
           const result = await callEaSignalV3(strategy, symbol);
-
           ws.send(JSON.stringify({
             type:          "analysis_result",
             symbol:        symbol,
@@ -266,29 +334,9 @@ wss.on("connection", (ws) => {
             confirmations: result.confirmations,
             timestamp:     new Date().toISOString(),
           }));
-
         } catch (err) {
           ws.send(JSON.stringify({ type: "error", message: err.message }));
         }
-      }
-
-      // Execução via WebSocket (fallback — preferir HTTP POST)
-      if (msg.type === "execute_order") {
-        const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
-        if (!mt5Online) {
-          ws.send(JSON.stringify({ type: "error", message: "MT5 não está conectado." }));
-          return;
-        }
-        pendingOrder = {
-          symbol:    msg.symbol,
-          direction: msg.direction,
-          entry:     msg.entry,
-          sl:        msg.sl,
-          tp:        msg.tp,
-          lot_size:  msg.lot_size || 0.01,
-        };
-        console.log(`[Railway] Ordem via WS: ${msg.direction} ${msg.symbol}`);
-        ws.send(JSON.stringify({ type: "order_sent", message: "Ordem enviada ao MT5..." }));
       }
 
     } catch (e) {
@@ -306,7 +354,7 @@ wss.on("connection", (ws) => {
 // Detecta MT5 offline
 // ─────────────────────────────────────────────
 setInterval(() => {
-  if (mt5LastSeen && (new Date() - mt5LastSeen) > 5000) {
+  if (mt5LastSeen && (new Date() - mt5LastSeen) > MT5_TIMEOUT_MS) {
     broadcastToSite({ type: "mt5_status", connected: false });
   }
 }, 3000);
@@ -322,10 +370,11 @@ function broadcastToSite(data) {
 // Health check
 // ─────────────────────────────────────────────
 app.get("/health", (_, res) => {
-  const mt5Online = mt5LastSeen && (new Date() - mt5LastSeen) < 5000;
   res.json({
     status:        "online",
-    mt5_connected: mt5Online,
+    mt5_connected: isMt5Online(),
+    manual_mode:   isManualMode(),
+    manual_until:  manualModeUntil?.toISOString() ?? null,
     live_price:    lastPrice?.bid    ?? null,
     live_symbol:   lastPrice?.symbol ?? null,
     has_candles:   lastCandles !== null,
@@ -337,6 +386,6 @@ app.get("/health", (_, res) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Railway] Servidor v4 rodando na porta ${PORT}`);
-  console.log(`[Railway] Novo endpoint: POST /execute-order`);
+  console.log(`[Railway] Servidor v5 rodando na porta ${PORT}`);
+  console.log(`[Railway] Endpoints: /pause-robot | /resume-robot | /execute-order | /robot-allowed`);
 });
