@@ -16,7 +16,7 @@ CTrade trade;
 // ─────────────────────────────────────────────
 input string USER_ID      = "";      // << Cole aqui seu User ID (ex: USER-FABIOBUR)
 input double LOT_SIZE     = 0.01;    // Lote fixo (usado se AUTO_LOT = false)
-input bool   AUTO_LOT     = true;    // Calcular lote automaticamente pelo saldo
+input bool   USE_AUTO_LOT = true;    // Calcular lote automaticamente pelo saldo
 input double RISK_PERCENT = 1.0;     // Risco por operação em % do saldo
 input bool   SHOW_ALERTS  = true;    // Mostrar alertas quando ordem chegar
 input string RAILWAY_URL  = "https://aureon-api-production-3d61.up.railway.app";
