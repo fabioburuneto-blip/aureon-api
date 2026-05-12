@@ -1,11 +1,9 @@
 /**
- * TraderAureonia AI — Servidor Railway v7
+ * TraderAureonia AI — Servidor Railway v8
  *
- * ARQUITETURA:
- * - Seu MT5 Master só envia preço e candles
- * - Cliente analisa no site e clica Executar
- * - Ordem vai direto para o Slave do cliente
- * - Cada cliente opera de forma independente
+ * NOVIDADES v8:
+ * 1. Validação de plano PRO via Base44 ao registrar Slave
+ * 2. Salva trades dos clientes no Supabase
  */
 
 const express = require("express");
@@ -37,9 +35,14 @@ app.use((req, res, next) => {
 const PORT             = process.env.PORT || 3001;
 const EA_SIGNAL_V3_URL = "https://traderaureonia.base44.app/api/functions/eaSignal_v3";
 const EA_SIGNAL_KEY    = "abc123forte";
+const CHECK_SLAVE_URL  = "https://traderaureonia.base44.app/api/functions/checkSlaveAccess";
 const MT5_TIMEOUT_MS   = 15000;
-const SLAVE_TIMEOUT_S  = 30;  // Slave considerado offline após 30 segundos sem ping
-const SLAVE_REMOVE_S   = 60;  // Remove slave após 60 segundos sem ping
+const SLAVE_TIMEOUT_S  = 30;
+const SLAVE_REMOVE_S   = 60;
+
+// Supabase
+const SUPABASE_URL = "https://vxxdkxlvkrxkfbrvxdal.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ4eGRreGx2a3J4a2ZicnZ4ZGFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNjE5MzksImV4cCI6MjA5MTkzNzkzOX0.Z1A_L_ObyDwWSoT0lp9uoB0qpRx7-Tt_oEDpifd-U7s";
 
 // ─────────────────────────────────────────────
 // Estado do servidor
@@ -49,15 +52,9 @@ let lastPrice     = null;
 let lastCandles   = null;
 let mt5LastSeen   = null;
 
-// Slaves ativos: userId → { account, balance, lastSeen, symbol }
-const activeSlaves = new Map();
-
-// Ordens pendentes por usuário: userId → { order_id, direction, symbol, sl, tp, lot_size, timestamp }
+const activeSlaves       = new Map();
 const slavePendingOrders = new Map();
-
-// Histórico de execuções
-const slaveExecutions = [];
-
+const slaveExecutions    = [];
 let orderCounter = 1;
 
 // ─────────────────────────────────────────────
@@ -74,20 +71,69 @@ function generateOrderId() {
 function isSlaveOnline(userId) {
   if (!activeSlaves.has(userId)) return false;
   const slave = activeSlaves.get(userId);
-  const secondsAgo = (new Date() - slave.lastSeen) / 1000;
-  return secondsAgo < SLAVE_TIMEOUT_S;
+  return (new Date() - slave.lastSeen) / 1000 < SLAVE_TIMEOUT_S;
 }
 
 // ─────────────────────────────────────────────
-// ROTAS — Seu MT5 Master (só envia preço)
+// Valida plano PRO no Base44
 // ─────────────────────────────────────────────
+async function checkProPlan(userId) {
+  try {
+    const response = await fetch(`${CHECK_SLAVE_URL}?user_id=${userId}`, {
+      method:  "GET",
+      headers: { "Content-Type": "application/json" },
+    });
 
+    if (!response.ok) {
+      console.log(`[Railway] Erro ao verificar plano: HTTP ${response.status}`);
+      return { allowed: true }; // Em caso de erro, permite (fail open)
+    }
+
+    const data = await response.json();
+    console.log(`[Railway] Verificação PRO ${userId}: allowed=${data.allowed} plan=${data.plan} reason=${data.reason}`);
+    return data;
+
+  } catch (err) {
+    console.error(`[Railway] Erro ao verificar plano PRO:`, err.message);
+    return { allowed: true }; // Em caso de erro, permite (fail open)
+  }
+}
+
+// ─────────────────────────────────────────────
+// Salva trade no Supabase
+// ─────────────────────────────────────────────
+async function saveTradeToSupabase(tradeData) {
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/trades`, {
+      method:  "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "apikey":        SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Prefer":        "return=minimal",
+      },
+      body: JSON.stringify(tradeData),
+    });
+
+    if (response.ok) {
+      console.log(`[Railway] Trade salvo no Supabase: ${tradeData.direction} ${tradeData.symbol}`);
+    } else {
+      const err = await response.text();
+      console.error(`[Railway] Erro ao salvar trade: ${err}`);
+    }
+  } catch (err) {
+    console.error(`[Railway] Erro Supabase:`, err.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// ROTAS — Seu MT5 Master
+// ─────────────────────────────────────────────
 app.post("/price", (req, res) => {
   const data = req.body;
   if (!data || !data.symbol) return res.status(400).json({ error: "Dados inválidos" });
 
   mt5LastSeen = new Date();
-
   lastPrice = {
     symbol:     data.symbol,
     bid:        data.bid,
@@ -116,7 +162,6 @@ app.post("/price", (req, res) => {
 
   broadcastToSite({ type: "price", ...lastPrice });
   broadcastToSite({ type: "mt5_status", connected: true });
-
   res.json({ status: "ok" });
 });
 
@@ -124,8 +169,8 @@ app.post("/price", (req, res) => {
 // ROTAS — Slaves dos clientes
 // ─────────────────────────────────────────────
 
-// Slave registra presença
-app.post("/slave-register", (req, res) => {
+// Slave registra presença — verifica plano PRO
+app.post("/slave-register", async (req, res) => {
   const { user_id, account, symbol, balance, status } = req.body;
   if (!user_id) return res.status(400).json({ error: "user_id obrigatório" });
 
@@ -136,31 +181,51 @@ app.post("/slave-register", (req, res) => {
     return res.json({ status: "ok" });
   }
 
+  // ── Verifica plano PRO ──
+  const planCheck = await checkProPlan(user_id);
+
+  if (!planCheck.allowed) {
+    console.log(`[Railway] Slave ${user_id} bloqueado: ${planCheck.reason}`);
+    return res.status(403).json({
+      status:  "blocked",
+      reason:  planCheck.reason,
+      message: planCheck.reason === "Plan expired"
+        ? "Seu plano PRO expirou. Renove em traderaureonia.com.br"
+        : "Plano PRO necessário. Assine em traderaureonia.com.br",
+    });
+  }
+
+  // Registra o slave
   activeSlaves.set(user_id, {
     account:  account || "unknown",
     symbol:   symbol  || "BTCUSD",
     balance:  balance || 0,
+    plan:     planCheck.plan || "pro",
     lastSeen: new Date(),
   });
 
-  console.log(`[Railway] Slave online: ${user_id} | Saldo: ${balance}`);
-  broadcastToSite({ type: "slave_status", user_id, connected: true, balance });
+  console.log(`[Railway] Slave PRO online: ${user_id} | Plano: ${planCheck.plan} | Saldo: ${balance}`);
+  broadcastToSite({ type: "slave_status", user_id, connected: true, balance, plan: planCheck.plan });
 
-  res.json({ status: "ok", message: "Slave registrado!", slaves_online: activeSlaves.size });
+  res.json({
+    status:        "ok",
+    message:       "Slave PRO registrado com sucesso!",
+    user_id,
+    plan:          planCheck.plan,
+    slaves_online: activeSlaves.size,
+  });
 });
 
-// Slave busca ordem pendente para ELE
+// Slave busca ordem pendente
 app.get("/slave-order", (req, res) => {
   const userId = req.query.user_id;
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
 
-  // Atualiza lastSeen — isso é o "ping" do slave
   if (activeSlaves.has(userId)) {
     const slave = activeSlaves.get(userId);
     slave.lastSeen = new Date();
     activeSlaves.set(userId, slave);
   } else {
-    // Slave não está registrado — registra automaticamente
     activeSlaves.set(userId, {
       account:  "unknown",
       symbol:   "BTCUSD",
@@ -169,7 +234,6 @@ app.get("/slave-order", (req, res) => {
     });
   }
 
-  // Tem ordem para esse usuário?
   if (slavePendingOrders.has(userId)) {
     const order = slavePendingOrders.get(userId);
     slavePendingOrders.delete(userId);
@@ -180,14 +244,31 @@ app.get("/slave-order", (req, res) => {
   res.json({ hasOrder: false });
 });
 
-// Slave confirma execução
-app.post("/slave-confirm", (req, res) => {
+// Slave confirma execução — salva no Supabase
+app.post("/slave-confirm", async (req, res) => {
   const { user_id, order_id, symbol, direction, price, lot, sl, tp } = req.body;
   console.log(`[Railway] Slave ${user_id} executou: ${direction} ${symbol} @ ${price}`);
 
   slaveExecutions.push({
     user_id, order_id, symbol, direction, price, lot, sl, tp,
     timestamp: new Date().toISOString(),
+  });
+
+  // ── Salva trade no Supabase ──
+  const now = new Date();
+  await saveTradeToSupabase({
+    symbol:           symbol,
+    direction:        direction.toLowerCase(),
+    entry_price:      parseFloat(price) || 0,
+    sl:               parseFloat(sl)    || 0,
+    tp:               parseFloat(tp)    || 0,
+    profit:           0,           // Será atualizado quando fechar
+    result:           "open",      // Ainda aberto
+    hour_of_day:      now.getUTCHours(),
+    day_of_week:      now.getUTCDay(),
+    market_strength:  0,
+    atr_value:        0,
+    probability:      0,
   });
 
   broadcastToSite({
@@ -220,36 +301,28 @@ app.post("/slave-error", (req, res) => {
 app.post("/client-execute-order", (req, res) => {
   const { user_id, symbol, direction, entry, sl, tp, lot_size } = req.body;
 
-  // Validação básica
-  if (!user_id || !symbol || !direction) {
+  if (!user_id || !symbol || !direction)
     return res.status(400).json({ error: "user_id, symbol e direction são obrigatórios." });
-  }
 
-  // Verifica se o Slave do cliente está online
   if (!isSlaveOnline(user_id)) {
-    const exists = activeSlaves.has(user_id);
+    const exists      = activeSlaves.has(user_id);
     const lastSeenAgo = exists
       ? Math.round((new Date() - activeSlaves.get(user_id).lastSeen) / 1000)
       : null;
-
     console.log(`[Railway] Slave ${user_id} offline. Existe: ${exists}, LastSeen: ${lastSeenAgo}s`);
-
     return res.status(503).json({
-      error:        "Seu EA Slave não está conectado. Verifique se o MT5 está aberto com o EA Slave rodando.",
+      error:        "Seu EA Slave não está conectado.",
       slave_online: false,
       last_seen:    lastSeenAgo,
     });
   }
 
-  // Valida SL e TP
   const slVal = parseFloat(sl);
   const tpVal = parseFloat(tp);
 
-  if (!slVal || !tpVal || slVal === 0 || tpVal === 0) {
+  if (!slVal || !tpVal || slVal === 0 || tpVal === 0)
     return res.status(400).json({ error: "SL e TP inválidos. Faça uma nova análise." });
-  }
 
-  // Enfileira a ordem para o Slave do cliente
   const orderId = generateOrderId();
 
   slavePendingOrders.set(user_id, {
@@ -262,7 +335,7 @@ app.post("/client-execute-order", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 
-  console.log(`[Railway] Ordem para slave ${user_id}: ${direction} ${symbol} SL:${slVal} TP:${tpVal} Lot:${lot_size}`);
+  console.log(`[Railway] Ordem para slave ${user_id}: ${direction} ${symbol} SL:${slVal} TP:${tpVal}`);
 
   res.json({
     status:   "ok",
@@ -271,26 +344,25 @@ app.post("/client-execute-order", (req, res) => {
   });
 });
 
-// Status do slave de um usuário específico
+// Status do slave
 app.get("/slave-status", (req, res) => {
-  const userId = req.query.user_id;
+  const userId      = req.query.user_id;
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
-
   const exists      = activeSlaves.has(userId);
   const slave       = activeSlaves.get(userId);
   const lastSeenAgo = exists ? Math.round((new Date() - slave.lastSeen) / 1000) : null;
   const online      = exists && lastSeenAgo < SLAVE_TIMEOUT_S;
-
   res.json({
     user_id:      userId,
     slave_online: online,
     last_seen:    lastSeenAgo,
     balance:      slave?.balance ?? null,
     account:      slave?.account ?? null,
+    plan:         slave?.plan    ?? null,
   });
 });
 
-// Lista todos os slaves (para admin)
+// Lista todos os slaves
 app.get("/slaves-status", (req, res) => {
   const slaves = [];
   activeSlaves.forEach((data, userId) => {
@@ -299,10 +371,10 @@ app.get("/slaves-status", (req, res) => {
       user_id:        userId,
       online:         lastSeenAgo < SLAVE_TIMEOUT_S,
       balance:        data.balance,
+      plan:           data.plan,
       last_seen_secs: lastSeenAgo,
     });
   });
-
   res.json({
     total:      slaves.length,
     online:     slaves.filter(s => s.online).length,
@@ -312,22 +384,15 @@ app.get("/slaves-status", (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// CHAMA eaSignal_v3 COM DADOS REAIS DO MT5
+// CHAMA eaSignal_v3
 // ─────────────────────────────────────────────
 async function callEaSignalV3(strategy, symbol) {
-  if (!lastPrice) throw new Error("MT5 não está enviando dados. Verifique se o robô está rodando.");
-
+  if (!lastPrice) throw new Error("MT5 não está enviando dados.");
   let body;
-
   if (lastCandles && lastCandles.closes.length >= 30) {
-    body = {
-      strategy,
-      symbol: symbol || lastCandles.symbol,
-      closes: lastCandles.closes,
-      highs:  lastCandles.highs,
-      lows:   lastCandles.lows,
-      opens:  lastCandles.opens,
-    };
+    body = { strategy, symbol: symbol || lastCandles.symbol,
+             closes: lastCandles.closes, highs: lastCandles.highs,
+             lows: lastCandles.lows, opens: lastCandles.opens };
   } else {
     const bid    = parseFloat(lastPrice.bid);
     const close1 = parseFloat(lastPrice.close1 || bid);
@@ -335,7 +400,6 @@ async function callEaSignalV3(strategy, symbol) {
     const close3 = parseFloat(lastPrice.close3 || close1 * 0.9990);
     const high1  = parseFloat(lastPrice.high1  || close1 * 1.002);
     const low1   = parseFloat(lastPrice.low1   || close1 * 0.998);
-
     const closes = [], highs = [], lows = [], opens = [];
     for (let i = 34; i >= 3; i--) {
       const f = 1 + (Math.random() - 0.5) * 0.001;
@@ -348,16 +412,13 @@ async function callEaSignalV3(strategy, symbol) {
     highs.push(high1, high1, high1, high1);
     lows.push(low1, low1, low1, low1);
     opens.push(close3, close2, close1, bid * 0.9998);
-
     body = { strategy, symbol: symbol || lastPrice.symbol, closes, highs, lows, opens };
   }
-
   const response = await fetch(EA_SIGNAL_V3_URL, {
-    method:  "POST",
+    method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${EA_SIGNAL_KEY}` },
-    body:    JSON.stringify(body),
+    body: JSON.stringify(body),
   });
-
   if (!response.ok) throw new Error(`eaSignal_v3 retornou ${response.status}`);
   const result = await response.json();
   result.live_price  = lastPrice.bid;
@@ -370,7 +431,6 @@ async function callEaSignalV3(strategy, symbol) {
 // ─────────────────────────────────────────────
 wss.on("connection", (ws) => {
   siteClients.add(ws);
-
   ws.send(JSON.stringify({ type: "mt5_status",   connected: isMt5Online() }));
   ws.send(JSON.stringify({ type: "slaves_count", count: activeSlaves.size }));
   if (lastPrice) ws.send(JSON.stringify({ type: "price", ...lastPrice }));
@@ -378,42 +438,25 @@ wss.on("connection", (ws) => {
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
-
       if (msg.type === "analyze") {
         const strategy = msg.strategy || "QUICK";
         const symbol   = msg.symbol   || (lastPrice?.symbol ?? "BTCUSD");
-
         ws.send(JSON.stringify({ type: "analyzing", status: "processing" }));
-
         try {
           const result = await callEaSignalV3(strategy, symbol);
           ws.send(JSON.stringify({
-            type:          "analysis_result",
-            symbol,
-            timeframe:     msg.timeframe,
-            strategy,
-            direction:     result.direction,
-            entry:         result.entry,
-            sl:            result.sl,
-            tp:            result.tp,
-            probability:   result.probability,
-            score:         result.probability,
-            reason:        result.reason,
-            indicators:    result.indicators,
-            live_price:    result.live_price,
-            live_symbol:   result.live_symbol,
-            status:        result.status,
-            confirmations: result.confirmations,
-            timestamp:     new Date().toISOString(),
+            type: "analysis_result", symbol, timeframe: msg.timeframe, strategy,
+            direction: result.direction, entry: result.entry, sl: result.sl, tp: result.tp,
+            probability: result.probability, score: result.probability, reason: result.reason,
+            indicators: result.indicators, live_price: result.live_price,
+            live_symbol: result.live_symbol, status: result.status,
+            confirmations: result.confirmations, timestamp: new Date().toISOString(),
           }));
         } catch (err) {
           ws.send(JSON.stringify({ type: "error", message: err.message }));
         }
       }
-
-    } catch (e) {
-      console.error("[Railway] Erro WS:", e);
-    }
+    } catch (e) { console.error("[Railway] Erro WS:", e); }
   });
 
   ws.on("close", () => siteClients.delete(ws));
@@ -423,20 +466,16 @@ wss.on("connection", (ws) => {
 // Limpeza automática
 // ─────────────────────────────────────────────
 setInterval(() => {
-  // Remove slaves muito inativos
   activeSlaves.forEach((data, userId) => {
     const lastSeenAgo = (new Date() - data.lastSeen) / 1000;
     if (lastSeenAgo > SLAVE_REMOVE_S) {
       activeSlaves.delete(userId);
-      console.log(`[Railway] Slave ${userId} removido por inatividade (${Math.round(lastSeenAgo)}s)`);
+      console.log(`[Railway] Slave ${userId} removido (${Math.round(lastSeenAgo)}s inativo)`);
       broadcastToSite({ type: "slave_status", user_id: userId, connected: false });
     }
   });
-
-  // Detecta MT5 offline
-  if (mt5LastSeen && (new Date() - mt5LastSeen) > MT5_TIMEOUT_MS) {
+  if (mt5LastSeen && (new Date() - mt5LastSeen) > MT5_TIMEOUT_MS)
     broadcastToSite({ type: "mt5_status", connected: false });
-  }
 }, 5000);
 
 function broadcastToSite(data) {
@@ -453,31 +492,22 @@ app.get("/health", (_, res) => {
   const slaves = [];
   activeSlaves.forEach((data, userId) => {
     const lastSeenAgo = Math.round((new Date() - data.lastSeen) / 1000);
-    slaves.push({
-      user_id:        userId,
-      online:         lastSeenAgo < SLAVE_TIMEOUT_S,
-      balance:        data.balance,
-      last_seen_secs: lastSeenAgo,
-    });
+    slaves.push({ user_id: userId, online: lastSeenAgo < SLAVE_TIMEOUT_S,
+                  balance: data.balance, plan: data.plan, last_seen_secs: lastSeenAgo });
   });
-
   res.json({
-    status:        "online",
-    version:       "v7",
+    status: "online", version: "v8",
     mt5_connected: isMt5Online(),
-    live_price:    lastPrice?.bid    ?? null,
-    live_symbol:   lastPrice?.symbol ?? null,
-    has_candles:   lastCandles !== null,
-    candles_count: lastCandles?.closes?.length ?? 0,
-    site_clients:  siteClients.size,
+    live_price: lastPrice?.bid ?? null, live_symbol: lastPrice?.symbol ?? null,
+    has_candles: lastCandles !== null, candles_count: lastCandles?.closes?.length ?? 0,
+    site_clients: siteClients.size,
     slaves_online: slaves.filter(s => s.online).length,
-    slaves_total:  activeSlaves.size,
-    slaves,
-    timestamp:     new Date().toISOString(),
+    slaves_total: activeSlaves.size, slaves,
+    timestamp: new Date().toISOString(),
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Railway] Servidor v7 rodando na porta ${PORT}`);
-  console.log(`[Railway] Slave timeout: ${SLAVE_TIMEOUT_S}s | Remove: ${SLAVE_REMOVE_S}s`);
+  console.log(`[Railway] Servidor v8 rodando na porta ${PORT}`);
+  console.log(`[Railway] Validação PRO: ${CHECK_SLAVE_URL}`);
 });
