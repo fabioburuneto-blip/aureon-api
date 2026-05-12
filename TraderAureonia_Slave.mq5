@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //| TraderAureonia_Slave.mq5                                         |
-//| EA Slave v3 — Com validação de plano PRO                        |
+//| EA Slave v4 — Detecta ordens fechadas e salva no Supabase       |
 //+------------------------------------------------------------------+
 #property copyright "TraderAureonia AI"
-#property version   "3.0"
-#property description "EA Slave — Recebe e executa suas ordens do TraderAureonia AI"
+#property version   "4.0"
+#property description "EA Slave — Recebe, executa e reporta ordens do TraderAureonia AI"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -23,9 +23,10 @@ input string InpRailwayUrl   = "https://aureon-api-production-3d61.up.railway.ap
 //+------------------------------------------------------------------+
 //| VARIÁVEIS GLOBAIS                                                |
 //+------------------------------------------------------------------+
-string lastOrderId = "";
-bool   connected   = false;
-bool   isProUser   = false;
+string   lastOrderId   = "";
+bool     connected     = false;
+bool     isProUser     = false;
+datetime lastClosedDeal = 0;
 
 //+------------------------------------------------------------------+
 //| Inicialização                                                    |
@@ -50,7 +51,7 @@ int OnInit()
    trade.SetDeviationInPoints(20);
 
    Print("===========================================");
-   Print("[Slave] TraderAureonia AI Slave v3.0");
+   Print("[Slave] TraderAureonia AI Slave v4.0");
    Print("[Slave] User ID: ", InpUserId);
    if(InpUseAutoLot)
       Print("[Slave] Lote: AUTO (", InpRiskPercent, "% risco)");
@@ -58,6 +59,15 @@ int OnInit()
       Print("[Slave] Lote: FIXO (", InpLotSize, ")");
    Print("[Slave] Servidor: ", InpRailwayUrl);
    Print("===========================================");
+
+   // Inicializa o lastClosedDeal com o último deal do histórico
+   HistorySelect(TimeCurrent() - 86400, TimeCurrent());
+   int deals = HistoryDealsTotal();
+   if(deals > 0)
+     {
+      ulong ticket = HistoryDealGetTicket(deals - 1);
+      lastClosedDeal = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+     }
 
    RegisterSlave();
    EventSetMillisecondTimer(2000);
@@ -76,12 +86,13 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
-//| Timer — verifica ordens a cada 2 segundos                       |
+//| Timer — roda a cada 2 segundos                                  |
 //+------------------------------------------------------------------+
 void OnTimer()
   {
    if(!connected || !isProUser) return;
    CheckForOrders();
+   CheckClosedOrders();
   }
 
 //+------------------------------------------------------------------+
@@ -111,15 +122,12 @@ void RegisterSlave()
 
    string json = CharArrayToString(result);
 
-   // Plano PRO não encontrado
    if(res == 403)
      {
       isProUser = false;
       connected = false;
-
       string reason  = ExtractString(json, "\"reason\":\"");
       string message = ExtractString(json, "\"message\":\"");
-
       Print("[Slave] ACESSO NEGADO: ", message);
 
       if(StringFind(reason, "expired") >= 0)
@@ -160,7 +168,6 @@ void RegisterSlave()
      {
       connected = false;
       Print("[Slave] Erro ao conectar. Codigo: ", res);
-      Print("[Slave] Resposta: ", StringSubstr(json, 0, 200));
      }
   }
 
@@ -201,11 +208,7 @@ void CheckForOrders()
       return;
      }
 
-   if(!connected)
-     {
-      Print("[Slave] Reconectado.");
-      connected = true;
-     }
+   if(!connected) { connected = true; Print("[Slave] Reconectado."); }
 
    string json = CharArrayToString(result);
    if(StringFind(json, "\"hasOrder\":true") < 0) return;
@@ -219,11 +222,9 @@ void CheckForOrders()
 
    if(orderId == lastOrderId || orderId == "") return;
    lastOrderId = orderId;
-
    if(symbol == "") symbol = _Symbol;
 
-   Print("[Slave] Ordem recebida: ", direction, " ", symbol,
-         " SL:", sl, " TP:", tp);
+   Print("[Slave] Ordem recebida: ", direction, " ", symbol, " SL:", sl, " TP:", tp);
 
    if(InpShowAlerts)
       Alert("TraderAureonia: Ordem ", direction, " ", symbol, " recebida!");
@@ -237,6 +238,67 @@ void CheckForOrders()
    if(lot <= 0) lot = InpLotSize;
 
    ExecuteOrder(symbol, direction, sl, tp, lot, orderId);
+  }
+
+//+------------------------------------------------------------------+
+//| Detecta ordens fechadas e reporta ao Railway                    |
+//+------------------------------------------------------------------+
+void CheckClosedOrders()
+  {
+   HistorySelect(TimeCurrent() - 86400, TimeCurrent());
+   int deals = HistoryDealsTotal();
+
+   for(int i = deals - 1; i >= 0; i--)
+     {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(!HistoryDealSelect(ticket)) continue;
+
+      datetime dealTime = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+      if(dealTime <= lastClosedDeal) continue;
+
+      // Só processa saídas (fechamentos)
+      long dealEntry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(dealEntry != DEAL_ENTRY_OUT) continue;
+
+      string symbol    = HistoryDealGetString(ticket, DEAL_SYMBOL);
+      double profit    = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      double price     = HistoryDealGetDouble(ticket, DEAL_PRICE);
+      int    dealType  = (int)HistoryDealGetInteger(ticket, DEAL_TYPE);
+      string direction = (dealType == DEAL_TYPE_BUY) ? "buy" : "sell";
+
+      if(symbol == "") continue;
+
+      Print("[Slave] Trade fechado: ", symbol, " Profit:", profit,
+            " Resultado:", (profit > 0 ? "WIN" : "LOSS"));
+
+      // Envia para o Railway → Railway salva no Supabase
+      string p_s  = DoubleToString(price,  5); StringReplace(p_s,  ",", ".");
+      string pr_s = DoubleToString(profit, 2); StringReplace(pr_s, ",", ".");
+
+      string body = "{";
+      body += "\"user_id\":\"" + InpUserId + "\",";
+      body += "\"symbol\":\"" + symbol + "\",";
+      body += "\"direction\":\"" + direction + "\",";
+      body += "\"close_price\":" + p_s + ",";
+      body += "\"profit\":" + pr_s + ",";
+      body += "\"result\":\"" + (profit > 0 ? "win" : "loss") + "\"";
+      body += "}";
+
+      string headers = "Content-Type: application/json\r\n";
+      uchar  data[], res[];
+      int    len = StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8) - 1;
+      ArrayResize(data, len);
+      string rh;
+      int result_code = WebRequest("POST", InpRailwayUrl + "/slave-trade-closed",
+                                   headers, 3000, data, res, rh);
+
+      if(result_code == 200 || result_code == 201)
+         Print("[Slave] Trade salvo no Supabase!");
+      else
+         Print("[Slave] Erro ao salvar trade. Codigo: ", result_code);
+
+      lastClosedDeal = dealTime;
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -292,10 +354,7 @@ void ExecuteOrder(string symbol, string direction, double sl, double tp,
    else if(direction == "SELL")
       result = trade.Sell(lot, symbol, bid, newSL, newTP, "TA-" + orderId);
    else
-     {
-      Print("[Slave] Direcao invalida: ", direction);
-      return;
-     }
+     { Print("[Slave] Direcao invalida: ", direction); return; }
 
    if(result)
      {
