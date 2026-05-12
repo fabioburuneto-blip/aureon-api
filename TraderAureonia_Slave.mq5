@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
 //| TraderAureonia_Slave.mq5                                         |
-//| EA Slave v2 — Opera de forma independente por cliente            |
+//| EA Slave v3 — Com validação de plano PRO                        |
 //+------------------------------------------------------------------+
 #property copyright "TraderAureonia AI"
-#property version   "2.0"
+#property version   "3.0"
 #property description "EA Slave — Recebe e executa suas ordens do TraderAureonia AI"
 #property strict
 
@@ -25,6 +25,7 @@ input string InpRailwayUrl   = "https://aureon-api-production-3d61.up.railway.ap
 //+------------------------------------------------------------------+
 string lastOrderId = "";
 bool   connected   = false;
+bool   isProUser   = false;
 
 //+------------------------------------------------------------------+
 //| Inicialização                                                    |
@@ -49,12 +50,12 @@ int OnInit()
    trade.SetDeviationInPoints(20);
 
    Print("===========================================");
-   Print("[Slave] TraderAureonia AI Slave v2.0");
+   Print("[Slave] TraderAureonia AI Slave v3.0");
    Print("[Slave] User ID: ", InpUserId);
    if(InpUseAutoLot)
-      Print("[Slave] Modo Lote: AUTO (", InpRiskPercent, "% risco)");
+      Print("[Slave] Lote: AUTO (", InpRiskPercent, "% risco)");
    else
-      Print("[Slave] Modo Lote: FIXO (", InpLotSize, ")");
+      Print("[Slave] Lote: FIXO (", InpLotSize, ")");
    Print("[Slave] Servidor: ", InpRailwayUrl);
    Print("===========================================");
 
@@ -79,6 +80,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
   {
+   if(!connected || !isProUser) return;
    CheckForOrders();
   }
 
@@ -107,15 +109,59 @@ void RegisterSlave()
    int res = WebRequest("POST", InpRailwayUrl + "/slave-register",
                         headers, 5000, data, result, response_headers);
 
+   string json = CharArrayToString(result);
+
+   // Plano PRO não encontrado
+   if(res == 403)
+     {
+      isProUser = false;
+      connected = false;
+
+      string reason  = ExtractString(json, "\"reason\":\"");
+      string message = ExtractString(json, "\"message\":\"");
+
+      Print("[Slave] ACESSO NEGADO: ", message);
+
+      if(StringFind(reason, "expired") >= 0)
+        {
+         MessageBox(
+            "Seu plano PRO expirou!\n\n"
+            "Renove seu plano para continuar\n"
+            "recebendo ordens automaticamente.\n\n"
+            "Acesse: traderaureonia.com.br",
+            "TraderAureonia Slave — Plano Expirado",
+            MB_OK | MB_ICONWARNING
+         );
+        }
+      else
+        {
+         MessageBox(
+            "Plano PRO necessario!\n\n"
+            "O Auto Trader esta disponivel apenas\n"
+            "para assinantes do plano PRO.\n\n"
+            "Acesse traderaureonia.com.br\n"
+            "e assine o plano PRO para continuar.",
+            "TraderAureonia Slave — Upgrade Necessario",
+            MB_OK | MB_ICONWARNING
+         );
+        }
+      return;
+     }
+
    if(res == 200 || res == 201)
      {
+      isProUser = true;
       connected = true;
-      Print("[Slave] Conectado! Aguardando ordens do site...");
+      Print("[Slave] Conectado com plano PRO! Aguardando ordens...");
       if(InpShowAlerts)
-         Alert("TraderAureonia Slave conectado! Pronto para receber ordens.");
+         Alert("TraderAureonia Slave PRO conectado! Pronto para receber ordens.");
      }
    else
-      Print("[Slave] Erro ao conectar. Codigo: ", res, " — Verifique o User ID.");
+     {
+      connected = false;
+      Print("[Slave] Erro ao conectar. Codigo: ", res);
+      Print("[Slave] Resposta: ", StringSubstr(json, 0, 200));
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -164,7 +210,6 @@ void CheckForOrders()
    string json = CharArrayToString(result);
    if(StringFind(json, "\"hasOrder\":true") < 0) return;
 
-   // Extrai dados
    string orderId   = ExtractString(json, "\"order_id\":\"");
    string direction = ExtractString(json, "\"direction\":\"");
    string symbol    = ExtractString(json, "\"symbol\":\"");
@@ -172,7 +217,6 @@ void CheckForOrders()
    double tp        = ExtractDouble(json,  "\"tp\":");
    double lotSize   = ExtractDouble(json,  "\"lot_size\":");
 
-   // Evita duplicata
    if(orderId == lastOrderId || orderId == "") return;
    lastOrderId = orderId;
 
@@ -184,7 +228,6 @@ void CheckForOrders()
    if(InpShowAlerts)
       Alert("TraderAureonia: Ordem ", direction, " ", symbol, " recebida!");
 
-   // Calcula lote
    double lot;
    if(InpUseAutoLot)
       lot = CalculateLot(symbol, sl, direction);
@@ -225,7 +268,7 @@ double CalculateLot(string symbol, double sl, string direction)
    lot = MathFloor(lot / stepLot) * stepLot;
    lot = MathMax(minLot, MathMin(lot, maxLot));
 
-   Print("[Slave] Lote calculado: ", NormalizeDouble(lot, 2),
+   Print("[Slave] Lote: ", NormalizeDouble(lot, 2),
          " (Risco: ", InpRiskPercent, "% = $", DoubleToString(risk, 2), ")");
 
    return NormalizeDouble(lot, 2);
@@ -271,7 +314,7 @@ void ExecuteOrder(string symbol, string direction, double sl, double tp,
   }
 
 //+------------------------------------------------------------------+
-//| Confirma execução para o Railway                               |
+//| Confirma execução                                               |
 //+------------------------------------------------------------------+
 void ConfirmExecution(string orderId, string symbol, string direction,
                       double lot, double price, double sl, double tp)
@@ -319,7 +362,7 @@ void ReportError(string orderId, string message)
   }
 
 //+------------------------------------------------------------------+
-//| Extrai string de JSON                                           |
+//| Helpers JSON                                                    |
 //+------------------------------------------------------------------+
 string ExtractString(string json, string key)
   {
@@ -331,9 +374,6 @@ string ExtractString(string json, string key)
    return StringSubstr(json, start, end - start);
   }
 
-//+------------------------------------------------------------------+
-//| Extrai double de JSON                                           |
-//+------------------------------------------------------------------+
 double ExtractDouble(string json, string key)
   {
    int start = StringFind(json, key);
