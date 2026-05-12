@@ -212,32 +212,34 @@ app.post("/slave-error", (req, res) => {
 app.post("/client-execute-order", (req, res) => {
   const { user_id, symbol, direction, entry, sl, tp, lot_size } = req.body;
 
-  if (!user_id || !symbol || !direction) {
+  if (!user_id || !symbol || !direction)
     return res.status(400).json({ error: "user_id, symbol e direction são obrigatórios." });
-  }
 
-  // Verifica se o Slave do cliente está online
-  if (!isSlaveOnline(user_id)) {
+  if (!isSlaveOnline(user_id))
     return res.status(503).json({
-      error: "Seu EA Slave não está conectado. Verifique se o MT5 está aberto com o EA Slave rodando.",
+      error: "Seu EA Slave não está conectado.",
       slave_online: false,
     });
-  }
+
+  const slVal  = parseFloat(sl);
+  const tpVal  = parseFloat(tp);
+
+  if (!slVal || !tpVal || slVal === 0 || tpVal === 0)
+    return res.status(400).json({ error: "SL e TP inválidos. Faça uma nova análise." });
 
   const orderId = generateOrderId();
 
-  // Enfileira a ordem para o Slave do cliente
   slavePendingOrders.set(user_id, {
     order_id:  orderId,
     direction: direction,
     symbol:    symbol,
-    sl:        sl       || 0,
-    tp:        tp       || 0,
-    lot_size:  lot_size || 0.01,
+    sl:        slVal,
+    tp:        tpVal,
+    lot_size:  parseFloat(lot_size) || 0.01,
     timestamp: new Date().toISOString(),
   });
 
-  console.log(`[Railway] ✅ Ordem enfileirada para slave ${user_id}: ${direction} ${symbol} Lot:${lot_size}`);
+  console.log(`[Railway] Ordem para slave ${user_id}: ${direction} ${symbol} SL:${slVal} TP:${tpVal}`);
 
   res.json({
     status:   "ok",
