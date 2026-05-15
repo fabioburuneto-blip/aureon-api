@@ -1,8 +1,7 @@
 /**
  * TraderAureonia AI — Servidor Railway v10
- * - Armazena preços de TODOS os ativos enviados pelo MT5
- * - Salva estratégia, probabilidade, confirmações no Supabase
- * - Keep-alive automático
+ * - Salva user_code (USER-FABIOBUR) nos trades
+ * - Permite filtrar trades por usuário no site
  */
 
 const express = require("express");
@@ -79,7 +78,6 @@ async function checkProPlan(userId) {
     const response = await fetch(`${CHECK_SLAVE_URL}?user_id=${userId}`);
     if (!response.ok) return { allowed: true };
     const data = await response.json();
-    console.log(`[Railway] PRO check ${userId}: allowed=${data.allowed} plan=${data.plan}`);
     return data;
   } catch (err) {
     return { allowed: true };
@@ -87,7 +85,7 @@ async function checkProPlan(userId) {
 }
 
 // ─────────────────────────────────────────────
-// Salva trade no Supabase — com todos os campos
+// Salva trade no Supabase com user_code
 // ─────────────────────────────────────────────
 async function saveTradeToSupabase(tradeData) {
   try {
@@ -102,13 +100,38 @@ async function saveTradeToSupabase(tradeData) {
       body: JSON.stringify(tradeData),
     });
     if (response.ok)
-      console.log(`[Railway] ✅ Trade salvo: ${tradeData.strategy || "?"} | ${tradeData.direction} ${tradeData.symbol} | Prob:${tradeData.probability}% | ${tradeData.result}`);
+      console.log(`[Railway] Trade salvo: ${tradeData.user_code} | ${tradeData.strategy} | ${tradeData.direction} ${tradeData.symbol} | Prob:${tradeData.probability}% | ${tradeData.result}`);
     else
       console.error(`[Railway] Erro Supabase: ${await response.text()}`);
   } catch (err) {
     console.error(`[Railway] Erro Supabase:`, err.message);
   }
 }
+
+// ─────────────────────────────────────────────
+// ROTA — Busca trades de um usuário específico
+// Usada pelo site para mostrar a performance do cliente
+// ─────────────────────────────────────────────
+app.get("/user-trades", async (req, res) => {
+  const userCode = req.query.user_code;
+  if (!userCode) return res.status(400).json({ error: "user_code obrigatório" });
+
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/trades?user_code=eq.${userCode}&order=created_at.desc&limit=500`,
+      {
+        headers: {
+          "apikey":        SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+        },
+      }
+    );
+    const data = await response.json();
+    res.json({ user_code: userCode, total: data.length, trades: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─────────────────────────────────────────────
 // ROTAS — MT5 Master envia preços
@@ -150,22 +173,14 @@ app.post("/price", (req, res) => {
 app.get("/price/:symbol", (req, res) => {
   const symbol    = req.params.symbol.toUpperCase();
   const priceData = allPrices.get(symbol);
-
   if (!priceData)
     return res.status(404).json({ error: "Preço não disponível.", symbol, available: Array.from(allPrices.keys()) });
-
   if (!isPriceFresh(priceData))
     return res.status(503).json({ error: "Preço desatualizado.", symbol, last_update: priceData.receivedAt });
-
   res.json({
-    symbol:      priceData.symbol,
-    bid:         priceData.bid,
-    ask:         priceData.ask,
-    spread:      priceData.spread,
-    rsi:         priceData.rsi,
-    ema20:       priceData.ema20,
-    ema50:       priceData.ema50,
-    receivedAt:  priceData.receivedAt,
+    symbol: priceData.symbol, bid: priceData.bid, ask: priceData.ask,
+    spread: priceData.spread, rsi: priceData.rsi, ema20: priceData.ema20,
+    ema50: priceData.ema50, receivedAt: priceData.receivedAt,
     age_seconds: Math.round((new Date() - new Date(priceData.receivedAt)) / 1000),
   });
 });
@@ -194,8 +209,7 @@ app.post("/slave-register", async (req, res) => {
   const planCheck = await checkProPlan(user_id);
   if (!planCheck.allowed) {
     return res.status(403).json({
-      status:  "blocked",
-      reason:  planCheck.reason,
+      status: "blocked", reason: planCheck.reason,
       message: planCheck.reason === "Plan expired"
         ? "Seu plano PRO expirou. Renove em traderaureonia.com.br"
         : "Plano PRO necessario. Assine em traderaureonia.com.br",
@@ -208,7 +222,6 @@ app.post("/slave-register", async (req, res) => {
     lastSeen: new Date(),
   });
 
-  console.log(`[Railway] Slave PRO: ${user_id} | ${planCheck.plan} | $${balance}`);
   broadcastToSite({ type: "slave_status", user_id, connected: true, balance, plan: planCheck.plan });
   res.json({ status: "ok", message: "Slave PRO registrado!", user_id, plan: planCheck.plan });
 });
@@ -228,10 +241,8 @@ app.get("/slave-order", (req, res) => {
   if (slavePendingOrders.has(userId)) {
     const order = slavePendingOrders.get(userId);
     slavePendingOrders.delete(userId);
-    console.log(`[Railway] Entregando ordem ao slave ${userId}: ${order.direction} ${order.symbol}`);
     return res.json({ hasOrder: true, ...order });
   }
-
   res.json({ hasOrder: false });
 });
 
@@ -243,8 +254,7 @@ app.post("/slave-confirm", (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ROTA — Trade fechado pelo Slave
-// Salva com TODOS os campos incluindo estratégia e probabilidade
+// ROTA — Trade fechado — salva com user_code
 // ─────────────────────────────────────────────
 app.post("/slave-trade-closed", async (req, res) => {
   const {
@@ -254,13 +264,13 @@ app.post("/slave-trade-closed", async (req, res) => {
 
   if (!user_id || !symbol) return res.status(400).json({ error: "user_id e symbol obrigatórios" });
 
-  const profitVal = parseFloat(profit)      || 0;
-  const probVal   = parseFloat(probability) || 0;
-  const confVal   = parseInt(confirmations) || 0;
+  const profitVal = parseFloat(profit)         || 0;
+  const probVal   = parseFloat(probability)    || 0;
+  const confVal   = parseInt(confirmations)    || 0;
   const tsVal     = parseFloat(trend_strength) || 0;
   const resultStr = profitVal > 0 ? "win" : "loss";
 
-  console.log(`[Railway] Trade fechado: ${user_id} | ${symbol} | Estrategia:${strategy} | Prob:${probVal}% | Profit:${profitVal} | ${resultStr}`);
+  console.log(`[Railway] Trade fechado: ${user_id} | ${symbol} | ${strategy} | Prob:${probVal}% | Profit:${profitVal} | ${resultStr}`);
 
   broadcastToSite({
     type: "trade_closed", user_id, symbol, direction,
@@ -272,6 +282,7 @@ app.post("/slave-trade-closed", async (req, res) => {
 
   const now = new Date();
   await saveTradeToSupabase({
+    user_code:        user_id,           // ← USER-FABIOBUR salvo aqui
     symbol,
     direction:        direction    || "buy",
     entry_price:      parseFloat(close_price) || 0,
@@ -289,7 +300,7 @@ app.post("/slave-trade-closed", async (req, res) => {
     trend_strength:   tsVal,
   });
 
-  res.json({ status: "ok", message: "Trade salvo com estratégia e probabilidade." });
+  res.json({ status: "ok" });
 });
 
 app.post("/slave-error", (req, res) => {
@@ -319,20 +330,15 @@ app.post("/client-execute-order", (req, res) => {
     return res.status(400).json({ error: "SL e TP inválidos. Faça uma nova análise." });
 
   const orderId = generateOrderId();
-
   slavePendingOrders.set(user_id, {
-    order_id:      orderId,
-    direction,
-    symbol,
-    sl:            slVal,
-    tp:            tpVal,
-    lot_size:      parseFloat(lot_size) || 0.01,
-    // Passa dados da análise para o Slave salvar ao fechar
-    strategy:      strategy      || "UNKNOWN",
-    probability:   parseFloat(probability)    || 0,
-    confirmations: parseInt(confirmations)    || 0,
-    trend_strength: parseFloat(trend_strength) || 0,
-    timestamp:     new Date().toISOString(),
+    order_id:       orderId, direction, symbol,
+    sl:             slVal, tp: tpVal,
+    lot_size:       parseFloat(lot_size)        || 0.01,
+    strategy:       strategy                    || "UNKNOWN",
+    probability:    parseFloat(probability)     || 0,
+    confirmations:  parseInt(confirmations)     || 0,
+    trend_strength: parseFloat(trend_strength)  || 0,
+    timestamp:      new Date().toISOString(),
   });
 
   console.log(`[Railway] Ordem para ${user_id}: ${direction} ${symbol} | ${strategy} | Prob:${probability}%`);
@@ -362,12 +368,11 @@ app.get("/slaves-status", (req, res) => {
 // ─────────────────────────────────────────────
 async function callEaSignalV3(strategy, symbol) {
   const priceData = allPrices.get(symbol);
-  if (!priceData) throw new Error(`Sem dados de preço para ${symbol}. O MT5 ainda não enviou dados deste ativo.`);
+  if (!priceData) throw new Error(`Sem dados de preço para ${symbol}.`);
 
   let body;
   if (priceData.closes && Array.isArray(priceData.closes) && priceData.closes.length >= 30) {
     body = { strategy, symbol, closes: priceData.closes, highs: priceData.highs || [], lows: priceData.lows || [], opens: priceData.opens || [] };
-    console.log(`[Railway] Análise ${symbol} com ${priceData.closes.length} candles reais`);
   } else {
     const bid = parseFloat(priceData.bid);
     const c1  = parseFloat(priceData.close1 || bid);
@@ -400,7 +405,7 @@ async function callEaSignalV3(strategy, symbol) {
 }
 
 // ─────────────────────────────────────────────
-// WebSocket — Site
+// WebSocket
 // ─────────────────────────────────────────────
 wss.on("connection", (ws) => {
   siteClients.add(ws);
@@ -412,15 +417,11 @@ wss.on("connection", (ws) => {
     try {
       const msg = JSON.parse(raw.toString());
 
-      if (msg.type === "ping") {
-        ws.send(JSON.stringify({ type: "pong" }));
-        return;
-      }
+      if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
 
       if (msg.type === "analyze") {
         const strategy = msg.strategy || "QUICK";
         const symbol   = msg.symbol   || "BTCUSD";
-        console.log(`[Railway] Análise: ${symbol} ${strategy}`);
         ws.send(JSON.stringify({ type: "analyzing", status: "processing" }));
         try {
           const result = await callEaSignalV3(strategy, symbol);
@@ -458,7 +459,7 @@ wss.on("connection", (ws) => {
 });
 
 // ─────────────────────────────────────────────
-// Limpeza automática
+// Limpeza + Keep-alive
 // ─────────────────────────────────────────────
 setInterval(() => {
   activeSlaves.forEach((data, userId) => {
@@ -471,13 +472,20 @@ setInterval(() => {
     broadcastToSite({ type: "mt5_status", connected: false });
 }, 5000);
 
+setInterval(async () => {
+  try {
+    await fetch(`${RAILWAY_URL}/health`);
+    console.log(`[Railway] Keep-alive OK — ${new Date().toISOString()}`);
+  } catch (e) {}
+}, 4 * 60 * 1000);
+
 function broadcastToSite(data) {
   const msg = JSON.stringify(data);
   siteClients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(msg); });
 }
 
 // ─────────────────────────────────────────────
-// Health check
+// Health
 // ─────────────────────────────────────────────
 app.get("/health", (_, res) => {
   const slaves = [];
@@ -487,31 +495,18 @@ app.get("/health", (_, res) => {
   });
   const prices = [];
   allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
-
   res.json({
     status: "online", version: "v10",
     mt5_connected: isMt5Online(),
     symbols_count: allPrices.size, symbols: prices,
-    site_clients:  siteClients.size,
+    site_clients: siteClients.size,
     slaves_online: slaves.filter(s => s.online).length,
-    slaves_total:  activeSlaves.size, slaves,
-    timestamp:     new Date().toISOString(),
+    slaves_total: activeSlaves.size, slaves,
+    timestamp: new Date().toISOString(),
   });
 });
 
-// ─────────────────────────────────────────────
-// Keep-alive — evita Railway dormir
-// ─────────────────────────────────────────────
-setInterval(async () => {
-  try {
-    await fetch(`${RAILWAY_URL}/health`);
-    console.log(`[Railway] Keep-alive OK — ${new Date().toISOString()}`);
-  } catch (e) {
-    console.log(`[Railway] Keep-alive erro: ${e.message}`);
-  }
-}, 4 * 60 * 1000);
-
 httpServer.listen(PORT, () => {
   console.log(`[Railway] Servidor v10 rodando na porta ${PORT}`);
-  console.log(`[Railway] Salvando: strategy, probability, confirmations, trend_strength`);
+  console.log(`[Railway] Novo endpoint: GET /user-trades?user_code=USER-XXXX`);
 });
