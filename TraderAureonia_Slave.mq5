@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //| TraderAureonia_Slave.mq5                                         |
-//| EA Slave v4 — Detecta ordens fechadas e salva no Supabase       |
+//| EA Slave v5 — Salva estratégia, probabilidade e confirmações    |
 //+------------------------------------------------------------------+
 #property copyright "TraderAureonia AI"
-#property version   "4.0"
-#property description "EA Slave — Recebe, executa e reporta ordens do TraderAureonia AI"
+#property version   "5.0"
+#property description "EA Slave — Recebe e executa ordens do TraderAureonia AI"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -13,20 +13,30 @@ CTrade trade;
 //+------------------------------------------------------------------+
 //| CONFIGURAÇÕES DO USUÁRIO                                         |
 //+------------------------------------------------------------------+
-input string InpUserId       = "";      // User ID (ex: USER-FABIOBUR)
-input double InpLotSize      = 0.01;    // Lote fixo
-input bool   InpUseAutoLot   = true;    // Calcular lote automaticamente pelo saldo
-input double InpRiskPercent  = 1.0;     // Risco por operação em % do saldo
-input bool   InpShowAlerts   = true;    // Mostrar alertas quando ordem chegar
+input string InpUserId       = "";
+input double InpLotSize      = 0.01;
+input bool   InpUseAutoLot   = true;
+input double InpRiskPercent  = 1.0;
+input bool   InpShowAlerts   = true;
 input string InpRailwayUrl   = "https://aureon-api-production-3d61.up.railway.app";
 
 //+------------------------------------------------------------------+
 //| VARIÁVEIS GLOBAIS                                                |
 //+------------------------------------------------------------------+
-string   lastOrderId   = "";
-bool     connected     = false;
-bool     isProUser     = false;
+string   lastOrderId    = "";
+bool     connected      = false;
+bool     isProUser      = false;
 datetime lastClosedDeal = 0;
+
+// Dados da ordem atual para salvar ao fechar
+string   currentStrategy     = "";
+double   currentProbability  = 0;
+int      currentConfirmations = 0;
+double   currentTrendStrength = 0;
+string   currentDirection    = "";
+double   currentEntryPrice   = 0;
+double   currentSL           = 0;
+double   currentTP           = 0;
 
 //+------------------------------------------------------------------+
 //| Inicialização                                                    |
@@ -51,16 +61,15 @@ int OnInit()
    trade.SetDeviationInPoints(20);
 
    Print("===========================================");
-   Print("[Slave] TraderAureonia AI Slave v4.0");
+   Print("[Slave] TraderAureonia AI Slave v5.0");
    Print("[Slave] User ID: ", InpUserId);
    if(InpUseAutoLot)
       Print("[Slave] Lote: AUTO (", InpRiskPercent, "% risco)");
    else
       Print("[Slave] Lote: FIXO (", InpLotSize, ")");
-   Print("[Slave] Servidor: ", InpRailwayUrl);
    Print("===========================================");
 
-   // Inicializa o lastClosedDeal com o último deal do histórico
+   // Inicializa lastClosedDeal com o último deal do histórico
    HistorySelect(TimeCurrent() - 86400, TimeCurrent());
    int deals = HistoryDealsTotal();
    if(deals > 0)
@@ -71,7 +80,6 @@ int OnInit()
 
    RegisterSlave();
    EventSetMillisecondTimer(2000);
-
    return INIT_SUCCEEDED;
   }
 
@@ -86,7 +94,7 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
-//| Timer — roda a cada 2 segundos                                  |
+//| Timer                                                            |
 //+------------------------------------------------------------------+
 void OnTimer()
   {
@@ -96,7 +104,7 @@ void OnTimer()
   }
 
 //+------------------------------------------------------------------+
-//| Registra o slave no Railway                                     |
+//| Registra o slave                                                |
 //+------------------------------------------------------------------+
 void RegisterSlave()
   {
@@ -124,51 +132,27 @@ void RegisterSlave()
 
    if(res == 403)
      {
-      isProUser = false;
-      connected = false;
+      isProUser = false; connected = false;
       string reason  = ExtractString(json, "\"reason\":\"");
       string message = ExtractString(json, "\"message\":\"");
       Print("[Slave] ACESSO NEGADO: ", message);
-
       if(StringFind(reason, "expired") >= 0)
-        {
-         MessageBox(
-            "Seu plano PRO expirou!\n\n"
-            "Renove seu plano para continuar\n"
-            "recebendo ordens automaticamente.\n\n"
-            "Acesse: traderaureonia.com.br",
-            "TraderAureonia Slave — Plano Expirado",
-            MB_OK | MB_ICONWARNING
-         );
-        }
+         MessageBox("Seu plano PRO expirou!\n\nRenove em traderaureonia.com.br",
+                    "TraderAureonia Slave — Plano Expirado", MB_OK | MB_ICONWARNING);
       else
-        {
-         MessageBox(
-            "Plano PRO necessario!\n\n"
-            "O Auto Trader esta disponivel apenas\n"
-            "para assinantes do plano PRO.\n\n"
-            "Acesse traderaureonia.com.br\n"
-            "e assine o plano PRO para continuar.",
-            "TraderAureonia Slave — Upgrade Necessario",
-            MB_OK | MB_ICONWARNING
-         );
-        }
+         MessageBox("Plano PRO necessario!\n\nAssine em traderaureonia.com.br",
+                    "TraderAureonia Slave — Upgrade Necessario", MB_OK | MB_ICONWARNING);
       return;
      }
 
    if(res == 200 || res == 201)
      {
-      isProUser = true;
-      connected = true;
+      isProUser = true; connected = true;
       Print("[Slave] Conectado com plano PRO! Aguardando ordens...");
-      if(InpShowAlerts)
-         Alert("TraderAureonia Slave PRO conectado! Pronto para receber ordens.");
+      if(InpShowAlerts) Alert("TraderAureonia Slave PRO conectado!");
      }
    else
-     {
-      connected = false;
       Print("[Slave] Erro ao conectar. Codigo: ", res);
-     }
   }
 
 //+------------------------------------------------------------------+
@@ -187,7 +171,7 @@ void UnregisterSlave()
   }
 
 //+------------------------------------------------------------------+
-//| Verifica se há ordem nova para executar                         |
+//| Verifica ordens pendentes                                       |
 //+------------------------------------------------------------------+
 void CheckForOrders()
   {
@@ -199,15 +183,9 @@ void CheckForOrders()
 
    if(res <= 0)
      {
-      if(connected)
-        {
-         Print("[Slave] Conexao perdida. Reconectando...");
-         connected = false;
-         RegisterSlave();
-        }
+      if(connected) { Print("[Slave] Conexao perdida. Reconectando..."); connected = false; RegisterSlave(); }
       return;
      }
-
    if(!connected) { connected = true; Print("[Slave] Reconectado."); }
 
    string json = CharArrayToString(result);
@@ -216,32 +194,50 @@ void CheckForOrders()
    string orderId   = ExtractString(json, "\"order_id\":\"");
    string direction = ExtractString(json, "\"direction\":\"");
    string symbol    = ExtractString(json, "\"symbol\":\"");
-   double sl        = ExtractDouble(json,  "\"sl\":");
-   double tp        = ExtractDouble(json,  "\"tp\":");
-   double lotSize   = ExtractDouble(json,  "\"lot_size\":");
+   double sl        = ExtractDouble(json, "\"sl\":");
+   double tp        = ExtractDouble(json, "\"tp\":");
+   double lotSize   = ExtractDouble(json, "\"lot_size\":");
+
+   // ── Dados da análise para salvar ao fechar ──
+   string strategy    = ExtractString(json, "\"strategy\":\"");
+   double probability = ExtractDouble(json, "\"probability\":");
+   double confirmations = ExtractDouble(json, "\"confirmations\":");
+   double trendStr    = ExtractDouble(json, "\"trend_strength\":");
 
    if(orderId == lastOrderId || orderId == "") return;
    lastOrderId = orderId;
    if(symbol == "") symbol = _Symbol;
 
-   Print("[Slave] Ordem recebida: ", direction, " ", symbol, " SL:", sl, " TP:", tp);
+   // Guarda dados da ordem atual
+   currentStrategy      = strategy;
+   currentProbability   = probability;
+   currentConfirmations = (int)confirmations;
+   currentTrendStrength = trendStr;
+   currentDirection     = direction;
+   currentSL            = sl;
+   currentTP            = tp;
 
-   if(InpShowAlerts)
-      Alert("TraderAureonia: Ordem ", direction, " ", symbol, " recebida!");
+   Print("[Slave] Ordem recebida: ", direction, " ", symbol,
+         " SL:", sl, " TP:", tp,
+         " Estrategia:", strategy,
+         " Prob:", probability, "%");
+
+   if(InpShowAlerts) Alert("TraderAureonia: Ordem ", direction, " ", symbol, " recebida!");
 
    double lot;
-   if(InpUseAutoLot)
-      lot = CalculateLot(symbol, sl, direction);
-   else
-      lot = lotSize > 0 ? lotSize : InpLotSize;
-
+   if(InpUseAutoLot) lot = CalculateLot(symbol, sl, direction);
+   else lot = lotSize > 0 ? lotSize : InpLotSize;
    if(lot <= 0) lot = InpLotSize;
+
+   currentEntryPrice = (direction == "BUY")
+      ? SymbolInfoDouble(symbol, SYMBOL_ASK)
+      : SymbolInfoDouble(symbol, SYMBOL_BID);
 
    ExecuteOrder(symbol, direction, sl, tp, lot, orderId);
   }
 
 //+------------------------------------------------------------------+
-//| Detecta ordens fechadas e reporta ao Railway                    |
+//| Detecta ordens fechadas e salva no Supabase via Railway         |
 //+------------------------------------------------------------------+
 void CheckClosedOrders()
   {
@@ -256,32 +252,42 @@ void CheckClosedOrders()
       datetime dealTime = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
       if(dealTime <= lastClosedDeal) continue;
 
-      // Só processa saídas (fechamentos)
       long dealEntry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
       if(dealEntry != DEAL_ENTRY_OUT) continue;
 
-      string symbol    = HistoryDealGetString(ticket, DEAL_SYMBOL);
-      double profit    = HistoryDealGetDouble(ticket, DEAL_PROFIT);
-      double price     = HistoryDealGetDouble(ticket, DEAL_PRICE);
-      int    dealType  = (int)HistoryDealGetInteger(ticket, DEAL_TYPE);
-      string direction = (dealType == DEAL_TYPE_BUY) ? "buy" : "sell";
+      string symbol  = HistoryDealGetString(ticket, DEAL_SYMBOL);
+      double profit  = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      double price   = HistoryDealGetDouble(ticket, DEAL_PRICE);
+      int    dType   = (int)HistoryDealGetInteger(ticket, DEAL_TYPE);
+      string dir     = (dType == DEAL_TYPE_BUY) ? "buy" : "sell";
 
       if(symbol == "") continue;
 
       Print("[Slave] Trade fechado: ", symbol, " Profit:", profit,
-            " Resultado:", (profit > 0 ? "WIN" : "LOSS"));
+            " Estrategia:", currentStrategy,
+            " Prob:", currentProbability, "%");
 
-      // Envia para o Railway → Railway salva no Supabase
-      string p_s  = DoubleToString(price,  5); StringReplace(p_s,  ",", ".");
-      string pr_s = DoubleToString(profit, 2); StringReplace(pr_s, ",", ".");
+      // Envia para o Railway com todos os dados
+      string p_s    = DoubleToString(price,  5); StringReplace(p_s,  ",", ".");
+      string pr_s   = DoubleToString(profit, 2); StringReplace(pr_s, ",", ".");
+      string prob_s = DoubleToString(currentProbability, 1); StringReplace(prob_s, ",", ".");
+      string ts_s   = DoubleToString(currentTrendStrength, 1); StringReplace(ts_s, ",", ".");
+      string sl_s   = DoubleToString(currentSL, 5); StringReplace(sl_s, ",", ".");
+      string tp_s   = DoubleToString(currentTP, 5); StringReplace(tp_s, ",", ".");
 
       string body = "{";
       body += "\"user_id\":\"" + InpUserId + "\",";
       body += "\"symbol\":\"" + symbol + "\",";
-      body += "\"direction\":\"" + direction + "\",";
+      body += "\"direction\":\"" + dir + "\",";
       body += "\"close_price\":" + p_s + ",";
       body += "\"profit\":" + pr_s + ",";
-      body += "\"result\":\"" + (profit > 0 ? "win" : "loss") + "\"";
+      body += "\"result\":\"" + (profit > 0 ? "win" : "loss") + "\",";
+      body += "\"strategy\":\"" + currentStrategy + "\",";
+      body += "\"probability\":" + prob_s + ",";
+      body += "\"confirmations\":" + IntegerToString(currentConfirmations) + ",";
+      body += "\"trend_strength\":" + ts_s + ",";
+      body += "\"sl\":" + sl_s + ",";
+      body += "\"tp\":" + tp_s;
       body += "}";
 
       string headers = "Content-Type: application/json\r\n";
@@ -293,7 +299,7 @@ void CheckClosedOrders()
                                    headers, 3000, data, res, rh);
 
       if(result_code == 200 || result_code == 201)
-         Print("[Slave] Trade salvo no Supabase!");
+         Print("[Slave] Trade salvo com sucesso! Estrategia:", currentStrategy);
       else
          Print("[Slave] Erro ao salvar trade. Codigo: ", result_code);
 
@@ -302,7 +308,7 @@ void CheckClosedOrders()
   }
 
 //+------------------------------------------------------------------+
-//| Calcula lote proporcional ao saldo                              |
+//| Calcula lote                                                    |
 //+------------------------------------------------------------------+
 double CalculateLot(string symbol, double sl, string direction)
   {
@@ -312,13 +318,11 @@ double CalculateLot(string symbol, double sl, string direction)
    double balance  = AccountInfoDouble(ACCOUNT_BALANCE);
    double risk     = balance * (InpRiskPercent / 100.0);
    double slDist   = MathAbs(entry - sl);
-
    if(slDist <= 0) return InpLotSize;
 
    double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    double point     = SymbolInfoDouble(symbol, SYMBOL_POINT);
-
    if(tickValue == 0 || tickSize == 0) return InpLotSize;
 
    double slPoints = slDist / point;
@@ -328,16 +332,11 @@ double CalculateLot(string symbol, double sl, string direction)
    double stepLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
 
    lot = MathFloor(lot / stepLot) * stepLot;
-   lot = MathMax(minLot, MathMin(lot, maxLot));
-
-   Print("[Slave] Lote: ", NormalizeDouble(lot, 2),
-         " (Risco: ", InpRiskPercent, "% = $", DoubleToString(risk, 2), ")");
-
-   return NormalizeDouble(lot, 2);
+   return NormalizeDouble(MathMax(minLot, MathMin(lot, maxLot)), 2);
   }
 
 //+------------------------------------------------------------------+
-//| Executa a ordem                                                 |
+//| Executa ordem                                                   |
 //+------------------------------------------------------------------+
 void ExecuteOrder(string symbol, string direction, double sl, double tp,
                   double lot, string orderId)
@@ -353,8 +352,7 @@ void ExecuteOrder(string symbol, string direction, double sl, double tp,
       result = trade.Buy(lot, symbol, ask, newSL, newTP, "TA-" + orderId);
    else if(direction == "SELL")
       result = trade.Sell(lot, symbol, bid, newSL, newTP, "TA-" + orderId);
-   else
-     { Print("[Slave] Direcao invalida: ", direction); return; }
+   else { Print("[Slave] Direcao invalida: ", direction); return; }
 
    if(result)
      {
