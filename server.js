@@ -437,6 +437,10 @@ wss.on("connection", (ws) => {
       const msg = JSON.parse(raw.toString());
 
       // Site pediu análise de um ativo específico
+      if (msg.type === "ping") {
+  ws.send(JSON.stringify({ type: "pong" }));
+  return;
+}
       if (msg.type === "analyze") {
         const strategy = msg.strategy || "QUICK";
         const symbol   = msg.symbol   || "BTCUSD";
