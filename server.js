@@ -1,8 +1,10 @@
 /**
- * TraderAureonia AI — Servidor Railway v11
- * - Copy Trade para clientes Elite
- * - Webhook Hotmart para ativação automática de planos
- * - Alertas WhatsApp via CallMeBot
+ * TraderAureonia AI — Servidor Railway v12
+ * - Live Trading Room com IA pensando em voz alta
+ * - Copy Trade Elite automático
+ * - Webhook Hotmart
+ * - Limites por plano
+ * - Keep-alive automático
  */
 
 const express = require("express");
@@ -29,6 +31,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// ─────────────────────────────────────────────
+// CONFIGURAÇÕES
+// ─────────────────────────────────────────────
 const PORT             = process.env.PORT || 3001;
 const EA_SIGNAL_V3_URL = "https://traderaureonia.base44.app/api/functions/eaSignal_v3";
 const EA_SIGNAL_KEY    = "abc123forte";
@@ -43,7 +48,7 @@ const SUPABASE_URL = "https://vxxdkxlvkrxkfbrvxdal.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ4eGRreGx2a3J4a2ZicnZ4ZGFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNjE5MzksImV4cCI6MjA5MTkzNzkzOX0.Z1A_L_ObyDwWSoT0lp9uoB0qpRx7-Tt_oEDpifd-U7s";
 
 // ─────────────────────────────────────────────
-// Estado
+// ESTADO GLOBAL
 // ─────────────────────────────────────────────
 const siteClients        = new Set();
 const allPrices          = new Map();
@@ -53,8 +58,55 @@ const slavePendingOrders = new Map();
 const slaveExecutions    = [];
 let   orderCounter       = 1;
 
+// Live Trading Room
+const liveRoomClients   = new Set();
+const liveSignalHistory = [];
+let   liveRoomInterval  = null;
+let   liveRoomActive    = false;
+
+const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
+const LIVE_STRATEGIES = {
+  BTCUSD:     "QUICK",
+  "XAUUSD.s": "SMC",
+  EURUSD:     "MA",
+  GBPUSD:     "PA",
+  ETHUSD:     "QUICK",
+};
+
+const liveScoreboard = {
+  signals: 0, wins: 0, losses: 0, profit: 0,
+  date: new Date().toDateString(),
+};
+
 // ─────────────────────────────────────────────
-// Helpers
+// LIMITES POR PLANO
+// ─────────────────────────────────────────────
+const PLAN_LIMITS = {
+  basic: {
+    assets: ["BTCUSD"], strategies: ["QUICK"],
+    maxPositions: 3, autoTrade: false, copyTrade: false,
+    liveRoom: true, liveDelaySecs: 60, whatsapp: false,
+  },
+  pro: {
+    assets: ["BTCUSD","EURUSD","XAUUSD.s"],
+    strategies: ["QUICK","MA","SMC","PA","MARTINGALE"],
+    maxPositions: 10, autoTrade: true, copyTrade: false,
+    liveRoom: true, liveDelaySecs: 0, whatsapp: true,
+  },
+  elite: {
+    assets: "ALL",
+    strategies: ["QUICK","MA","SMC","PA","MARTINGALE"],
+    maxPositions: 20, autoTrade: true, copyTrade: true,
+    liveRoom: true, liveDelaySecs: 0, whatsapp: true,
+  },
+};
+
+function getPlanLimits(plan) {
+  return PLAN_LIMITS[plan] || PLAN_LIMITS.basic;
+}
+
+// ─────────────────────────────────────────────
+// HELPERS
 // ─────────────────────────────────────────────
 function isMt5Online() {
   return mt5LastSeen && (new Date() - mt5LastSeen) < MT5_TIMEOUT_MS;
@@ -72,64 +124,18 @@ function isPriceFresh(priceData) {
 }
 
 // ─────────────────────────────────────────────
-// Restrições por plano
-// ─────────────────────────────────────────────
-const PLAN_LIMITS = {
-  basic: {
-    assets:        ["BTCUSD"],
-    strategies:    ["QUICK"],
-    maxPositions:  3,
-    riskMin:       1.0,
-    riskMax:       1.0,
-    autoTrade:     false,
-    copyTrade:     false,
-    martingale:    false,
-    whatsapp:      false,
-  },
-  pro: {
-    assets:        ["BTCUSD", "EURUSD", "XAUUSD.s"],
-    strategies:    ["QUICK", "MA", "SMC", "PA", "MARTINGALE"],
-    maxPositions:  10,
-    riskMin:       0.5,
-    riskMax:       3.0,
-    autoTrade:     true,
-    copyTrade:     false,
-    martingale:    false,
-    whatsapp:      true,
-  },
-  elite: {
-    assets:        "ALL",
-    strategies:    ["QUICK", "MA", "SMC", "PA", "MARTINGALE"],
-    maxPositions:  20,
-    riskMin:       0.1,
-    riskMax:       5.0,
-    autoTrade:     true,
-    copyTrade:     true,
-    martingale:    true,
-    whatsapp:      true,
-  },
-};
-
-function getPlanLimits(plan) {
-  return PLAN_LIMITS[plan] || PLAN_LIMITS.basic;
-}
-
-// ─────────────────────────────────────────────
-// Valida plano PRO/Elite via Base44
+// VALIDA PLANO PRO
 // ─────────────────────────────────────────────
 async function checkProPlan(userId) {
   try {
     const response = await fetch(`${CHECK_SLAVE_URL}?user_id=${userId}`);
     if (!response.ok) return { allowed: true, plan: "basic" };
-    const data = await response.json();
-    return data;
-  } catch (err) {
-    return { allowed: true, plan: "basic" };
-  }
+    return await response.json();
+  } catch { return { allowed: true, plan: "basic" }; }
 }
 
 // ─────────────────────────────────────────────
-// Salva trade no Supabase
+// SALVA TRADE NO SUPABASE
 // ─────────────────────────────────────────────
 async function saveTradeToSupabase(tradeData) {
   try {
@@ -153,183 +159,255 @@ async function saveTradeToSupabase(tradeData) {
 }
 
 // ─────────────────────────────────────────────
-// Ativa/atualiza plano do usuário no Supabase
+// ATIVA PLANO VIA HOTMART WEBHOOK
 // ─────────────────────────────────────────────
 async function activateUserPlan(email, plan, months) {
   try {
-    // Busca usuário pelo email
     const searchRes = await fetch(
       `${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}&select=id,email,plan`,
       { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } }
     );
     const users = await searchRes.json();
-
     const expiresAt = new Date();
     expiresAt.setMonth(expiresAt.getMonth() + (months || 1));
-
     if (users && users.length > 0) {
-      // Atualiza plano existente
-      await fetch(
-        `${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type":  "application/json",
-            "apikey":        SUPABASE_KEY,
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
-            "Prefer":        "return=minimal",
-          },
-          body: JSON.stringify({ plan, plan_expires_at: expiresAt.toISOString() }),
-        }
-      );
-      console.log(`[Hotmart] Plano ${plan} ativado para ${email} até ${expiresAt.toDateString()}`);
-    } else {
-      console.log(`[Hotmart] Usuário não encontrado: ${email}`);
+      await fetch(`${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type":  "application/json",
+          "apikey":        SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "Prefer":        "return=minimal",
+        },
+        body: JSON.stringify({ plan, plan_expires_at: expiresAt.toISOString() }),
+      });
+      console.log(`[Hotmart] Plano ${plan} ativado para ${email}`);
     }
   } catch (err) {
-    console.error(`[Hotmart] Erro ao ativar plano:`, err.message);
+    console.error(`[Hotmart] Erro:`, err.message);
   }
 }
 
 // ─────────────────────────────────────────────
-// Alerta WhatsApp via CallMeBot
+// ALERTA WHATSAPP
 // ─────────────────────────────────────────────
 async function sendWhatsAppAlert(phone, message) {
   if (!phone) return;
   try {
     const encoded = encodeURIComponent(message);
     await fetch(`https://api.callmebot.com/whatsapp.php?phone=${phone}&text=${encoded}&apikey=YOUR_CALLMEBOT_KEY`);
-    console.log(`[WhatsApp] Alerta enviado para ${phone}`);
+  } catch {}
+}
+
+// ─────────────────────────────────────────────
+// LIVE TRADING ROOM — Funções
+// ─────────────────────────────────────────────
+function broadcastToLiveRoom(data) {
+  const msg = JSON.stringify(data);
+  liveRoomClients.forEach(c => {
+    if (c.readyState === WebSocket.OPEN) c.send(msg);
+  });
+}
+
+function checkScoreboardReset() {
+  const today = new Date().toDateString();
+  if (liveScoreboard.date !== today) {
+    liveScoreboard.signals = 0;
+    liveScoreboard.wins    = 0;
+    liveScoreboard.losses  = 0;
+    liveScoreboard.profit  = 0;
+    liveScoreboard.date    = today;
+    console.log("[LiveRoom] Placar resetado.");
+  }
+}
+
+async function analyzeLiveAsset(symbol) {
+  const priceData = allPrices.get(symbol);
+  if (!priceData || !isPriceFresh(priceData)) return;
+
+  const strategy = LIVE_STRATEGIES[symbol] || "QUICK";
+  const price     = priceData.bid;
+
+  // Fase 1 — Pensando
+  broadcastToLiveRoom({
+    type: "thinking", asset: symbol, strategy, price,
+    message: `Monitorando ${symbol} — Estratégia: ${strategy}`,
+    timestamp: new Date().toISOString(),
+  });
+
+  await new Promise(r => setTimeout(r, 2000));
+
+  try {
+    const result = await callEaSignalV3(strategy, symbol);
+
+    // Fase 2 — Alertas dos indicadores
+    if (result.indicators) {
+      const { rsi, ema9, ema21 } = result.indicators;
+
+      if (rsi > 65) {
+        broadcastToLiveRoom({
+          type: "alert", asset: symbol, level: "warning",
+          message: `⚠ RSI em ${rsi} — zona de sobrecompra, cautela para BUY`,
+          timestamp: new Date().toISOString(),
+        });
+        await new Promise(r => setTimeout(r, 1000));
+      } else if (rsi < 35) {
+        broadcastToLiveRoom({
+          type: "alert", asset: symbol, level: "warning",
+          message: `⚠ RSI em ${rsi} — zona de sobrevenda, cautela para SELL`,
+          timestamp: new Date().toISOString(),
+        });
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      const emaDiffPct = (Math.abs(ema9 - ema21) / price) * 100;
+      if (emaDiffPct < 0.05) {
+        broadcastToLiveRoom({
+          type: "alert", asset: symbol, level: "info",
+          message: `🔍 EMAs muito próximas em ${symbol} — mercado indeciso`,
+          timestamp: new Date().toISOString(),
+        });
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    // Fase 3 — Resultado
+    if (result.status === "new_signal" && result.direction) {
+      liveScoreboard.signals++;
+
+      const signal = {
+        type: "signal", asset: symbol, strategy,
+        direction: result.direction, entry: result.entry,
+        sl: result.sl, tp: result.tp,
+        tp1: result.tp1, tp2: result.tp2 || null, tp3: result.tp3 || null,
+        tp1_label: result.tp1_label, tp2_label: result.tp2_label, tp3_label: result.tp3_label,
+        probability: result.probability, reason: result.reason,
+        confirmations: result.confirmations, indicators: result.indicators,
+        trend_strength: result.trend_strength, is_range: result.is_range,
+        id: `LIVE-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+      };
+
+      liveSignalHistory.unshift(signal);
+      if (liveSignalHistory.length > 50) liveSignalHistory.pop();
+
+      broadcastToLiveRoom(signal);
+
+      // Alerta WhatsApp para slaves PRO e Elite com sinal ao vivo
+      activeSlaves.forEach((slave) => {
+        const limits = getPlanLimits(slave.plan);
+        if (slave.whatsapp_phone && limits.whatsapp) {
+          sendWhatsAppAlert(
+            slave.whatsapp_phone,
+            `🔴 Live Room — ${result.direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${result.probability}%\nEntrada: ${result.entry} | SL: ${result.sl} | TP: ${result.tp1}`
+          );
+        }
+      });
+
+      console.log(`[LiveRoom] 🟢 SINAL: ${result.direction} ${symbol} | Prob: ${result.probability}%`);
+
+    } else {
+      broadcastToLiveRoom({
+        type: "no_signal", asset: symbol,
+        reason: result.reason || "Sem condições claras",
+        is_range: result.is_range || false,
+        indicators: result.indicators,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
   } catch (err) {
-    console.error(`[WhatsApp] Erro:`, err.message);
+    console.error(`[LiveRoom] Erro ${symbol}:`, err.message);
+  }
+}
+
+async function runLiveRoom() {
+  if (liveRoomClients.size === 0) return;
+  checkScoreboardReset();
+
+  // Emite placar
+  broadcastToLiveRoom({
+    type: "scoreboard",
+    signals: liveScoreboard.signals,
+    wins: liveScoreboard.wins,
+    losses: liveScoreboard.losses,
+    profit: liveScoreboard.profit,
+    win_rate: liveScoreboard.signals > 0
+      ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0",
+    timestamp: new Date().toISOString(),
+  });
+
+  // Analisa cada ativo
+  for (const symbol of LIVE_ASSETS) {
+    if (allPrices.get(symbol) && isPriceFresh(allPrices.get(symbol))) {
+      await analyzeLiveAsset(symbol);
+      await new Promise(r => setTimeout(r, 3000));
+    }
   }
 }
 
 // ─────────────────────────────────────────────
-// WEBHOOK HOTMART — Ativa plano automaticamente
+// WEBHOOK HOTMART
 // ─────────────────────────────────────────────
 app.post("/webhook/hotmart", async (req, res) => {
   const event = req.body;
-  console.log(`[Hotmart] Webhook recebido: ${event?.event}`);
+  console.log(`[Hotmart] Webhook: ${event?.event}`);
 
-  // Eventos de compra aprovada ou assinatura ativa
-  if (event?.event === "PURCHASE_APPROVED" ||
-      event?.event === "PURCHASE_COMPLETE" ||
-      event?.event === "SUBSCRIPTION_REACTIVATED") {
-
-    const email    = event?.data?.buyer?.email;
-    const product  = event?.data?.product?.name || "";
-    const price    = event?.data?.purchase?.price?.value || 0;
-
-    // Define o plano baseado no produto ou preço
-    let plan   = "basic";
-    let months = 1;
-
-    if (product.toLowerCase().includes("elite") || price >= 390) {
-      plan = "elite";
-    } else if (product.toLowerCase().includes("pro") || price >= 190) {
-      plan = "pro";
-    }
-
-    // Se for anual (preço maior)
+  if (["PURCHASE_APPROVED","PURCHASE_COMPLETE","SUBSCRIPTION_REACTIVATED"].includes(event?.event)) {
+    const email   = event?.data?.buyer?.email;
+    const product = event?.data?.product?.name || "";
+    const price   = event?.data?.purchase?.price?.value || 0;
+    let plan = "basic", months = 1;
+    if (product.toLowerCase().includes("elite") || price >= 390) plan = "elite";
+    else if (product.toLowerCase().includes("pro") || price >= 190) plan = "pro";
     if (price >= 900) months = 12;
-
-    if (email) {
-      await activateUserPlan(email, plan, months);
-      broadcastToSite({ type: "plan_activated", email, plan, months });
-    }
+    if (email) { await activateUserPlan(email, plan, months); broadcastToSite({ type: "plan_activated", email, plan }); }
   }
 
-  // Cancelamento ou reembolso — volta para basic
-  if (event?.event === "PURCHASE_CANCELED" ||
-      event?.event === "PURCHASE_REFUNDED" ||
-      event?.event === "SUBSCRIPTION_CANCELLATION") {
-
+  if (["PURCHASE_CANCELED","PURCHASE_REFUNDED","SUBSCRIPTION_CANCELLATION"].includes(event?.event)) {
     const email = event?.data?.buyer?.email;
-    if (email) {
-      await activateUserPlan(email, "basic", 0);
-      console.log(`[Hotmart] Plano cancelado para ${email}`);
-    }
+    if (email) await activateUserPlan(email, "basic", 0);
   }
 
   res.json({ status: "ok" });
 });
 
 // ─────────────────────────────────────────────
-// COPY TRADE — Robô master envia ordem
-// Railway replica para todos os slaves Elite
+// COPY TRADE — Master envia ordem
 // ─────────────────────────────────────────────
 app.post("/master-trade", async (req, res) => {
   const { symbol, direction, risk_percent, sl_percent, tp_percent, strategy, probability } = req.body;
+  if (!symbol || !direction) return res.status(400).json({ error: "symbol e direction obrigatórios" });
 
-  if (!symbol || !direction)
-    return res.status(400).json({ error: "symbol e direction obrigatórios" });
-
-  console.log(`[CopyTrade] Master: ${direction} ${symbol} | Risco: ${risk_percent}%`);
-
-  // Encontra todos os slaves Elite online
   const eliteSlaves = [];
   activeSlaves.forEach((data, userId) => {
     const isOnline = (new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S;
-    if (isOnline && data.plan === "elite") {
-      eliteSlaves.push({ userId, ...data });
-    }
+    if (isOnline && data.plan === "elite") eliteSlaves.push({ userId, ...data });
   });
 
-  console.log(`[CopyTrade] ${eliteSlaves.length} clientes Elite online`);
-
-  // Envia ordem para cada slave Elite
   let copied = 0;
   for (const slave of eliteSlaves) {
     const orderId = generateOrderId();
-
-    // Calcula lote proporcional ao saldo do cliente
-    // O slave vai calcular o lote baseado no % de risco
     slavePendingOrders.set(slave.userId, {
-      order_id:       orderId,
-      direction,
-      symbol,
-      sl:             0, // Slave calcula baseado no sl_percent
-      tp:             0, // Slave calcula baseado no tp_percent
-      lot_size:       0, // Slave calcula baseado no risco
-      risk_percent:   risk_percent  || 1.0,
-      sl_percent:     sl_percent    || 0.5,
-      tp_percent:     tp_percent    || 1.0,
-      strategy:       strategy      || "COPY",
-      probability:    probability   || 0,
-      is_copy_trade:  true,
-      timestamp:      new Date().toISOString(),
+      order_id: orderId, direction, symbol,
+      sl: 0, tp: 0, lot_size: 0,
+      risk_percent: risk_percent || 1.0,
+      sl_percent: sl_percent || 0.5,
+      tp_percent: tp_percent || 1.0,
+      strategy: strategy || "COPY",
+      probability: probability || 0,
+      is_copy_trade: true,
+      timestamp: new Date().toISOString(),
     });
-
-    // Alerta WhatsApp se o slave tiver número cadastrado
     if (slave.whatsapp_phone) {
-      await sendWhatsAppAlert(
-        slave.whatsapp_phone,
-        `🤖 TraderAureonia Copy Trade\n${direction} ${symbol}\nEstratégia: ${strategy}\nProbabilidade: ${probability}%`
-      );
+      await sendWhatsAppAlert(slave.whatsapp_phone,
+        `🤖 Copy Trade: ${direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${probability}%`);
     }
-
     copied++;
   }
 
-  broadcastToSite({
-    type:    "copy_trade",
-    symbol, direction, strategy, probability,
-    clients: copied,
-    timestamp: new Date().toISOString(),
-  });
-
-  res.json({ status: "ok", clients_copied: copied, elite_online: eliteSlaves.length });
-});
-
-// ─────────────────────────────────────────────
-// ROTA — Verifica permissões do plano
-// ─────────────────────────────────────────────
-app.get("/plan-limits/:userId", async (req, res) => {
-  const { userId } = req.params;
-  const planCheck = await checkProPlan(userId);
-  const limits    = getPlanLimits(planCheck.plan || "basic");
-  res.json({ user_id: userId, plan: planCheck.plan || "basic", limits });
+  broadcastToSite({ type: "copy_trade", symbol, direction, strategy, probability, clients: copied, timestamp: new Date().toISOString() });
+  res.json({ status: "ok", clients_copied: copied });
 });
 
 // ─────────────────────────────────────────────
@@ -356,10 +434,8 @@ app.post("/price", (req, res) => {
 app.get("/price/:symbol", (req, res) => {
   const symbol    = req.params.symbol.toUpperCase();
   const priceData = allPrices.get(symbol);
-  if (!priceData)
-    return res.status(404).json({ error: "Preço não disponível.", symbol, available: Array.from(allPrices.keys()) });
-  if (!isPriceFresh(priceData))
-    return res.status(503).json({ error: "Preço desatualizado.", symbol });
+  if (!priceData) return res.status(404).json({ error: "Preço não disponível.", symbol, available: Array.from(allPrices.keys()) });
+  if (!isPriceFresh(priceData)) return res.status(503).json({ error: "Preço desatualizado.", symbol });
   res.json({ symbol: priceData.symbol, bid: priceData.bid, ask: priceData.ask, spread: priceData.spread, rsi: priceData.rsi, receivedAt: priceData.receivedAt });
 });
 
@@ -367,6 +443,29 @@ app.get("/prices", (req, res) => {
   const prices = [];
   allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, ask: data.ask, fresh: isPriceFresh(data), receivedAt: data.receivedAt }));
   res.json({ total: prices.length, mt5_connected: isMt5Online(), prices, timestamp: new Date().toISOString() });
+});
+
+// ─────────────────────────────────────────────
+// ROTAS — Live Room
+// ─────────────────────────────────────────────
+app.get("/live-signals", (req, res) => {
+  res.json({
+    active: liveRoomActive, clients: liveRoomClients.size,
+    signals: liveSignalHistory.slice(0, 20),
+    scoreboard: liveScoreboard, assets: LIVE_ASSETS,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/live-signal-result", (req, res) => {
+  const { signal_id, result, profit } = req.body;
+  const signal = liveSignalHistory.find(s => s.id === signal_id);
+  if (signal) { signal.result = result; signal.profit = profit; }
+  const profitVal = parseFloat(profit) || 0;
+  if (result === "win") { liveScoreboard.wins++; liveScoreboard.profit += profitVal; }
+  else if (result === "loss") { liveScoreboard.losses++; liveScoreboard.profit += profitVal; }
+  broadcastToLiveRoom({ type: "signal_result", signal_id, result, profit: profitVal, scoreboard: liveScoreboard, timestamp: new Date().toISOString() });
+  res.json({ status: "ok" });
 });
 
 // ─────────────────────────────────────────────
@@ -388,7 +487,7 @@ app.post("/slave-register", async (req, res) => {
       status: "blocked", reason: planCheck.reason,
       message: planCheck.reason === "Plan expired"
         ? "Seu plano expirou. Renove em traderaureonia.com.br"
-        : "Plano necessario. Assine em traderaureonia.com.br",
+        : "Plano necessário. Assine em traderaureonia.com.br",
     });
   }
 
@@ -400,7 +499,6 @@ app.post("/slave-register", async (req, res) => {
     limits, lastSeen: new Date(),
   });
 
-  console.log(`[Slave] Conectado: ${user_id} | Plano: ${planCheck.plan} | $${balance}`);
   broadcastToSite({ type: "slave_status", user_id, connected: true, balance, plan: planCheck.plan });
   res.json({ status: "ok", user_id, plan: planCheck.plan, limits });
 });
@@ -408,7 +506,6 @@ app.post("/slave-register", async (req, res) => {
 app.get("/slave-order", (req, res) => {
   const userId = req.query.user_id;
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
-
   if (activeSlaves.has(userId)) {
     const slave = activeSlaves.get(userId);
     slave.lastSeen = new Date();
@@ -416,7 +513,6 @@ app.get("/slave-order", (req, res) => {
   } else {
     activeSlaves.set(userId, { account: "unknown", symbol: "BTCUSD", balance: 0, plan: "basic", lastSeen: new Date() });
   }
-
   if (slavePendingOrders.has(userId)) {
     const order = slavePendingOrders.get(userId);
     slavePendingOrders.delete(userId);
@@ -436,8 +532,7 @@ app.post("/slave-trade-closed", async (req, res) => {
   const { user_id, symbol, direction, close_price, profit, result, strategy, probability, confirmations, trend_strength, sl, tp } = req.body;
   if (!user_id || !symbol) return res.status(400).json({ error: "user_id e symbol obrigatórios" });
 
-  const profitVal = parseFloat(profit)         || 0;
-  const probVal   = parseFloat(probability)    || 0;
+  const profitVal = parseFloat(profit) || 0;
   const resultStr = profitVal > 0 ? "win" : "loss";
 
   broadcastToSite({ type: "trade_closed", user_id, symbol, direction, profit: profitVal, result: resultStr, strategy, timestamp: new Date().toISOString() });
@@ -450,7 +545,8 @@ app.post("/slave-trade-closed", async (req, res) => {
     profit: profitVal, result: resultStr,
     hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(),
     market_strength: 0, atr_value: 0,
-    probability: probVal, strategy: strategy || "UNKNOWN",
+    probability: parseFloat(probability) || 0,
+    strategy: strategy || "UNKNOWN",
     confirmations: parseInt(confirmations) || 0,
     trend_strength: parseFloat(trend_strength) || 0,
   });
@@ -465,43 +561,29 @@ app.post("/slave-error", (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ROTA — Cliente executa ordem (verifica plano)
+// ROTA — Cliente executa ordem
 // ─────────────────────────────────────────────
 app.post("/client-execute-order", async (req, res) => {
   const { user_id, symbol, direction, sl, tp, lot_size, strategy, probability, confirmations, trend_strength } = req.body;
-  if (!user_id || !symbol || !direction)
-    return res.status(400).json({ error: "user_id, symbol e direction obrigatórios." });
+  if (!user_id || !symbol || !direction) return res.status(400).json({ error: "user_id, symbol e direction obrigatórios." });
 
-  // Verifica plano
   const planCheck = await checkProPlan(user_id);
   const limits    = getPlanLimits(planCheck.plan || "basic");
 
-  // Verifica se o ativo está liberado para o plano
-  if (limits.assets !== "ALL" && !limits.assets.includes(symbol)) {
-    return res.status(403).json({
-      error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}. Faça upgrade para acessar.`,
-      plan: planCheck.plan,
-    });
-  }
+  if (limits.assets !== "ALL" && !limits.assets.includes(symbol))
+    return res.status(403).json({ error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}.`, plan: planCheck.plan });
 
-  // Verifica se Auto Trade está liberado
-  if (!limits.autoTrade) {
-    return res.status(403).json({
-      error: "Auto Trade não disponível no plano Básico. Faça upgrade para o plano PRO.",
-      plan: planCheck.plan,
-    });
-  }
+  if (!limits.autoTrade)
+    return res.status(403).json({ error: "Auto Trade não disponível no plano Básico.", plan: planCheck.plan });
 
   if (!isSlaveOnline(user_id)) {
-    const exists      = activeSlaves.has(user_id);
+    const exists = activeSlaves.has(user_id);
     const lastSeenAgo = exists ? Math.round((new Date() - activeSlaves.get(user_id).lastSeen) / 1000) : null;
     return res.status(503).json({ error: "EA Slave não está conectado.", slave_online: false, last_seen: lastSeenAgo });
   }
 
-  const slVal = parseFloat(sl);
-  const tpVal = parseFloat(tp);
-  if (!slVal || !tpVal || slVal === 0 || tpVal === 0)
-    return res.status(400).json({ error: "SL e TP inválidos. Faça nova análise." });
+  const slVal = parseFloat(sl), tpVal = parseFloat(tp);
+  if (!slVal || !tpVal) return res.status(400).json({ error: "SL e TP inválidos." });
 
   const orderId = generateOrderId();
   slavePendingOrders.set(user_id, {
@@ -514,42 +596,20 @@ app.post("/client-execute-order", async (req, res) => {
     timestamp: new Date().toISOString(),
   });
 
-  // Alerta WhatsApp para plano PRO e Elite
   const slave = activeSlaves.get(user_id);
   if (slave?.whatsapp_phone && limits.whatsapp) {
-    await sendWhatsAppAlert(
-      slave.whatsapp_phone,
-      `📊 TraderAureonia Signal\n${direction} ${symbol}\nEstratégia: ${strategy}\nProbabilidade: ${probability}%\nEntrada aprovada!`
-    );
+    await sendWhatsAppAlert(slave.whatsapp_phone,
+      `📊 TraderAureonia Signal\n${direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${probability}%`);
   }
 
-  console.log(`[Order] ${user_id}: ${direction} ${symbol} | ${strategy} | Prob:${probability}%`);
-  res.json({ status: "ok", message: "Ordem enviada para seu MT5.", order_id: orderId });
-});
-
-// ─────────────────────────────────────────────
-// ROTA — Trades do usuário
-// ─────────────────────────────────────────────
-app.get("/user-trades", async (req, res) => {
-  const userCode = req.query.user_code;
-  if (!userCode) return res.status(400).json({ error: "user_code obrigatório" });
-  try {
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/trades?user_code=eq.${userCode}&order=created_at.desc&limit=500`,
-      { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } }
-    );
-    const data = await response.json();
-    res.json({ user_code: userCode, total: data.length, trades: data });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ status: "ok", message: "Ordem enviada.", order_id: orderId });
 });
 
 app.get("/slave-status", (req, res) => {
   const userId = req.query.user_id;
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
-  const exists      = activeSlaves.has(userId);
-  const slave       = activeSlaves.get(userId);
+  const exists = activeSlaves.has(userId);
+  const slave  = activeSlaves.get(userId);
   const lastSeenAgo = exists ? Math.round((new Date() - slave.lastSeen) / 1000) : null;
   res.json({ user_id: userId, slave_online: exists && lastSeenAgo < SLAVE_TIMEOUT_S, last_seen: lastSeenAgo, balance: slave?.balance ?? null, plan: slave?.plan ?? null, limits: slave?.limits ?? null });
 });
@@ -563,6 +623,25 @@ app.get("/slaves-status", (req, res) => {
   res.json({ total: slaves.length, online: slaves.filter(s => s.online).length, slaves, executions: slaveExecutions.slice(-20) });
 });
 
+app.get("/user-trades", async (req, res) => {
+  const userCode = req.query.user_code;
+  if (!userCode) return res.status(400).json({ error: "user_code obrigatório" });
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/trades?user_code=eq.${userCode}&order=created_at.desc&limit=500`,
+      { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } }
+    );
+    const data = await response.json();
+    res.json({ user_code: userCode, total: data.length, trades: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/plan-limits/:userId", async (req, res) => {
+  const planCheck = await checkProPlan(req.params.userId);
+  const limits    = getPlanLimits(planCheck.plan || "basic");
+  res.json({ user_id: req.params.userId, plan: planCheck.plan || "basic", limits });
+});
+
 // ─────────────────────────────────────────────
 // eaSignal_v3
 // ─────────────────────────────────────────────
@@ -574,25 +653,27 @@ async function callEaSignalV3(strategy, symbol) {
     body = { strategy, symbol, closes: priceData.closes, highs: priceData.highs || [], lows: priceData.lows || [], opens: priceData.opens || [] };
   } else {
     const bid = parseFloat(priceData.bid);
-    const c1 = parseFloat(priceData.close1 || bid);
-    const c2 = c1*0.9995, c3 = c1*0.999;
-    const h1 = parseFloat(priceData.high1 || c1*1.002);
-    const l1 = parseFloat(priceData.low1  || c1*0.998);
+    const c1 = parseFloat(priceData.close1 || bid), c2 = c1*0.9995, c3 = c1*0.999;
+    const h1 = parseFloat(priceData.high1 || c1*1.002), l1 = parseFloat(priceData.low1 || c1*0.998);
     const closes=[],highs=[],lows=[],opens=[];
     for(let i=34;i>=3;i--){const f=1+(Math.random()-0.5)*0.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*0.999).toFixed(5)));opens.push(parseFloat((bid*f*0.9995).toFixed(5)));}
     closes.push(c3,c2,c1,bid);highs.push(h1,h1,h1,h1);lows.push(l1,l1,l1,l1);opens.push(c3,c2,c1,bid*0.9998);
     body = { strategy, symbol, closes, highs, lows, opens };
   }
-  const response = await fetch(EA_SIGNAL_V3_URL, { method:"POST", headers:{"Content-Type":"application/json","Authorization":`Bearer ${EA_SIGNAL_KEY}`}, body:JSON.stringify(body) });
+  const response = await fetch(EA_SIGNAL_V3_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${EA_SIGNAL_KEY}` },
+    body: JSON.stringify(body),
+  });
   if (!response.ok) throw new Error(`eaSignal_v3 retornou ${response.status}`);
   const result = await response.json();
-  result.live_price  = priceData.bid;
+  result.live_price = priceData.bid;
   result.live_symbol = symbol;
   return result;
 }
 
 // ─────────────────────────────────────────────
-// WebSocket
+// WEBSOCKET
 // ─────────────────────────────────────────────
 wss.on("connection", (ws) => {
   siteClients.add(ws);
@@ -603,8 +684,11 @@ wss.on("connection", (ws) => {
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
+
+      // ── Ping ──
       if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
 
+      // ── Análise normal ──
       if (msg.type === "analyze") {
         const strategy = msg.strategy || "QUICK";
         const symbol   = msg.symbol   || "BTCUSD";
@@ -624,11 +708,10 @@ wss.on("connection", (ws) => {
             confirmations: result.confirmations, trend_strength: result.trend_strength,
             is_range: result.is_range, timestamp: new Date().toISOString(),
           }));
-        } catch (err) {
-          ws.send(JSON.stringify({ type: "error", message: err.message }));
-        }
+        } catch (err) { ws.send(JSON.stringify({ type: "error", message: err.message })); }
       }
 
+      // ── Preço específico ──
       if (msg.type === "get_price") {
         const symbol    = msg.symbol?.toUpperCase();
         const priceData = symbol ? allPrices.get(symbol) : null;
@@ -637,10 +720,51 @@ wss.on("connection", (ws) => {
         else
           ws.send(JSON.stringify({ type: "price_unavailable", symbol, message: `Preço de ${symbol} não disponível.` }));
       }
+
+      // ── Entrar na sala ao vivo ──
+      if (msg.type === "join_live_room") {
+        liveRoomClients.add(ws);
+        liveRoomActive = true;
+
+        if (!liveRoomInterval) {
+          liveRoomInterval = setInterval(runLiveRoom, 30000);
+          runLiveRoom(); // Roda imediatamente
+          console.log("[LiveRoom] Sala iniciada!");
+        }
+
+        ws.send(JSON.stringify({
+          type:       "live_room_joined",
+          history:    liveSignalHistory.slice(0, 10),
+          scoreboard: liveScoreboard,
+          assets:     LIVE_ASSETS,
+          message:    "Bem-vindo à sala ao vivo! A IA está monitorando o mercado.",
+          timestamp:  new Date().toISOString(),
+        }));
+      }
+
+      // ── Sair da sala ao vivo ──
+      if (msg.type === "leave_live_room") {
+        liveRoomClients.delete(ws);
+        if (liveRoomClients.size === 0 && liveRoomInterval) {
+          clearInterval(liveRoomInterval);
+          liveRoomInterval = null;
+          liveRoomActive   = false;
+          console.log("[LiveRoom] Sala vazia — pausado.");
+        }
+      }
+
     } catch (e) { console.error("[WS] Erro:", e); }
   });
 
-  ws.on("close", () => siteClients.delete(ws));
+  ws.on("close", () => {
+    siteClients.delete(ws);
+    liveRoomClients.delete(ws);
+    if (liveRoomClients.size === 0 && liveRoomInterval) {
+      clearInterval(liveRoomInterval);
+      liveRoomInterval = null;
+      liveRoomActive   = false;
+    }
+  });
 });
 
 // ─────────────────────────────────────────────
@@ -658,7 +782,7 @@ setInterval(() => {
 }, 5000);
 
 setInterval(async () => {
-  try { await fetch(`${RAILWAY_URL}/health`); console.log(`[Keep-alive] OK`); } catch (e) {}
+  try { await fetch(`${RAILWAY_URL}/health`); console.log(`[Keep-alive] OK`); } catch {}
 }, 4 * 60 * 1000);
 
 function broadcastToSite(data) {
@@ -667,7 +791,7 @@ function broadcastToSite(data) {
 }
 
 // ─────────────────────────────────────────────
-// Health
+// HEALTH
 // ─────────────────────────────────────────────
 app.get("/health", (_, res) => {
   const slaves = [];
@@ -678,18 +802,22 @@ app.get("/health", (_, res) => {
   const prices = [];
   allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
   res.json({
-    status: "online", version: "v11",
+    status: "online", version: "v12",
     mt5_connected: isMt5Online(),
     symbols_count: allPrices.size, symbols: prices,
     site_clients: siteClients.size,
     slaves_online: slaves.filter(s => s.online).length,
     slaves_total: activeSlaves.size, slaves,
     elite_online: slaves.filter(s => s.online && s.plan === "elite").length,
+    live_room_active: liveRoomActive,
+    live_room_clients: liveRoomClients.size,
+    live_signals_today: liveScoreboard.signals,
     timestamp: new Date().toISOString(),
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Railway] Servidor v11 rodando na porta ${PORT}`);
-  console.log(`[Railway] Copy Trade, Webhook Hotmart e Limites por plano ativos`);
+  console.log(`[Railway] Servidor v12 rodando na porta ${PORT}`);
+  console.log(`[Railway] Live Trading Room ativo`);
+  console.log(`[Railway] Copy Trade, Webhook Hotmart, Limites por plano`);
 });
