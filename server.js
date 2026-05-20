@@ -1,11 +1,12 @@
 /**
  * TraderAureonia AI — Servidor Railway v13
+ * - Salva sinais do Live Room no Supabase (live_signals)
+ * - Busca win rate histórico antes de analisar
+ * - Passa dados de aprendizado para eaSignal_v3
+ * - Endpoint /live-learning com estatísticas por ativo
  * - Focus Asset: ativo selecionado analisa a cada 10s
- * - Live Trading Room com IA pensando em voz alta
  * - Copy Trade Elite automático
  * - Webhook Hotmart
- * - Limites por plano
- * - Keep-alive automático
  */
 
 const express = require("express");
@@ -62,17 +63,20 @@ let   orderCounter       = 1;
 // Live Trading Room
 const liveRoomClients   = new Set();
 const liveSignalHistory = [];
-let   liveRoomInterval  = null;  // Loop de 30s para todos os ativos
-let   focusInterval     = null;  // Loop de 10s para ativo em foco
+let   liveRoomInterval  = null;
+let   focusInterval     = null;
 let   liveRoomActive    = false;
 
-// Mapa de qual ativo cada cliente está focando
-// ws → symbol
+// Mapa ws → ativo em foco
 const clientFocusAsset  = new Map();
-
-// Mapa de qual estratégia cada cliente quer para cada ativo
-// ws → { BTCUSD: "QUICK", XAUUSD.s: "SMC", ... }
+// Mapa ws → { BTCUSD: "QUICK", ... }
 const clientStrategies  = new Map();
+
+// Cache de estatísticas históricas (atualiza a cada 5 minutos)
+// chave: "BTCUSD-QUICK" → { win_rate, sample_size, hour_stats: {0: {wr, count}, ...} }
+const historicalCache   = new Map();
+let   lastCacheUpdate   = 0;
+const CACHE_TTL_MS      = 5 * 60 * 1000; // 5 minutos
 
 const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
 const DEFAULT_STRATEGIES = {
@@ -132,8 +136,6 @@ function isPriceFresh(priceData) {
   if (!priceData) return false;
   return (new Date() - new Date(priceData.receivedAt)) / 1000 < PRICE_EXPIRE_S;
 }
-
-// Retorna a estratégia que a maioria dos clientes quer para um ativo
 function getStrategyForAsset(symbol) {
   const votes = {};
   clientStrategies.forEach((strategies) => {
@@ -143,8 +145,6 @@ function getStrategyForAsset(symbol) {
   if (Object.keys(votes).length === 0) return DEFAULT_STRATEGIES[symbol] || "QUICK";
   return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0];
 }
-
-// Retorna o ativo que mais clientes estão focando
 function getMostFocusedAsset() {
   const votes = {};
   clientFocusAsset.forEach((symbol) => {
@@ -152,6 +152,167 @@ function getMostFocusedAsset() {
   });
   if (Object.keys(votes).length === 0) return null;
   return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+// ─────────────────────────────────────────────
+// SUPABASE — Helpers
+// ─────────────────────────────────────────────
+async function supabaseGet(path) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+    });
+    return await res.json();
+  } catch { return []; }
+}
+
+async function supabasePost(path, body) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Prefer": "return=representation",
+      },
+      body: JSON.stringify(body),
+    });
+    return await res.json();
+  } catch { return null; }
+}
+
+async function supabasePatch(path, body) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {}
+}
+
+// ─────────────────────────────────────────────
+// APRENDIZADO — Busca estatísticas históricas
+// ─────────────────────────────────────────────
+async function fetchHistoricalStats(asset, strategy) {
+  const key = `${asset}-${strategy}`;
+  const now = Date.now();
+
+  // Usa cache se ainda válido
+  if (historicalCache.has(key) && (now - lastCacheUpdate) < CACHE_TTL_MS) {
+    return historicalCache.get(key);
+  }
+
+  try {
+    // Busca todos os sinais fechados deste asset+strategy
+    const data = await supabaseGet(
+      `live_signals?asset=eq.${encodeURIComponent(asset)}&strategy=eq.${strategy}&result=neq.open&select=result,profit,hour_of_day&order=created_at.desc&limit=200`
+    );
+
+    if (!data || data.length === 0) {
+      const empty = { win_rate: -1, sample_size: 0, hour_stats: {} };
+      historicalCache.set(key, empty);
+      return empty;
+    }
+
+    // Calcula win rate geral
+    const wins  = data.filter(d => d.result === "win").length;
+    const total = data.length;
+    const win_rate = wins / total;
+
+    // Calcula win rate por hora
+    const hourGroups = {};
+    data.forEach(d => {
+      const h = d.hour_of_day;
+      if (h === null || h === undefined) return;
+      if (!hourGroups[h]) hourGroups[h] = { wins: 0, total: 0 };
+      hourGroups[h].total++;
+      if (d.result === "win") hourGroups[h].wins++;
+    });
+
+    const hour_stats = {};
+    Object.entries(hourGroups).forEach(([h, stats]) => {
+      hour_stats[h] = {
+        win_rate: stats.wins / stats.total,
+        count: stats.total,
+      };
+    });
+
+    const result = { win_rate, sample_size: total, hour_stats };
+    historicalCache.set(key, result);
+    lastCacheUpdate = now;
+
+    console.log(`[Learning] ${asset}+${strategy}: ${(win_rate*100).toFixed(0)}% WR em ${total} sinais`);
+    return result;
+
+  } catch (err) {
+    console.error(`[Learning] Erro ao buscar histórico:`, err.message);
+    return { win_rate: -1, sample_size: 0, hour_stats: {} };
+  }
+}
+
+// ─────────────────────────────────────────────
+// APRENDIZADO — Salva sinal no Supabase
+// ─────────────────────────────────────────────
+async function saveLiveSignal(signal) {
+  const now = new Date();
+  const data = {
+    asset:          signal.asset,
+    strategy:       signal.strategy,
+    direction:      signal.direction,
+    entry_price:    signal.entry,
+    sl:             signal.sl,
+    tp1:            signal.tp1,
+    tp2:            signal.tp2 || null,
+    tp3:            signal.tp3 || null,
+    probability:    signal.probability,
+    confirmations:  signal.confirmations || 0,
+    rsi:            signal.indicators?.rsi || null,
+    ema9:           signal.indicators?.ema9 || null,
+    ema21:          signal.indicators?.ema21 || null,
+    atr:            signal.indicators?.atr || null,
+    trend_strength: signal.trend_strength || null,
+    is_range:       signal.is_range || false,
+    hour_of_day:    now.getUTCHours(),
+    day_of_week:    now.getUTCDay(),
+    result:         "open",
+  };
+
+  try {
+    const saved = await supabasePost("live_signals", data);
+    if (saved && saved[0]) {
+      signal.supabase_id = saved[0].id;
+      console.log(`[Learning] Sinal salvo no Supabase: ID ${saved[0].id}`);
+    }
+  } catch (err) {
+    console.error(`[Learning] Erro ao salvar sinal:`, err.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// APRENDIZADO — Atualiza resultado do sinal
+// ─────────────────────────────────────────────
+async function updateLiveSignalResult(supabaseId, result, profit, closePrice, tpHit) {
+  if (!supabaseId) return;
+  await supabasePatch(
+    `live_signals?id=eq.${supabaseId}`,
+    {
+      result,
+      profit:      parseFloat(profit) || 0,
+      close_price: closePrice || null,
+      tp_hit:      tpHit || 0,
+      closed_at:   new Date().toISOString(),
+    }
+  );
+  // Invalida cache para forçar recarregamento
+  lastCacheUpdate = 0;
+  console.log(`[Learning] Resultado atualizado: ID ${supabaseId} → ${result}`);
 }
 
 // ─────────────────────────────────────────────
@@ -166,7 +327,7 @@ async function checkProPlan(userId) {
 }
 
 // ─────────────────────────────────────────────
-// SALVA TRADE NO SUPABASE
+// SALVA TRADE NO SUPABASE (tabela trades)
 // ─────────────────────────────────────────────
 async function saveTradeToSupabase(tradeData) {
   try {
@@ -182,15 +343,13 @@ async function saveTradeToSupabase(tradeData) {
     });
     if (response.ok)
       console.log(`[Supabase] Trade salvo: ${tradeData.user_code} | ${tradeData.strategy} | ${tradeData.result}`);
-    else
-      console.error(`[Supabase] Erro: ${await response.text()}`);
   } catch (err) {
     console.error(`[Supabase] Erro:`, err.message);
   }
 }
 
 // ─────────────────────────────────────────────
-// ATIVA PLANO VIA HOTMART WEBHOOK
+// ATIVA PLANO VIA HOTMART
 // ─────────────────────────────────────────────
 async function activateUserPlan(email, plan, months) {
   try {
@@ -205,10 +364,10 @@ async function activateUserPlan(email, plan, months) {
       await fetch(`${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}`, {
         method: "PATCH",
         headers: {
-          "Content-Type":  "application/json",
-          "apikey":        SUPABASE_KEY,
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_KEY,
           "Authorization": `Bearer ${SUPABASE_KEY}`,
-          "Prefer":        "return=minimal",
+          "Prefer": "return=minimal",
         },
         body: JSON.stringify({ plan, plan_expires_at: expiresAt.toISOString() }),
       });
@@ -220,13 +379,12 @@ async function activateUserPlan(email, plan, months) {
 }
 
 // ─────────────────────────────────────────────
-// ALERTA WHATSAPP
+// WHATSAPP
 // ─────────────────────────────────────────────
 async function sendWhatsAppAlert(phone, message) {
   if (!phone) return;
   try {
-    const encoded = encodeURIComponent(message);
-    await fetch(`https://api.callmebot.com/whatsapp.php?phone=${phone}&text=${encoded}&apikey=YOUR_CALLMEBOT_KEY`);
+    await fetch(`https://api.callmebot.com/whatsapp.php?phone=${phone}&text=${encodeURIComponent(message)}&apikey=YOUR_KEY`);
   } catch {}
 }
 
@@ -239,16 +397,65 @@ function broadcastToLiveRoom(data) {
     if (c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
+function broadcastToSite(data) {
+  const msg = JSON.stringify(data);
+  siteClients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(msg); });
+}
 
 function checkScoreboardReset() {
   const today = new Date().toDateString();
   if (liveScoreboard.date !== today) {
-    liveScoreboard.signals = 0;
-    liveScoreboard.wins    = 0;
-    liveScoreboard.losses  = 0;
-    liveScoreboard.profit  = 0;
+    liveScoreboard.signals = 0; liveScoreboard.wins = 0;
+    liveScoreboard.losses  = 0; liveScoreboard.profit = 0;
     liveScoreboard.date    = today;
   }
+}
+
+// ─────────────────────────────────────────────
+// eaSignal_v3 — com dados históricos
+// ─────────────────────────────────────────────
+async function callEaSignalV3(strategy, symbol, historicalData = null) {
+  const priceData = allPrices.get(symbol);
+  if (!priceData) throw new Error(`Sem dados para ${symbol}.`);
+
+  let closes, highs, lows, opens;
+  if (priceData.closes && Array.isArray(priceData.closes) && priceData.closes.length >= 30) {
+    closes = priceData.closes; highs = priceData.highs || [];
+    lows   = priceData.lows   || []; opens = priceData.opens || [];
+  } else {
+    const bid = parseFloat(priceData.bid);
+    const c1  = parseFloat(priceData.close1 || bid), c2 = c1*0.9995, c3 = c1*0.999;
+    const h1  = parseFloat(priceData.high1 || c1*1.002), l1 = parseFloat(priceData.low1 || c1*0.998);
+    closes = []; highs = []; lows = []; opens = [];
+    for(let i=34;i>=3;i--){
+      const f=1+(Math.random()-0.5)*0.001;
+      closes.push(parseFloat((bid*f).toFixed(5))); highs.push(parseFloat((bid*f*1.001).toFixed(5)));
+      lows.push(parseFloat((bid*f*0.999).toFixed(5)));  opens.push(parseFloat((bid*f*0.9995).toFixed(5)));
+    }
+    closes.push(c3,c2,c1,bid); highs.push(h1,h1,h1,h1);
+    lows.push(l1,l1,l1,l1);   opens.push(c3,c2,c1,bid*0.9998);
+  }
+
+  // Monta body com dados históricos para ajuste de probabilidade
+  const body = {
+    strategy, symbol, closes, highs, lows, opens,
+    // Dados de aprendizado
+    historical_win_rate:    historicalData?.win_rate    ?? -1,
+    historical_sample_size: historicalData?.sample_size ?? 0,
+    hour_win_rate:          historicalData?.hour_win_rate  ?? -1,
+    hour_sample_size:       historicalData?.hour_sample_size ?? 0,
+  };
+
+  const response = await fetch(EA_SIGNAL_V3_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${EA_SIGNAL_KEY}` },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`eaSignal_v3 retornou ${response.status}`);
+  const result = await response.json();
+  result.live_price  = priceData.bid;
+  result.live_symbol = symbol;
+  return result;
 }
 
 // ─────────────────────────────────────────────
@@ -259,22 +466,35 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
   if (!priceData || !isPriceFresh(priceData)) return;
 
   const strategy = getStrategyForAsset(symbol);
-  const price     = priceData.bid;
+  const price    = priceData.bid;
+  const hour     = new Date().getUTCHours();
 
-  // Fase 1 — Pensando
+  // Fase 1 — Busca dados históricos de aprendizado
+  const stats = await fetchHistoricalStats(symbol, strategy);
+  const hourStats = stats.hour_stats?.[hour] || {};
+  const historicalData = {
+    win_rate:         stats.win_rate,
+    sample_size:      stats.sample_size,
+    hour_win_rate:    hourStats.win_rate   ?? -1,
+    hour_sample_size: hourStats.count      ?? 0,
+  };
+
+  // Fase 2 — Avisa que está analisando
   broadcastToLiveRoom({
     type: "thinking", asset: symbol, strategy, price,
     is_priority: isPriority,
-    message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — Estratégia: ${strategy}`,
+    message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — ${strategy}${stats.sample_size > 0 ? ` (${(stats.win_rate*100).toFixed(0)}% WR histórico)` : ""}`,
+    historical: stats.sample_size > 0 ? { win_rate: stats.win_rate, sample_size: stats.sample_size } : null,
     timestamp: new Date().toISOString(),
   });
 
   await new Promise(r => setTimeout(r, 1500));
 
   try {
-    const result = await callEaSignalV3(strategy, symbol);
+    // Fase 3 — Chama IA com dados históricos
+    const result = await callEaSignalV3(strategy, symbol, historicalData);
 
-    // Fase 2 — Alertas dos indicadores
+    // Fase 4 — Alertas com RSI REAL da resposta da IA
     if (result.indicators) {
       const { rsi, ema9, ema21 } = result.indicators;
 
@@ -282,30 +502,52 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
         broadcastToLiveRoom({
           type: "alert", asset: symbol, level: "warning",
           message: `⚠ RSI em ${rsi} — zona de sobrecompra, cautela para BUY`,
-          timestamp: new Date().toISOString(),
+          rsi, timestamp: new Date().toISOString(),
         });
         await new Promise(r => setTimeout(r, 800));
       } else if (rsi < 35) {
         broadcastToLiveRoom({
           type: "alert", asset: symbol, level: "warning",
           message: `⚠ RSI em ${rsi} — zona de sobrevenda, cautela para SELL`,
-          timestamp: new Date().toISOString(),
+          rsi, timestamp: new Date().toISOString(),
         });
         await new Promise(r => setTimeout(r, 800));
       }
 
-      const emaDiffPct = (Math.abs(ema9 - ema21) / price) * 100;
-      if (emaDiffPct < 0.05) {
+      if (ema9 && ema21) {
+        const emaDiffPct = (Math.abs(ema9 - ema21) / price) * 100;
+        if (emaDiffPct < 0.05) {
+          broadcastToLiveRoom({
+            type: "alert", asset: symbol, level: "info",
+            message: `🔍 EMAs muito próximas em ${symbol} — mercado indeciso`,
+            timestamp: new Date().toISOString(),
+          });
+          await new Promise(r => setTimeout(r, 800));
+        }
+      }
+
+      // Alerta de HTF bias
+      if (result.htf_bias && result.htf_bias !== "NEUTRAL") {
         broadcastToLiveRoom({
           type: "alert", asset: symbol, level: "info",
-          message: `🔍 EMAs muito próximas em ${symbol} — mercado indeciso`,
+          message: `📈 Tendência maior (HTF): ${result.htf_bias === "BULL" ? "ALTISTA 🟢" : "BAIXISTA 🔴"}`,
           timestamp: new Date().toISOString(),
         });
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 600));
+      }
+
+      // Alerta de ajuste por histórico
+      if (result.probability_adjustment) {
+        broadcastToLiveRoom({
+          type: "alert", asset: symbol, level: "info",
+          message: `🧠 Ajuste IA: ${result.probability_adjustment}`,
+          timestamp: new Date().toISOString(),
+        });
+        await new Promise(r => setTimeout(r, 600));
       }
     }
 
-    // Fase 3 — Resultado
+    // Fase 5 — Resultado final
     if (result.status === "new_signal" && result.direction) {
       liveScoreboard.signals++;
 
@@ -318,22 +560,29 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
         probability: result.probability, reason: result.reason,
         confirmations: result.confirmations, indicators: result.indicators,
         trend_strength: result.trend_strength, is_range: result.is_range,
+        htf_bias: result.htf_bias,
+        probability_adjustment: result.probability_adjustment,
+        historical: stats.sample_size > 0 ? { win_rate: stats.win_rate, sample_size: stats.sample_size } : null,
         id: `LIVE-${Date.now()}`,
         hora: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
         timestamp: new Date().toISOString(),
       };
 
+      // Salva no histórico em memória
       liveSignalHistory.unshift(signal);
       if (liveSignalHistory.length > 50) liveSignalHistory.pop();
 
+      // Salva no Supabase para aprendizado
+      await saveLiveSignal(signal);
+
+      // Emite para sala ao vivo
       broadcastToLiveRoom(signal);
 
       // Alerta WhatsApp
       activeSlaves.forEach((slave) => {
         const limits = getPlanLimits(slave.plan);
         if (slave.whatsapp_phone && limits.whatsapp) {
-          sendWhatsAppAlert(
-            slave.whatsapp_phone,
+          sendWhatsAppAlert(slave.whatsapp_phone,
             `🔴 Live Room — ${result.direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${result.probability}%\nEntrada: ${result.entry} | SL: ${result.sl} | TP1: ${result.tp1}`
           );
         }
@@ -345,8 +594,10 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
       broadcastToLiveRoom({
         type: "no_signal", asset: symbol,
         reason: result.reason || "Sem condições claras",
+        blocked_by: result.blocked_by || null,
         is_range: result.is_range || false,
         indicators: result.indicators,
+        htf_bias: result.htf_bias,
         timestamp: new Date().toISOString(),
       });
     }
@@ -357,7 +608,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 }
 
 // ─────────────────────────────────────────────
-// LIVE ROOM — Loop principal (30s — todos os ativos)
+// LIVE ROOM — Loops
 // ─────────────────────────────────────────────
 async function runLiveRoom() {
   if (liveRoomClients.size === 0) return;
@@ -365,21 +616,16 @@ async function runLiveRoom() {
 
   broadcastToLiveRoom({
     type: "scoreboard",
-    signals: liveScoreboard.signals,
-    wins: liveScoreboard.wins,
-    losses: liveScoreboard.losses,
-    profit: liveScoreboard.profit,
+    signals: liveScoreboard.signals, wins: liveScoreboard.wins,
+    losses: liveScoreboard.losses,   profit: liveScoreboard.profit,
     win_rate: liveScoreboard.signals > 0
       ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0",
     timestamp: new Date().toISOString(),
   });
 
-  // Analisa todos os ativos exceto o que está em foco
-  // (o foco tem seu próprio loop de 10s)
   const focusedAsset = getMostFocusedAsset();
-
   for (const symbol of LIVE_ASSETS) {
-    if (symbol === focusedAsset) continue; // Pula — já tem loop próprio
+    if (symbol === focusedAsset) continue;
     if (allPrices.get(symbol) && isPriceFresh(allPrices.get(symbol))) {
       await analyzeLiveAsset(symbol, false);
       await new Promise(r => setTimeout(r, 2000));
@@ -387,23 +633,16 @@ async function runLiveRoom() {
   }
 }
 
-// ─────────────────────────────────────────────
-// LIVE ROOM — Loop prioritário (10s — ativo em foco)
-// ─────────────────────────────────────────────
 async function runFocusedAsset() {
   if (liveRoomClients.size === 0) return;
   const focusedAsset = getMostFocusedAsset();
   if (!focusedAsset) return;
-
   const priceData = allPrices.get(focusedAsset);
   if (priceData && isPriceFresh(priceData)) {
-    await analyzeLiveAsset(focusedAsset, true); // isPriority = true
+    await analyzeLiveAsset(focusedAsset, true);
   }
 }
 
-// ─────────────────────────────────────────────
-// INICIA OS LOOPS DO LIVE ROOM
-// ─────────────────────────────────────────────
 function startLiveRoom() {
   if (!liveRoomInterval) {
     liveRoomInterval = setInterval(runLiveRoom, 30000);
@@ -421,7 +660,7 @@ function stopLiveRoom() {
   if (liveRoomInterval) { clearInterval(liveRoomInterval); liveRoomInterval = null; }
   if (focusInterval)    { clearInterval(focusInterval);    focusInterval    = null; }
   liveRoomActive = false;
-  console.log("[LiveRoom] Sala vazia — loops parados.");
+  console.log("[LiveRoom] Sala vazia — parado.");
 }
 
 // ─────────────────────────────────────────────
@@ -430,9 +669,9 @@ function stopLiveRoom() {
 app.post("/webhook/hotmart", async (req, res) => {
   const event = req.body;
   if (["PURCHASE_APPROVED","PURCHASE_COMPLETE","SUBSCRIPTION_REACTIVATED"].includes(event?.event)) {
-    const email   = event?.data?.buyer?.email;
+    const email = event?.data?.buyer?.email;
     const product = event?.data?.product?.name || "";
-    const price   = event?.data?.purchase?.price?.value || 0;
+    const price  = event?.data?.purchase?.price?.value || 0;
     let plan = "basic", months = 1;
     if (product.toLowerCase().includes("elite") || price >= 390) plan = "elite";
     else if (product.toLowerCase().includes("pro") || price >= 190) plan = "pro";
@@ -452,33 +691,24 @@ app.post("/webhook/hotmart", async (req, res) => {
 app.post("/master-trade", async (req, res) => {
   const { symbol, direction, risk_percent, sl_percent, tp_percent, strategy, probability } = req.body;
   if (!symbol || !direction) return res.status(400).json({ error: "symbol e direction obrigatórios" });
-
   const eliteSlaves = [];
   activeSlaves.forEach((data, userId) => {
-    const isOnline = (new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S;
-    if (isOnline && data.plan === "elite") eliteSlaves.push({ userId, ...data });
+    if ((new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S && data.plan === "elite")
+      eliteSlaves.push({ userId, ...data });
   });
-
   let copied = 0;
   for (const slave of eliteSlaves) {
     slavePendingOrders.set(slave.userId, {
       order_id: generateOrderId(), direction, symbol,
       sl: 0, tp: 0, lot_size: 0,
-      risk_percent: risk_percent || 1.0,
-      sl_percent: sl_percent || 0.5,
-      tp_percent: tp_percent || 1.0,
-      strategy: strategy || "COPY",
-      probability: probability || 0,
-      is_copy_trade: true,
-      timestamp: new Date().toISOString(),
+      risk_percent: risk_percent || 1.0, sl_percent: sl_percent || 0.5, tp_percent: tp_percent || 1.0,
+      strategy: strategy || "COPY", probability: probability || 0,
+      is_copy_trade: true, timestamp: new Date().toISOString(),
     });
-    if (slave.whatsapp_phone) {
-      await sendWhatsAppAlert(slave.whatsapp_phone,
-        `🤖 Copy Trade: ${direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${probability}%`);
-    }
+    if (slave.whatsapp_phone)
+      await sendWhatsAppAlert(slave.whatsapp_phone, `🤖 Copy Trade: ${direction} ${symbol}\nProb: ${probability}%`);
     copied++;
   }
-
   broadcastToSite({ type: "copy_trade", symbol, direction, strategy, probability, clients: copied, timestamp: new Date().toISOString() });
   res.json({ status: "ok", clients_copied: copied });
 });
@@ -519,7 +749,7 @@ app.get("/prices", (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ROTAS — Live Room
+// ROTA — Live Signals
 // ─────────────────────────────────────────────
 app.get("/live-signals", (req, res) => {
   res.json({
@@ -531,15 +761,123 @@ app.get("/live-signals", (req, res) => {
   });
 });
 
-app.post("/live-signal-result", (req, res) => {
-  const { signal_id, result, profit } = req.body;
+app.post("/live-signal-result", async (req, res) => {
+  const { signal_id, result, profit, close_price, tp_hit } = req.body;
+
+  // Atualiza memória
   const signal = liveSignalHistory.find(s => s.id === signal_id);
-  if (signal) { signal.result = result; signal.profit = profit; }
+  if (signal) {
+    signal.result = result;
+    signal.profit = profit;
+    // Atualiza no Supabase para aprendizado
+    if (signal.supabase_id) {
+      await updateLiveSignalResult(signal.supabase_id, result, profit, close_price, tp_hit);
+    }
+  }
+
   const profitVal = parseFloat(profit) || 0;
   if (result === "win") { liveScoreboard.wins++; liveScoreboard.profit += profitVal; }
   else if (result === "loss") { liveScoreboard.losses++; liveScoreboard.profit += profitVal; }
-  broadcastToLiveRoom({ type: "signal_result", signal_id, result, profit: profitVal, scoreboard: liveScoreboard, timestamp: new Date().toISOString() });
+
+  broadcastToLiveRoom({
+    type: "signal_result", signal_id, result, profit: profitVal,
+    scoreboard: liveScoreboard, timestamp: new Date().toISOString(),
+  });
   res.json({ status: "ok" });
+});
+
+// ─────────────────────────────────────────────
+// ROTA — Live Learning (o que a IA aprendeu)
+// ─────────────────────────────────────────────
+app.get("/live-learning", async (req, res) => {
+  try {
+    // Busca todos os sinais fechados agrupados
+    const data = await supabaseGet(
+      "live_signals?result=neq.open&select=asset,strategy,result,profit,hour_of_day,probability,rsi,atr&order=created_at.desc&limit=500"
+    );
+
+    if (!data || data.length === 0) {
+      return res.json({ status: "no_data", message: "Ainda sem dados suficientes para aprendizado.", assets: {} });
+    }
+
+    // Agrupa por asset+strategy
+    const groups = {};
+    data.forEach(d => {
+      const key = `${d.asset}-${d.strategy}`;
+      if (!groups[key]) {
+        groups[key] = { asset: d.asset, strategy: d.strategy, wins: 0, losses: 0, total: 0, profit: 0, hours: {}, rsi_wins: [], rsi_losses: [] };
+      }
+      const g = groups[key];
+      g.total++;
+      g.profit += d.profit || 0;
+      if (d.result === "win") { g.wins++; if (d.rsi) g.rsi_wins.push(d.rsi); }
+      else { g.losses++; if (d.rsi) g.rsi_losses.push(d.rsi); }
+
+      // Agrupa por hora
+      const h = d.hour_of_day;
+      if (h !== null) {
+        if (!g.hours[h]) g.hours[h] = { wins: 0, total: 0 };
+        g.hours[h].total++;
+        if (d.result === "win") g.hours[h].wins++;
+      }
+    });
+
+    // Monta resposta estruturada
+    const assets = {};
+    Object.values(groups).forEach(g => {
+      if (!assets[g.asset]) assets[g.asset] = {};
+
+      // Melhor e pior hora
+      let bestHour = null, worstHour = null;
+      let bestHourWR = 0, worstHourWR = 1;
+      Object.entries(g.hours).forEach(([h, stats]) => {
+        if (stats.total >= 3) {
+          const wr = stats.wins / stats.total;
+          if (wr > bestHourWR)  { bestHourWR  = wr; bestHour  = parseInt(h); }
+          if (wr < worstHourWR) { worstHourWR = wr; worstHour = parseInt(h); }
+        }
+      });
+
+      // RSI médio dos wins vs losses
+      const avgRsiWin  = g.rsi_wins.length  > 0 ? g.rsi_wins.reduce((a,b)=>a+b,0)/g.rsi_wins.length   : null;
+      const avgRsiLoss = g.rsi_losses.length > 0 ? g.rsi_losses.reduce((a,b)=>a+b,0)/g.rsi_losses.length : null;
+
+      assets[g.asset][g.strategy] = {
+        total_signals: g.total,
+        wins:          g.wins,
+        losses:        g.losses,
+        win_rate:      parseFloat((g.wins / g.total).toFixed(3)),
+        win_rate_pct:  `${(g.wins / g.total * 100).toFixed(1)}%`,
+        total_profit:  parseFloat(g.profit.toFixed(2)),
+        best_hour:     bestHour !== null ? { hour: bestHour, win_rate: parseFloat(bestHourWR.toFixed(3)) } : null,
+        worst_hour:    worstHour !== null ? { hour: worstHour, win_rate: parseFloat(worstHourWR.toFixed(3)) } : null,
+        avg_rsi_win:   avgRsiWin  ? Math.round(avgRsiWin)  : null,
+        avg_rsi_loss:  avgRsiLoss ? Math.round(avgRsiLoss) : null,
+        hour_breakdown: Object.fromEntries(
+          Object.entries(g.hours)
+            .filter(([,s]) => s.total >= 2)
+            .map(([h,s]) => [h, { win_rate: parseFloat((s.wins/s.total).toFixed(3)), count: s.total }])
+        ),
+        recommendation: g.total >= 20
+          ? g.wins/g.total >= 0.6 ? "✅ Estratégia performando bem"
+          : g.wins/g.total >= 0.45 ? "⚠ Performance moderada"
+          : "❌ Estratégia com baixo win rate — revisando filtros"
+          : "📊 Coletando dados...",
+      };
+    });
+
+    res.json({
+      status: "ok",
+      total_signals_analyzed: data.length,
+      assets,
+      last_updated: new Date().toISOString(),
+      cache_valid: (Date.now() - lastCacheUpdate) < CACHE_TTL_MS,
+    });
+
+  } catch (err) {
+    console.error("[LiveLearning] Erro:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────────
@@ -576,13 +914,8 @@ app.post("/slave-register", async (req, res) => {
 app.get("/slave-order", (req, res) => {
   const userId = req.query.user_id;
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
-  if (activeSlaves.has(userId)) {
-    const slave = activeSlaves.get(userId);
-    slave.lastSeen = new Date();
-    activeSlaves.set(userId, slave);
-  } else {
-    activeSlaves.set(userId, { account: "unknown", symbol: "BTCUSD", balance: 0, plan: "basic", lastSeen: new Date() });
-  }
+  if (activeSlaves.has(userId)) { const s = activeSlaves.get(userId); s.lastSeen = new Date(); activeSlaves.set(userId, s); }
+  else activeSlaves.set(userId, { account: "unknown", symbol: "BTCUSD", balance: 0, plan: "basic", lastSeen: new Date() });
   if (slavePendingOrders.has(userId)) {
     const order = slavePendingOrders.get(userId);
     slavePendingOrders.delete(userId);
@@ -621,8 +954,7 @@ app.post("/slave-trade-closed", async (req, res) => {
 });
 
 app.post("/slave-error", (req, res) => {
-  const { user_id, order_id, message } = req.body;
-  broadcastToSite({ type: "slave_error", user_id, order_id, message });
+  broadcastToSite({ type: "slave_error", ...req.body });
   res.json({ status: "ok" });
 });
 
@@ -632,31 +964,26 @@ app.post("/client-execute-order", async (req, res) => {
   const planCheck = await checkProPlan(user_id);
   const limits    = getPlanLimits(planCheck.plan || "basic");
   if (limits.assets !== "ALL" && !limits.assets.includes(symbol))
-    return res.status(403).json({ error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}.`, plan: planCheck.plan });
+    return res.status(403).json({ error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}.` });
   if (!limits.autoTrade)
-    return res.status(403).json({ error: "Auto Trade não disponível no plano Básico.", plan: planCheck.plan });
+    return res.status(403).json({ error: "Auto Trade não disponível no plano Básico." });
   if (!isSlaveOnline(user_id)) {
     const exists = activeSlaves.has(user_id);
-    const lastSeenAgo = exists ? Math.round((new Date() - activeSlaves.get(user_id).lastSeen) / 1000) : null;
-    return res.status(503).json({ error: "EA Slave não está conectado.", slave_online: false, last_seen: lastSeenAgo });
+    return res.status(503).json({ error: "EA Slave não está conectado.", slave_online: false,
+      last_seen: exists ? Math.round((new Date() - activeSlaves.get(user_id).lastSeen) / 1000) : null });
   }
   const slVal = parseFloat(sl), tpVal = parseFloat(tp);
   if (!slVal || !tpVal) return res.status(400).json({ error: "SL e TP inválidos." });
   const orderId = generateOrderId();
   slavePendingOrders.set(user_id, {
-    order_id: orderId, direction, symbol,
-    sl: slVal, tp: tpVal, lot_size: parseFloat(lot_size) || 0.01,
-    strategy: strategy || "UNKNOWN",
-    probability: parseFloat(probability) || 0,
-    confirmations: parseInt(confirmations) || 0,
-    trend_strength: parseFloat(trend_strength) || 0,
-    timestamp: new Date().toISOString(),
+    order_id: orderId, direction, symbol, sl: slVal, tp: tpVal,
+    lot_size: parseFloat(lot_size) || 0.01, strategy: strategy || "UNKNOWN",
+    probability: parseFloat(probability) || 0, confirmations: parseInt(confirmations) || 0,
+    trend_strength: parseFloat(trend_strength) || 0, timestamp: new Date().toISOString(),
   });
   const slave = activeSlaves.get(user_id);
-  if (slave?.whatsapp_phone && limits.whatsapp) {
-    await sendWhatsAppAlert(slave.whatsapp_phone,
-      `📊 ${direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${probability}%`);
-  }
+  if (slave?.whatsapp_phone && limits.whatsapp)
+    await sendWhatsAppAlert(slave.whatsapp_phone, `📊 ${direction} ${symbol}\nProb: ${probability}%`);
   res.json({ status: "ok", message: "Ordem enviada.", order_id: orderId });
 });
 
@@ -665,8 +992,8 @@ app.get("/slave-status", (req, res) => {
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
   const exists = activeSlaves.has(userId);
   const slave  = activeSlaves.get(userId);
-  const lastSeenAgo = exists ? Math.round((new Date() - slave.lastSeen) / 1000) : null;
-  res.json({ user_id: userId, slave_online: exists && lastSeenAgo < SLAVE_TIMEOUT_S, last_seen: lastSeenAgo, balance: slave?.balance ?? null, plan: slave?.plan ?? null, limits: slave?.limits ?? null });
+  const ago    = exists ? Math.round((new Date() - slave.lastSeen) / 1000) : null;
+  res.json({ user_id: userId, slave_online: exists && ago < SLAVE_TIMEOUT_S, last_seen: ago, balance: slave?.balance ?? null, plan: slave?.plan ?? null });
 });
 
 app.get("/slaves-status", (req, res) => {
@@ -686,46 +1013,14 @@ app.get("/user-trades", async (req, res) => {
       `${SUPABASE_URL}/rest/v1/trades?user_code=eq.${userCode}&order=created_at.desc&limit=500`,
       { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } }
     );
-    const data = await response.json();
-    res.json({ user_code: userCode, total: data.length, trades: data });
+    res.json({ user_code: userCode, trades: await response.json() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get("/plan-limits/:userId", async (req, res) => {
   const planCheck = await checkProPlan(req.params.userId);
-  const limits    = getPlanLimits(planCheck.plan || "basic");
-  res.json({ user_id: req.params.userId, plan: planCheck.plan || "basic", limits });
+  res.json({ user_id: req.params.userId, plan: planCheck.plan || "basic", limits: getPlanLimits(planCheck.plan || "basic") });
 });
-
-// ─────────────────────────────────────────────
-// eaSignal_v3
-// ─────────────────────────────────────────────
-async function callEaSignalV3(strategy, symbol) {
-  const priceData = allPrices.get(symbol);
-  if (!priceData) throw new Error(`Sem dados para ${symbol}.`);
-  let body;
-  if (priceData.closes && Array.isArray(priceData.closes) && priceData.closes.length >= 30) {
-    body = { strategy, symbol, closes: priceData.closes, highs: priceData.highs || [], lows: priceData.lows || [], opens: priceData.opens || [] };
-  } else {
-    const bid = parseFloat(priceData.bid);
-    const c1 = parseFloat(priceData.close1 || bid), c2 = c1*0.9995, c3 = c1*0.999;
-    const h1 = parseFloat(priceData.high1 || c1*1.002), l1 = parseFloat(priceData.low1 || c1*0.998);
-    const closes=[],highs=[],lows=[],opens=[];
-    for(let i=34;i>=3;i--){const f=1+(Math.random()-0.5)*0.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*0.999).toFixed(5)));opens.push(parseFloat((bid*f*0.9995).toFixed(5)));}
-    closes.push(c3,c2,c1,bid);highs.push(h1,h1,h1,h1);lows.push(l1,l1,l1,l1);opens.push(c3,c2,c1,bid*0.9998);
-    body = { strategy, symbol, closes, highs, lows, opens };
-  }
-  const response = await fetch(EA_SIGNAL_V3_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${EA_SIGNAL_KEY}` },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(`eaSignal_v3 retornou ${response.status}`);
-  const result = await response.json();
-  result.live_price = priceData.bid;
-  result.live_symbol = symbol;
-  return result;
-}
 
 // ─────────────────────────────────────────────
 // WEBSOCKET
@@ -740,16 +1035,22 @@ wss.on("connection", (ws) => {
     try {
       const msg = JSON.parse(raw.toString());
 
-      // ── Ping ──
       if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
 
-      // ── Análise normal (TradePage) ──
+      // Análise normal (TradePage)
       if (msg.type === "analyze") {
         const strategy = msg.strategy || "QUICK";
         const symbol   = msg.symbol   || "BTCUSD";
         ws.send(JSON.stringify({ type: "analyzing", status: "processing" }));
         try {
-          const result = await callEaSignalV3(strategy, symbol);
+          // Busca histórico para análise normal também
+          const stats = await fetchHistoricalStats(symbol, strategy);
+          const hour  = new Date().getUTCHours();
+          const hourStats = stats.hour_stats?.[hour] || {};
+          const result = await callEaSignalV3(strategy, symbol, {
+            win_rate: stats.win_rate, sample_size: stats.sample_size,
+            hour_win_rate: hourStats.win_rate ?? -1, hour_sample_size: hourStats.count ?? 0,
+          });
           ws.send(JSON.stringify({
             type: "analysis_result", symbol, strategy,
             direction: result.direction, entry: result.entry,
@@ -761,43 +1062,40 @@ wss.on("connection", (ws) => {
             reason: result.reason, indicators: result.indicators,
             live_price: result.live_price, status: result.status,
             confirmations: result.confirmations, trend_strength: result.trend_strength,
-            is_range: result.is_range, timestamp: new Date().toISOString(),
+            is_range: result.is_range, htf_bias: result.htf_bias,
+            probability_adjustment: result.probability_adjustment,
+            timestamp: new Date().toISOString(),
           }));
         } catch (err) { ws.send(JSON.stringify({ type: "error", message: err.message })); }
       }
 
-      // ── Preço específico ──
       if (msg.type === "get_price") {
         const symbol    = msg.symbol?.toUpperCase();
         const priceData = symbol ? allPrices.get(symbol) : null;
         if (priceData && isPriceFresh(priceData))
           ws.send(JSON.stringify({ type: "price", ...priceData }));
         else
-          ws.send(JSON.stringify({ type: "price_unavailable", symbol, message: `Preço de ${symbol} não disponível.` }));
+          ws.send(JSON.stringify({ type: "price_unavailable", symbol }));
       }
 
-      // ── Entrar na sala ao vivo ──
+      // Live Room
       if (msg.type === "join_live_room") {
         liveRoomClients.add(ws);
         clientFocusAsset.set(ws, null);
         clientStrategies.set(ws, { ...DEFAULT_STRATEGIES });
         startLiveRoom();
-
         ws.send(JSON.stringify({
-          type:       "live_room_joined",
+          type: "live_room_joined",
           history:    liveSignalHistory.slice(0, 10),
           scoreboard: liveScoreboard,
           assets:     LIVE_ASSETS,
           strategies: DEFAULT_STRATEGIES,
-          message:    "Bem-vindo à sala ao vivo! A IA está monitorando o mercado.",
+          message:    "Bem-vindo à sala ao vivo!",
           timestamp:  new Date().toISOString(),
         }));
-
-        // Emite contagem de viewers para todos
         broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size });
       }
 
-      // ── Sair da sala ao vivo ──
       if (msg.type === "leave_live_room") {
         liveRoomClients.delete(ws);
         clientFocusAsset.delete(ws);
@@ -806,40 +1104,24 @@ wss.on("connection", (ws) => {
         if (liveRoomClients.size === 0) stopLiveRoom();
       }
 
-      // ── Definir ativo em foco (analisa a cada 10s) ──
       if (msg.type === "focus_asset") {
         const symbol = msg.asset?.toUpperCase();
         if (symbol) {
           clientFocusAsset.set(ws, symbol);
-          console.log(`[LiveRoom] Cliente focando em ${symbol}`);
-          // Analisa imediatamente ao focar
           const priceData = allPrices.get(symbol);
-          if (priceData && isPriceFresh(priceData)) {
-            await analyzeLiveAsset(symbol, true);
-          }
+          if (priceData && isPriceFresh(priceData)) await analyzeLiveAsset(symbol, true);
         }
       }
 
-      // ── Definir estratégia para um ativo ──
       if (msg.type === "set_live_strategy") {
         const { asset, strategy } = msg;
         if (asset && strategy) {
           const strategies = clientStrategies.get(ws) || { ...DEFAULT_STRATEGIES };
           strategies[asset] = strategy;
           clientStrategies.set(ws, strategies);
-          console.log(`[LiveRoom] Estratégia ${strategy} para ${asset}`);
-
-          // Analisa imediatamente com a nova estratégia
           const priceData = allPrices.get(asset);
-          if (priceData && isPriceFresh(priceData)) {
-            await analyzeLiveAsset(asset, true);
-          }
-
-          ws.send(JSON.stringify({
-            type: "strategy_updated", asset, strategy,
-            message: `Estratégia ${strategy} ativa para ${asset}`,
-            timestamp: new Date().toISOString(),
-          }));
+          if (priceData && isPriceFresh(priceData)) await analyzeLiveAsset(asset, true);
+          ws.send(JSON.stringify({ type: "strategy_updated", asset, strategy, timestamp: new Date().toISOString() }));
         }
       }
 
@@ -874,11 +1156,6 @@ setInterval(async () => {
   try { await fetch(`${RAILWAY_URL}/health`); console.log(`[Keep-alive] OK`); } catch {}
 }, 4 * 60 * 1000);
 
-function broadcastToSite(data) {
-  const msg = JSON.stringify(data);
-  siteClients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(msg); });
-}
-
 // ─────────────────────────────────────────────
 // HEALTH
 // ─────────────────────────────────────────────
@@ -902,11 +1179,12 @@ app.get("/health", (_, res) => {
     live_room_clients: liveRoomClients.size,
     live_signals_today: liveScoreboard.signals,
     focused_asset: getMostFocusedAsset(),
+    learning_cache_size: historicalCache.size,
     timestamp: new Date().toISOString(),
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Railway] Servidor v13 rodando na porta ${PORT}`);
-  console.log(`[Railway] Live Room: 30s geral + 10s foco por ativo`);
+  console.log(`[Railway] v13 rodando na porta ${PORT}`);
+  console.log(`[Railway] Live Room + Aprendizado + /live-learning ativos`);
 });
