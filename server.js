@@ -1,5 +1,6 @@
 /**
- * TraderAureonia AI — Servidor Railway v12
+ * TraderAureonia AI — Servidor Railway v13
+ * - Focus Asset: ativo selecionado analisa a cada 10s
  * - Live Trading Room com IA pensando em voz alta
  * - Copy Trade Elite automático
  * - Webhook Hotmart
@@ -61,11 +62,20 @@ let   orderCounter       = 1;
 // Live Trading Room
 const liveRoomClients   = new Set();
 const liveSignalHistory = [];
-let   liveRoomInterval  = null;
+let   liveRoomInterval  = null;  // Loop de 30s para todos os ativos
+let   focusInterval     = null;  // Loop de 10s para ativo em foco
 let   liveRoomActive    = false;
 
+// Mapa de qual ativo cada cliente está focando
+// ws → symbol
+const clientFocusAsset  = new Map();
+
+// Mapa de qual estratégia cada cliente quer para cada ativo
+// ws → { BTCUSD: "QUICK", XAUUSD.s: "SMC", ... }
+const clientStrategies  = new Map();
+
 const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
-const LIVE_STRATEGIES = {
+const DEFAULT_STRATEGIES = {
   BTCUSD:     "QUICK",
   "XAUUSD.s": "SMC",
   EURUSD:     "MA",
@@ -121,6 +131,27 @@ function isSlaveOnline(userId) {
 function isPriceFresh(priceData) {
   if (!priceData) return false;
   return (new Date() - new Date(priceData.receivedAt)) / 1000 < PRICE_EXPIRE_S;
+}
+
+// Retorna a estratégia que a maioria dos clientes quer para um ativo
+function getStrategyForAsset(symbol) {
+  const votes = {};
+  clientStrategies.forEach((strategies) => {
+    const strat = strategies[symbol];
+    if (strat) votes[strat] = (votes[strat] || 0) + 1;
+  });
+  if (Object.keys(votes).length === 0) return DEFAULT_STRATEGIES[symbol] || "QUICK";
+  return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+// Retorna o ativo que mais clientes estão focando
+function getMostFocusedAsset() {
+  const votes = {};
+  clientFocusAsset.forEach((symbol) => {
+    if (symbol) votes[symbol] = (votes[symbol] || 0) + 1;
+  });
+  if (Object.keys(votes).length === 0) return null;
+  return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0];
 }
 
 // ─────────────────────────────────────────────
@@ -200,7 +231,7 @@ async function sendWhatsAppAlert(phone, message) {
 }
 
 // ─────────────────────────────────────────────
-// LIVE TRADING ROOM — Funções
+// LIVE ROOM — Broadcast
 // ─────────────────────────────────────────────
 function broadcastToLiveRoom(data) {
   const msg = JSON.stringify(data);
@@ -217,25 +248,28 @@ function checkScoreboardReset() {
     liveScoreboard.losses  = 0;
     liveScoreboard.profit  = 0;
     liveScoreboard.date    = today;
-    console.log("[LiveRoom] Placar resetado.");
   }
 }
 
-async function analyzeLiveAsset(symbol) {
+// ─────────────────────────────────────────────
+// LIVE ROOM — Analisa um ativo
+// ─────────────────────────────────────────────
+async function analyzeLiveAsset(symbol, isPriority = false) {
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) return;
 
-  const strategy = LIVE_STRATEGIES[symbol] || "QUICK";
+  const strategy = getStrategyForAsset(symbol);
   const price     = priceData.bid;
 
   // Fase 1 — Pensando
   broadcastToLiveRoom({
     type: "thinking", asset: symbol, strategy, price,
-    message: `Monitorando ${symbol} — Estratégia: ${strategy}`,
+    is_priority: isPriority,
+    message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — Estratégia: ${strategy}`,
     timestamp: new Date().toISOString(),
   });
 
-  await new Promise(r => setTimeout(r, 2000));
+  await new Promise(r => setTimeout(r, 1500));
 
   try {
     const result = await callEaSignalV3(strategy, symbol);
@@ -250,14 +284,14 @@ async function analyzeLiveAsset(symbol) {
           message: `⚠ RSI em ${rsi} — zona de sobrecompra, cautela para BUY`,
           timestamp: new Date().toISOString(),
         });
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 800));
       } else if (rsi < 35) {
         broadcastToLiveRoom({
           type: "alert", asset: symbol, level: "warning",
           message: `⚠ RSI em ${rsi} — zona de sobrevenda, cautela para SELL`,
           timestamp: new Date().toISOString(),
         });
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 800));
       }
 
       const emaDiffPct = (Math.abs(ema9 - ema21) / price) * 100;
@@ -267,7 +301,7 @@ async function analyzeLiveAsset(symbol) {
           message: `🔍 EMAs muito próximas em ${symbol} — mercado indeciso`,
           timestamp: new Date().toISOString(),
         });
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 800));
       }
     }
 
@@ -285,6 +319,7 @@ async function analyzeLiveAsset(symbol) {
         confirmations: result.confirmations, indicators: result.indicators,
         trend_strength: result.trend_strength, is_range: result.is_range,
         id: `LIVE-${Date.now()}`,
+        hora: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
         timestamp: new Date().toISOString(),
       };
 
@@ -293,18 +328,18 @@ async function analyzeLiveAsset(symbol) {
 
       broadcastToLiveRoom(signal);
 
-      // Alerta WhatsApp para slaves PRO e Elite com sinal ao vivo
+      // Alerta WhatsApp
       activeSlaves.forEach((slave) => {
         const limits = getPlanLimits(slave.plan);
         if (slave.whatsapp_phone && limits.whatsapp) {
           sendWhatsAppAlert(
             slave.whatsapp_phone,
-            `🔴 Live Room — ${result.direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${result.probability}%\nEntrada: ${result.entry} | SL: ${result.sl} | TP: ${result.tp1}`
+            `🔴 Live Room — ${result.direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${result.probability}%\nEntrada: ${result.entry} | SL: ${result.sl} | TP1: ${result.tp1}`
           );
         }
       });
 
-      console.log(`[LiveRoom] 🟢 SINAL: ${result.direction} ${symbol} | Prob: ${result.probability}%`);
+      console.log(`[LiveRoom] 🟢 SINAL: ${result.direction} ${symbol} ${strategy} | Prob: ${result.probability}%`);
 
     } else {
       broadcastToLiveRoom({
@@ -321,11 +356,13 @@ async function analyzeLiveAsset(symbol) {
   }
 }
 
+// ─────────────────────────────────────────────
+// LIVE ROOM — Loop principal (30s — todos os ativos)
+// ─────────────────────────────────────────────
 async function runLiveRoom() {
   if (liveRoomClients.size === 0) return;
   checkScoreboardReset();
 
-  // Emite placar
   broadcastToLiveRoom({
     type: "scoreboard",
     signals: liveScoreboard.signals,
@@ -337,13 +374,54 @@ async function runLiveRoom() {
     timestamp: new Date().toISOString(),
   });
 
-  // Analisa cada ativo
+  // Analisa todos os ativos exceto o que está em foco
+  // (o foco tem seu próprio loop de 10s)
+  const focusedAsset = getMostFocusedAsset();
+
   for (const symbol of LIVE_ASSETS) {
+    if (symbol === focusedAsset) continue; // Pula — já tem loop próprio
     if (allPrices.get(symbol) && isPriceFresh(allPrices.get(symbol))) {
-      await analyzeLiveAsset(symbol);
-      await new Promise(r => setTimeout(r, 3000));
+      await analyzeLiveAsset(symbol, false);
+      await new Promise(r => setTimeout(r, 2000));
     }
   }
+}
+
+// ─────────────────────────────────────────────
+// LIVE ROOM — Loop prioritário (10s — ativo em foco)
+// ─────────────────────────────────────────────
+async function runFocusedAsset() {
+  if (liveRoomClients.size === 0) return;
+  const focusedAsset = getMostFocusedAsset();
+  if (!focusedAsset) return;
+
+  const priceData = allPrices.get(focusedAsset);
+  if (priceData && isPriceFresh(priceData)) {
+    await analyzeLiveAsset(focusedAsset, true); // isPriority = true
+  }
+}
+
+// ─────────────────────────────────────────────
+// INICIA OS LOOPS DO LIVE ROOM
+// ─────────────────────────────────────────────
+function startLiveRoom() {
+  if (!liveRoomInterval) {
+    liveRoomInterval = setInterval(runLiveRoom, 30000);
+    runLiveRoom();
+    console.log("[LiveRoom] Loop de 30s iniciado.");
+  }
+  if (!focusInterval) {
+    focusInterval = setInterval(runFocusedAsset, 10000);
+    console.log("[LiveRoom] Loop de 10s (foco) iniciado.");
+  }
+  liveRoomActive = true;
+}
+
+function stopLiveRoom() {
+  if (liveRoomInterval) { clearInterval(liveRoomInterval); liveRoomInterval = null; }
+  if (focusInterval)    { clearInterval(focusInterval);    focusInterval    = null; }
+  liveRoomActive = false;
+  console.log("[LiveRoom] Sala vazia — loops parados.");
 }
 
 // ─────────────────────────────────────────────
@@ -351,8 +429,6 @@ async function runLiveRoom() {
 // ─────────────────────────────────────────────
 app.post("/webhook/hotmart", async (req, res) => {
   const event = req.body;
-  console.log(`[Hotmart] Webhook: ${event?.event}`);
-
   if (["PURCHASE_APPROVED","PURCHASE_COMPLETE","SUBSCRIPTION_REACTIVATED"].includes(event?.event)) {
     const email   = event?.data?.buyer?.email;
     const product = event?.data?.product?.name || "";
@@ -363,17 +439,15 @@ app.post("/webhook/hotmart", async (req, res) => {
     if (price >= 900) months = 12;
     if (email) { await activateUserPlan(email, plan, months); broadcastToSite({ type: "plan_activated", email, plan }); }
   }
-
   if (["PURCHASE_CANCELED","PURCHASE_REFUNDED","SUBSCRIPTION_CANCELLATION"].includes(event?.event)) {
     const email = event?.data?.buyer?.email;
     if (email) await activateUserPlan(email, "basic", 0);
   }
-
   res.json({ status: "ok" });
 });
 
 // ─────────────────────────────────────────────
-// COPY TRADE — Master envia ordem
+// COPY TRADE
 // ─────────────────────────────────────────────
 app.post("/master-trade", async (req, res) => {
   const { symbol, direction, risk_percent, sl_percent, tp_percent, strategy, probability } = req.body;
@@ -387,9 +461,8 @@ app.post("/master-trade", async (req, res) => {
 
   let copied = 0;
   for (const slave of eliteSlaves) {
-    const orderId = generateOrderId();
     slavePendingOrders.set(slave.userId, {
-      order_id: orderId, direction, symbol,
+      order_id: generateOrderId(), direction, symbol,
       sl: 0, tp: 0, lot_size: 0,
       risk_percent: risk_percent || 1.0,
       sl_percent: sl_percent || 0.5,
@@ -453,6 +526,7 @@ app.get("/live-signals", (req, res) => {
     active: liveRoomActive, clients: liveRoomClients.size,
     signals: liveSignalHistory.slice(0, 20),
     scoreboard: liveScoreboard, assets: LIVE_ASSETS,
+    focused_asset: getMostFocusedAsset(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -474,13 +548,11 @@ app.post("/live-signal-result", (req, res) => {
 app.post("/slave-register", async (req, res) => {
   const { user_id, account, symbol, balance, status, whatsapp_phone } = req.body;
   if (!user_id) return res.status(400).json({ error: "user_id obrigatório" });
-
   if (status === "disconnected") {
     activeSlaves.delete(user_id);
     broadcastToSite({ type: "slave_status", user_id, connected: false });
     return res.json({ status: "ok" });
   }
-
   const planCheck = await checkProPlan(user_id);
   if (!planCheck.allowed) {
     return res.status(403).json({
@@ -490,7 +562,6 @@ app.post("/slave-register", async (req, res) => {
         : "Plano necessário. Assine em traderaureonia.com.br",
     });
   }
-
   const limits = getPlanLimits(planCheck.plan || "basic");
   activeSlaves.set(user_id, {
     account: account || "unknown", symbol: symbol || "BTCUSD",
@@ -498,7 +569,6 @@ app.post("/slave-register", async (req, res) => {
     whatsapp_phone: whatsapp_phone || null,
     limits, lastSeen: new Date(),
   });
-
   broadcastToSite({ type: "slave_status", user_id, connected: true, balance, plan: planCheck.plan });
   res.json({ status: "ok", user_id, plan: planCheck.plan, limits });
 });
@@ -531,12 +601,9 @@ app.post("/slave-confirm", (req, res) => {
 app.post("/slave-trade-closed", async (req, res) => {
   const { user_id, symbol, direction, close_price, profit, result, strategy, probability, confirmations, trend_strength, sl, tp } = req.body;
   if (!user_id || !symbol) return res.status(400).json({ error: "user_id e symbol obrigatórios" });
-
   const profitVal = parseFloat(profit) || 0;
   const resultStr = profitVal > 0 ? "win" : "loss";
-
   broadcastToSite({ type: "trade_closed", user_id, symbol, direction, profit: profitVal, result: resultStr, strategy, timestamp: new Date().toISOString() });
-
   const now = new Date();
   await saveTradeToSupabase({
     user_code: user_id, symbol, direction: direction || "buy",
@@ -550,7 +617,6 @@ app.post("/slave-trade-closed", async (req, res) => {
     confirmations: parseInt(confirmations) || 0,
     trend_strength: parseFloat(trend_strength) || 0,
   });
-
   res.json({ status: "ok" });
 });
 
@@ -560,31 +626,22 @@ app.post("/slave-error", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// ─────────────────────────────────────────────
-// ROTA — Cliente executa ordem
-// ─────────────────────────────────────────────
 app.post("/client-execute-order", async (req, res) => {
   const { user_id, symbol, direction, sl, tp, lot_size, strategy, probability, confirmations, trend_strength } = req.body;
   if (!user_id || !symbol || !direction) return res.status(400).json({ error: "user_id, symbol e direction obrigatórios." });
-
   const planCheck = await checkProPlan(user_id);
   const limits    = getPlanLimits(planCheck.plan || "basic");
-
   if (limits.assets !== "ALL" && !limits.assets.includes(symbol))
     return res.status(403).json({ error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}.`, plan: planCheck.plan });
-
   if (!limits.autoTrade)
     return res.status(403).json({ error: "Auto Trade não disponível no plano Básico.", plan: planCheck.plan });
-
   if (!isSlaveOnline(user_id)) {
     const exists = activeSlaves.has(user_id);
     const lastSeenAgo = exists ? Math.round((new Date() - activeSlaves.get(user_id).lastSeen) / 1000) : null;
     return res.status(503).json({ error: "EA Slave não está conectado.", slave_online: false, last_seen: lastSeenAgo });
   }
-
   const slVal = parseFloat(sl), tpVal = parseFloat(tp);
   if (!slVal || !tpVal) return res.status(400).json({ error: "SL e TP inválidos." });
-
   const orderId = generateOrderId();
   slavePendingOrders.set(user_id, {
     order_id: orderId, direction, symbol,
@@ -595,13 +652,11 @@ app.post("/client-execute-order", async (req, res) => {
     trend_strength: parseFloat(trend_strength) || 0,
     timestamp: new Date().toISOString(),
   });
-
   const slave = activeSlaves.get(user_id);
   if (slave?.whatsapp_phone && limits.whatsapp) {
     await sendWhatsAppAlert(slave.whatsapp_phone,
-      `📊 TraderAureonia Signal\n${direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${probability}%`);
+      `📊 ${direction} ${symbol}\nEstratégia: ${strategy}\nProb: ${probability}%`);
   }
-
   res.json({ status: "ok", message: "Ordem enviada.", order_id: orderId });
 });
 
@@ -677,8 +732,8 @@ async function callEaSignalV3(strategy, symbol) {
 // ─────────────────────────────────────────────
 wss.on("connection", (ws) => {
   siteClients.add(ws);
-  ws.send(JSON.stringify({ type: "mt5_status",      connected: isMt5Online() }));
-  ws.send(JSON.stringify({ type: "slaves_count",    count: activeSlaves.size }));
+  ws.send(JSON.stringify({ type: "mt5_status",        connected: isMt5Online() }));
+  ws.send(JSON.stringify({ type: "slaves_count",      count: activeSlaves.size }));
   ws.send(JSON.stringify({ type: "symbols_available", symbols: Array.from(allPrices.keys()) }));
 
   ws.on("message", async (raw) => {
@@ -688,7 +743,7 @@ wss.on("connection", (ws) => {
       // ── Ping ──
       if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
 
-      // ── Análise normal ──
+      // ── Análise normal (TradePage) ──
       if (msg.type === "analyze") {
         const strategy = msg.strategy || "QUICK";
         const symbol   = msg.symbol   || "BTCUSD";
@@ -724,32 +779,67 @@ wss.on("connection", (ws) => {
       // ── Entrar na sala ao vivo ──
       if (msg.type === "join_live_room") {
         liveRoomClients.add(ws);
-        liveRoomActive = true;
-
-        if (!liveRoomInterval) {
-          liveRoomInterval = setInterval(runLiveRoom, 30000);
-          runLiveRoom(); // Roda imediatamente
-          console.log("[LiveRoom] Sala iniciada!");
-        }
+        clientFocusAsset.set(ws, null);
+        clientStrategies.set(ws, { ...DEFAULT_STRATEGIES });
+        startLiveRoom();
 
         ws.send(JSON.stringify({
           type:       "live_room_joined",
           history:    liveSignalHistory.slice(0, 10),
           scoreboard: liveScoreboard,
           assets:     LIVE_ASSETS,
+          strategies: DEFAULT_STRATEGIES,
           message:    "Bem-vindo à sala ao vivo! A IA está monitorando o mercado.",
           timestamp:  new Date().toISOString(),
         }));
+
+        // Emite contagem de viewers para todos
+        broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size });
       }
 
       // ── Sair da sala ao vivo ──
       if (msg.type === "leave_live_room") {
         liveRoomClients.delete(ws);
-        if (liveRoomClients.size === 0 && liveRoomInterval) {
-          clearInterval(liveRoomInterval);
-          liveRoomInterval = null;
-          liveRoomActive   = false;
-          console.log("[LiveRoom] Sala vazia — pausado.");
+        clientFocusAsset.delete(ws);
+        clientStrategies.delete(ws);
+        broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size });
+        if (liveRoomClients.size === 0) stopLiveRoom();
+      }
+
+      // ── Definir ativo em foco (analisa a cada 10s) ──
+      if (msg.type === "focus_asset") {
+        const symbol = msg.asset?.toUpperCase();
+        if (symbol) {
+          clientFocusAsset.set(ws, symbol);
+          console.log(`[LiveRoom] Cliente focando em ${symbol}`);
+          // Analisa imediatamente ao focar
+          const priceData = allPrices.get(symbol);
+          if (priceData && isPriceFresh(priceData)) {
+            await analyzeLiveAsset(symbol, true);
+          }
+        }
+      }
+
+      // ── Definir estratégia para um ativo ──
+      if (msg.type === "set_live_strategy") {
+        const { asset, strategy } = msg;
+        if (asset && strategy) {
+          const strategies = clientStrategies.get(ws) || { ...DEFAULT_STRATEGIES };
+          strategies[asset] = strategy;
+          clientStrategies.set(ws, strategies);
+          console.log(`[LiveRoom] Estratégia ${strategy} para ${asset}`);
+
+          // Analisa imediatamente com a nova estratégia
+          const priceData = allPrices.get(asset);
+          if (priceData && isPriceFresh(priceData)) {
+            await analyzeLiveAsset(asset, true);
+          }
+
+          ws.send(JSON.stringify({
+            type: "strategy_updated", asset, strategy,
+            message: `Estratégia ${strategy} ativa para ${asset}`,
+            timestamp: new Date().toISOString(),
+          }));
         }
       }
 
@@ -759,11 +849,10 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     siteClients.delete(ws);
     liveRoomClients.delete(ws);
-    if (liveRoomClients.size === 0 && liveRoomInterval) {
-      clearInterval(liveRoomInterval);
-      liveRoomInterval = null;
-      liveRoomActive   = false;
-    }
+    clientFocusAsset.delete(ws);
+    clientStrategies.delete(ws);
+    broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size });
+    if (liveRoomClients.size === 0) stopLiveRoom();
   });
 });
 
@@ -802,7 +891,7 @@ app.get("/health", (_, res) => {
   const prices = [];
   allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
   res.json({
-    status: "online", version: "v12",
+    status: "online", version: "v13",
     mt5_connected: isMt5Online(),
     symbols_count: allPrices.size, symbols: prices,
     site_clients: siteClients.size,
@@ -812,12 +901,12 @@ app.get("/health", (_, res) => {
     live_room_active: liveRoomActive,
     live_room_clients: liveRoomClients.size,
     live_signals_today: liveScoreboard.signals,
+    focused_asset: getMostFocusedAsset(),
     timestamp: new Date().toISOString(),
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Railway] Servidor v12 rodando na porta ${PORT}`);
-  console.log(`[Railway] Live Trading Room ativo`);
-  console.log(`[Railway] Copy Trade, Webhook Hotmart, Limites por plano`);
+  console.log(`[Railway] Servidor v13 rodando na porta ${PORT}`);
+  console.log(`[Railway] Live Room: 30s geral + 10s foco por ativo`);
 });
