@@ -1,10 +1,11 @@
 /**
- * TraderAureonia AI — Servidor Railway v15
- * - Suporte a mode: express | complete
- * - Novas estratégias: SMC_PRO, PA, WYCKOFF, SD, FIBONACCI, AI
+ * TraderAureonia AI — Servidor Railway v16
+ * - WhatsApp Bot via Baileys (sem custo extra)
+ * - Bot de boas-vindas automático
+ * - Cadastro de subscribers via WhatsApp
+ * - Envio automático de sinais
  * - Sala ao vivo 24h
- * - /live-learning com estatísticas
- * - Captura de liquidez como elemento central
+ * - Live Learning com Supabase
  * - Copy Trade Elite
  * - Webhook Hotmart
  */
@@ -50,15 +51,31 @@ const SUPABASE_URL = "https://vxxdkxlvkrxkfbrvxdal.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ4eGRreGx2a3J4a2ZicnZ4ZGFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNjE5MzksImV4cCI6MjA5MTkzNzkzOX0.Z1A_L_ObyDwWSoT0lp9uoB0qpRx7-Tt_oEDpifd-U7s";
 
 // ─────────────────────────────────────────────
-// ESTRATÉGIAS DISPONÍVEIS
+// WHATSAPP BOT — Estado
+// ─────────────────────────────────────────────
+let waSocket       = null;
+let waConnected    = false;
+let waQRCode       = null;
+let waQRCodeBase64 = null;
+
+// Subscribers em memória (também salva no Supabase)
+// phone → { plan, email, active, name }
+const waSubscribers = new Map();
+
+// Conversas pendentes de cadastro
+// phone → { step, email }
+const waPendingRegistrations = new Map();
+
+// ─────────────────────────────────────────────
+// ESTRATÉGIAS
 // ─────────────────────────────────────────────
 const STRATEGIES = {
-  SMC_PRO:   { label: "SMC Pro",         plan: "basic",  modes: ["express","complete"] },
-  PA:        { label: "Price Action",     plan: "basic",  modes: ["express","complete"] },
-  WYCKOFF:   { label: "Wyckoff",          plan: "pro",    modes: ["express","complete"] },
-  SD:        { label: "Supply & Demand",  plan: "pro",    modes: ["express","complete"] },
-  FIBONACCI: { label: "Fibonacci",        plan: "pro",    modes: ["express","complete"] },
-  AI:        { label: "IA (Todas)",       plan: "elite",  modes: ["express","complete"] },
+  SMC_PRO:   { label: "SMC Pro",        plan: "basic" },
+  PA:        { label: "Price Action",    plan: "basic" },
+  WYCKOFF:   { label: "Wyckoff",         plan: "pro"   },
+  SD:        { label: "Supply & Demand", plan: "pro"   },
+  FIBONACCI: { label: "Fibonacci",       plan: "pro"   },
+  AI:        { label: "IA (Todas)",      plan: "elite" },
 };
 
 // ─────────────────────────────────────────────
@@ -72,75 +89,51 @@ const slavePendingOrders = new Map();
 const slaveExecutions    = [];
 let   orderCounter       = 1;
 
-// Live Room
-const liveRoomClients   = new Set();
-const liveSignalHistory = [];
-let   liveRoomInterval  = null;
-let   focusInterval     = null;
-const clientFocusAsset  = new Map();
-const clientStrategies  = new Map();
-const clientModes       = new Map(); // ws → "express" | "complete"
+const liveRoomClients      = new Set();
+const liveSignalHistory    = [];
+let   liveRoomInterval     = null;
+let   focusInterval        = null;
+const clientFocusAsset     = new Map();
+const clientStrategies     = new Map();
+const clientModes          = new Map();
 const pendingNotifications = [];
 
-// Cache de aprendizado
 const historicalCache = new Map();
 let   lastCacheUpdate = 0;
 const CACHE_TTL_MS    = 5 * 60 * 1000;
 
 const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
 const DEFAULT_STRATEGIES = {
-  BTCUSD:     "SMC_PRO",
-  "XAUUSD.s": "SMC_PRO",
-  EURUSD:     "PA",
-  GBPUSD:     "SD",
-  ETHUSD:     "FIBONACCI",
+  BTCUSD: "SMC_PRO", "XAUUSD.s": "SMC_PRO",
+  EURUSD: "PA", GBPUSD: "SD", ETHUSD: "FIBONACCI",
 };
 
-const liveScoreboard = {
-  signals: 0, wins: 0, losses: 0, profit: 0,
-  date: new Date().toDateString(),
-};
+const liveScoreboard = { signals: 0, wins: 0, losses: 0, profit: 0, date: new Date().toDateString() };
 
 // ─────────────────────────────────────────────
 // LIMITES POR PLANO
 // ─────────────────────────────────────────────
 const PLAN_LIMITS = {
   basic: {
-    assets:       ["BTCUSD"],
-    strategies:   ["SMC_PRO", "PA"],
-    modes:        ["express"],
-    maxPositions: 3, autoTrade: false, copyTrade: false,
-    liveRoom: true, liveDelaySecs: 60, whatsapp: false,
+    assets: ["BTCUSD"], strategies: ["SMC_PRO","PA"], modes: ["express"],
+    maxPositions: 3, autoTrade: false, copyTrade: false, liveRoom: true, whatsapp: true,
   },
   pro: {
-    assets:       ["BTCUSD","EURUSD","XAUUSD.s"],
-    strategies:   ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI"],
-    modes:        ["express","complete"],
-    maxPositions: 10, autoTrade: true, copyTrade: false,
-    liveRoom: true, liveDelaySecs: 0, whatsapp: true,
+    assets: ["BTCUSD","EURUSD","XAUUSD.s"], strategies: ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI"],
+    modes: ["express","complete"], maxPositions: 10, autoTrade: true, copyTrade: false, liveRoom: true, whatsapp: true,
   },
   elite: {
-    assets:       "ALL",
-    strategies:   ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI","AI"],
-    modes:        ["express","complete"],
-    maxPositions: 20, autoTrade: true, copyTrade: true,
-    liveRoom: true, liveDelaySecs: 0, whatsapp: true,
+    assets: "ALL", strategies: ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI","AI"],
+    modes: ["express","complete"], maxPositions: 20, autoTrade: true, copyTrade: true, liveRoom: true, whatsapp: true,
   },
 };
-
-function getPlanLimits(plan) {
-  return PLAN_LIMITS[plan] || PLAN_LIMITS.basic;
-}
+function getPlanLimits(plan) { return PLAN_LIMITS[plan] || PLAN_LIMITS.basic; }
 
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
-function isMt5Online() {
-  return mt5LastSeen && (new Date() - mt5LastSeen) < MT5_TIMEOUT_MS;
-}
-function generateOrderId() {
-  return `ORD-${Date.now()}-${orderCounter++}`;
-}
+function isMt5Online() { return mt5LastSeen && (new Date() - mt5LastSeen) < MT5_TIMEOUT_MS; }
+function generateOrderId() { return `ORD-${Date.now()}-${orderCounter++}`; }
 function isSlaveOnline(userId) {
   if (!activeSlaves.has(userId)) return false;
   return (new Date() - activeSlaves.get(userId).lastSeen) / 1000 < SLAVE_TIMEOUT_S;
@@ -160,9 +153,7 @@ function getStrategyForAsset(symbol) {
 }
 function getMostFocusedAsset() {
   const votes = {};
-  clientFocusAsset.forEach((symbol) => {
-    if (symbol) votes[symbol] = (votes[symbol] || 0) + 1;
-  });
+  clientFocusAsset.forEach((symbol) => { if (symbol) votes[symbol] = (votes[symbol] || 0) + 1; });
   if (Object.keys(votes).length === 0) return null;
   return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0];
 }
@@ -173,7 +164,7 @@ function getMostUsedMode() {
 }
 
 // ─────────────────────────────────────────────
-// SUPABASE HELPERS
+// SUPABASE
 // ─────────────────────────────────────────────
 async function supabaseGet(path) {
   try {
@@ -187,10 +178,7 @@ async function supabasePost(path, body) {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json", "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=representation",
-      },
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=representation" },
       body: JSON.stringify(body),
     });
     return await res.json();
@@ -200,14 +188,362 @@ async function supabasePatch(path, body) {
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json", "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal",
-      },
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal" },
       body: JSON.stringify(body),
     });
   } catch {}
 }
+
+// ─────────────────────────────────────────────
+// WHATSAPP — Inicializa Baileys
+// ─────────────────────────────────────────────
+async function startWhatsApp() {
+  try {
+    const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = await import("@whiskeysockets/baileys");
+    const { Boom } = await import("@hapi/boom");
+    const pino = (await import("pino")).default;
+
+    const { state, saveCreds } = await useMultiFileAuthState("./wa_auth");
+    const { version }          = await fetchLatestBaileysVersion();
+
+    waSocket = makeWASocket({
+      version,
+      auth:  state,
+      logger: pino({ level: "silent" }),
+      printQRInTerminal: true,
+      browser: ["TraderAureonia AI", "Chrome", "1.0.0"],
+    });
+
+    // Salva credenciais quando atualizar
+    waSocket.ev.on("creds.update", saveCreds);
+
+    // Gerencia conexão
+    waSocket.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        waQRCode = qr;
+        // Converte QR para base64 para mostrar no site
+        try {
+          const QRCode = require("qrcode");
+          QRCode.toDataURL(qr, (err, url) => {
+            if (!err) {
+              waQRCodeBase64 = url;
+              broadcastToSite({ type: "wa_qr", qr: url });
+              console.log("[WhatsApp] QR Code gerado — acesse /whatsapp/qr para escanear");
+            }
+          });
+        } catch {
+          broadcastToSite({ type: "wa_qr_text", qr });
+        }
+      }
+
+      if (connection === "open") {
+        waConnected = true;
+        waQRCode    = null;
+        waQRCodeBase64 = null;
+        console.log("[WhatsApp] ✅ Conectado com sucesso!");
+        broadcastToSite({ type: "wa_connected", connected: true });
+        loadWaSubscribers();
+      }
+
+      if (connection === "close") {
+        waConnected = false;
+        broadcastToSite({ type: "wa_connected", connected: false });
+        const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        console.log(`[WhatsApp] Conexão fechada. Reconectar: ${shouldReconnect}`);
+        if (shouldReconnect) {
+          setTimeout(startWhatsApp, 5000);
+        }
+      }
+    });
+
+    // Recebe mensagens
+    waSocket.ev.on("messages.upsert", async ({ messages }) => {
+      for (const msg of messages) {
+        if (!msg.message || msg.key.fromMe) continue;
+        const from    = msg.key.remoteJid;
+        const phone   = from.replace("@s.whatsapp.net", "").replace("@g.us", "");
+        const text    = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
+        if (!text || from.includes("@g.us")) continue; // ignora grupos
+        await handleWhatsAppMessage(phone, from, text);
+      }
+    });
+
+  } catch (err) {
+    console.error("[WhatsApp] Erro ao iniciar:", err.message);
+    setTimeout(startWhatsApp, 10000);
+  }
+}
+
+// ─────────────────────────────────────────────
+// WHATSAPP — Carrega subscribers do Supabase
+// ─────────────────────────────────────────────
+async function loadWaSubscribers() {
+  try {
+    const data = await supabaseGet("wa_subscribers?active=eq.true&select=phone,plan,email,name");
+    if (data && Array.isArray(data)) {
+      data.forEach(s => waSubscribers.set(s.phone, { plan: s.plan, email: s.email, name: s.name, active: true }));
+      console.log(`[WhatsApp] ${data.length} subscribers carregados`);
+    }
+  } catch {}
+}
+
+// ─────────────────────────────────────────────
+// WHATSAPP — Envia mensagem
+// ─────────────────────────────────────────────
+async function sendWAMessage(phone, message) {
+  if (!waConnected || !waSocket) return false;
+  try {
+    const jid = phone.includes("@") ? phone : `${phone}@s.whatsapp.net`;
+    await waSocket.sendMessage(jid, { text: message });
+    return true;
+  } catch (err) {
+    console.error(`[WhatsApp] Erro ao enviar para ${phone}:`, err.message);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────
+// WHATSAPP — Bot de respostas automáticas
+// ─────────────────────────────────────────────
+async function handleWhatsAppMessage(phone, jid, text) {
+  console.log(`[WhatsApp] Mensagem de ${phone}: ${text}`);
+
+  // Verifica se está em processo de cadastro
+  const pending = waPendingRegistrations.get(phone);
+
+  // PARAR — cancela recebimento de sinais
+  if (text === "parar" || text === "stop" || text === "cancelar") {
+    if (waSubscribers.has(phone)) {
+      waSubscribers.delete(phone);
+      await supabasePatch(`wa_subscribers?phone=eq.${phone}`, { active: false });
+      await sendWAMessage(phone, "✅ Você foi removido da lista de sinais.\n\nPara receber novamente envie *OI*.");
+    } else {
+      await sendWAMessage(phone, "Você não estava cadastrado na lista de sinais.");
+    }
+    waPendingRegistrations.delete(phone);
+    return;
+  }
+
+  // STATUS — ver plano e status
+  if (text === "status" || text === "plano") {
+    const sub = waSubscribers.get(phone);
+    if (sub) {
+      const planLabel = sub.plan === "elite" ? "🏆 Elite" : sub.plan === "pro" ? "⭐ PRO" : "📊 Básico";
+      const limits = getPlanLimits(sub.plan);
+      const assets = limits.assets === "ALL" ? "Todos os ativos" : limits.assets.join(", ");
+      await sendWAMessage(phone,
+        `📊 *Seu Status TraderAureonia AI*\n\n` +
+        `Plano: ${planLabel}\n` +
+        `Ativos: ${assets}\n` +
+        `Estratégias: ${limits.strategies.join(", ")}\n` +
+        `Modo: ${limits.modes.join(" e ")}\n\n` +
+        `Para parar os sinais envie *PARAR*\n` +
+        `Acesse: traderaureonia.com.br`
+      );
+    } else {
+      await sendWAMessage(phone,
+        `Você não está cadastrado.\n\nEnvie *OI* para se cadastrar e receber sinais gratuitos.`
+      );
+    }
+    return;
+  }
+
+  // AJUDA
+  if (text === "ajuda" || text === "help" || text === "menu") {
+    await sendWAMessage(phone,
+      `🤖 *TraderAureonia AI — Comandos*\n\n` +
+      `*OI* — Cadastrar para receber sinais\n` +
+      `*STATUS* — Ver seu plano e configurações\n` +
+      `*PARAR* — Parar de receber sinais\n` +
+      `*AJUDA* — Ver este menu\n\n` +
+      `🌐 traderaureonia.com.br`
+    );
+    return;
+  }
+
+  // CADASTRO — Passo 2: recebeu o email
+  if (pending && pending.step === "waiting_email") {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(text)) {
+      await sendWAMessage(phone, "❌ Email inválido. Por favor envie um email válido.\n\nEx: seuemail@gmail.com");
+      return;
+    }
+
+    // Busca plano no Supabase pelo email
+    const users = await supabaseGet(`users?email=eq.${encodeURIComponent(text)}&select=id,email,plan`);
+    let plan = "basic";
+    if (users && users.length > 0) {
+      plan = users[0].plan || "basic";
+    }
+
+    const planLabel = plan === "elite" ? "🏆 Elite" : plan === "pro" ? "⭐ PRO" : "📊 Básico";
+    const limits    = getPlanLimits(plan);
+    const assets    = limits.assets === "ALL" ? "Todos os ativos" : limits.assets.join(", ");
+
+    // Salva no Supabase
+    await supabasePost("wa_subscribers", {
+      phone, email: text, plan, active: true,
+      created_at: new Date().toISOString(),
+    });
+
+    // Salva em memória
+    waSubscribers.set(phone, { plan, email: text, active: true });
+    waPendingRegistrations.delete(phone);
+
+    await sendWAMessage(phone,
+      `✅ *Cadastro realizado com sucesso!*\n\n` +
+      `📧 Email: ${text}\n` +
+      `📊 Plano: ${planLabel}\n` +
+      `📈 Ativos: ${assets}\n\n` +
+      `A partir de agora você receberá os sinais da IA automaticamente quando aparecerem.\n\n` +
+      `📱 Formato dos sinais:\n` +
+      `🔴 SINAL BUY BTCUSD\n` +
+      `Estratégia: SMC Pro\n` +
+      `Entrada: 78.250\n` +
+      `SL: 77.900 | TP1: 78.800\n` +
+      `Prob: 84%\n\n` +
+      `Para parar envie *PARAR*\n` +
+      `Comandos: envie *AJUDA*\n` +
+      `🌐 traderaureonia.com.br`
+    );
+
+    console.log(`[WhatsApp] ✅ Novo subscriber: ${phone} | Plano: ${plan}`);
+    return;
+  }
+
+  // OI / OLA — inicia cadastro
+  if (text === "oi" || text === "olá" || text === "ola" || text === "hello" || text === "hi" || text === "início" || text === "inicio") {
+
+    // Já cadastrado
+    if (waSubscribers.has(phone)) {
+      const sub = waSubscribers.get(phone);
+      const planLabel = sub.plan === "elite" ? "🏆 Elite" : sub.plan === "pro" ? "⭐ PRO" : "📊 Básico";
+      await sendWAMessage(phone,
+        `👋 Olá! Você já está cadastrado.\n\n` +
+        `Plano: ${planLabel}\n\n` +
+        `Você continuará recebendo os sinais automaticamente.\n\n` +
+        `Para ver seu status envie *STATUS*\n` +
+        `Para parar envie *PARAR*`
+      );
+      return;
+    }
+
+    // Inicia cadastro
+    waPendingRegistrations.set(phone, { step: "waiting_email" });
+    await sendWAMessage(phone,
+      `👋 *Bem-vindo à TraderAureonia AI!*\n\n` +
+      `🤖 Receba sinais de trading com Inteligência Artificial diretamente aqui no WhatsApp!\n\n` +
+      `📊 Estratégias disponíveis:\n` +
+      `• SMC Pro (Order Blocks)\n` +
+      `• Price Action\n` +
+      `• Wyckoff\n` +
+      `• Supply & Demand\n` +
+      `• Fibonacci\n` +
+      `• IA (todas combinadas)\n\n` +
+      `Para começar, me informe o *email* que você usa no site traderaureonia.com.br:\n\n` +
+      `_(Não tem conta? Crie em traderaureonia.com.br e depois volte aqui)_`
+    );
+    return;
+  }
+
+  // Mensagem não reconhecida
+  await sendWAMessage(phone,
+    `🤖 Não entendi sua mensagem.\n\nEnvie *AJUDA* para ver os comandos disponíveis.`
+  );
+}
+
+// ─────────────────────────────────────────────
+// WHATSAPP — Envia sinal para subscribers
+// ─────────────────────────────────────────────
+async function sendSignalToSubscribers(signal) {
+  if (!waConnected || waSubscribers.size === 0) return;
+
+  const { asset, direction, strategy, probability, entry, sl, tp1, tp2, tp3, mode } = signal;
+  const stratLabel = STRATEGIES[strategy]?.label || strategy;
+  const emoji      = direction === "BUY" ? "🟢" : "🔴";
+  const modeLabel  = mode === "complete" ? "📊 Análise Completa" : "⚡ Express";
+
+  let sent = 0;
+  for (const [phone, sub] of waSubscribers.entries()) {
+    if (!sub.active) continue;
+
+    const limits = getPlanLimits(sub.plan);
+
+    // Verifica se o plano permite esse ativo
+    if (limits.assets !== "ALL" && !limits.assets.includes(asset)) continue;
+
+    // Verifica se o plano permite essa estratégia
+    if (!limits.strategies.includes(strategy)) continue;
+
+    const message =
+      `${emoji} *SINAL ${direction} — ${asset}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 ${stratLabel} | ${modeLabel}\n` +
+      `🎯 Probabilidade: ${probability}%\n\n` +
+      `💵 Entrada: *${entry}*\n` +
+      `🛑 Stop Loss: ${sl}\n` +
+      `✅ TP1: ${tp1}${tp2 ? `\n✅ TP2: ${tp2}` : ""}${tp3 ? `\n✅ TP3: ${tp3}` : ""}\n\n` +
+      `⏰ ${new Date().toLocaleTimeString("pt-BR")}\n` +
+      `🌐 traderaureonia.com.br`;
+
+    await sendWAMessage(phone, message);
+    await new Promise(r => setTimeout(r, 500)); // pausa entre mensagens
+    sent++;
+  }
+
+  if (sent > 0) console.log(`[WhatsApp] Sinal enviado para ${sent} subscribers`);
+}
+
+// ─────────────────────────────────────────────
+// ROTA — QR Code para conectar WhatsApp
+// ─────────────────────────────────────────────
+app.get("/whatsapp/qr", (req, res) => {
+  if (waConnected) {
+    return res.send(`
+      <html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px">
+        <h1>✅ WhatsApp Conectado!</h1>
+        <p>O bot está ativo e pronto para enviar sinais.</p>
+        <p>Subscribers: ${waSubscribers.size}</p>
+      </body></html>
+    `);
+  }
+  if (waQRCodeBase64) {
+    return res.send(`
+      <html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px">
+        <h1>📱 Escanear QR Code</h1>
+        <p>Abra o WhatsApp no celular → Menu → Aparelhos conectados → Conectar aparelho</p>
+        <img src="${waQRCodeBase64}" style="width:300px;height:300px;border:3px solid #00ff00;border-radius:12px" />
+        <p style="color:#aaa">A página atualiza automaticamente após a conexão</p>
+        <script>setTimeout(()=>location.reload(), 10000)</script>
+      </body></html>
+    `);
+  }
+  res.send(`
+    <html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px">
+      <h1>⏳ Aguardando QR Code...</h1>
+      <p>O bot está iniciando. Aguarde alguns segundos.</p>
+      <script>setTimeout(()=>location.reload(), 3000)</script>
+    </body></html>
+  `);
+});
+
+app.get("/whatsapp/status", (req, res) => {
+  res.json({
+    connected: waConnected,
+    subscribers: waSubscribers.size,
+    has_qr: !!waQRCode,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/whatsapp/subscribers", (req, res) => {
+  const list = [];
+  waSubscribers.forEach((data, phone) => {
+    list.push({ phone, plan: data.plan, email: data.email, active: data.active });
+  });
+  res.json({ total: list.length, subscribers: list });
+});
 
 // ─────────────────────────────────────────────
 // APRENDIZADO
@@ -274,9 +610,6 @@ async function updateLiveSignalResult(supabaseId, result, profit, closePrice, tp
   lastCacheUpdate = 0;
 }
 
-// ─────────────────────────────────────────────
-// VALIDA PLANO
-// ─────────────────────────────────────────────
 async function checkProPlan(userId) {
   try {
     const response = await fetch(`${CHECK_SLAVE_URL}?user_id=${userId}`);
@@ -289,10 +622,7 @@ async function saveTradeToSupabase(tradeData) {
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/trades`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json", "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal",
-      },
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal" },
       body: JSON.stringify(tradeData),
     });
   } catch {}
@@ -310,20 +640,19 @@ async function activateUserPlan(email, plan, months) {
     if (users && users.length > 0) {
       await fetch(`${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json", "apikey": SUPABASE_KEY,
-          "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal",
-        },
+        headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal" },
         body: JSON.stringify({ plan, plan_expires_at: expiresAt.toISOString() }),
       });
+      // Atualiza plano do subscriber WhatsApp se existir
+      waSubscribers.forEach((sub, phone) => {
+        if (sub.email === email) {
+          sub.plan = plan;
+          waSubscribers.set(phone, sub);
+          supabasePatch(`wa_subscribers?phone=eq.${phone}`, { plan });
+          sendWAMessage(phone, `🎉 Seu plano foi atualizado para *${plan.toUpperCase()}*!\n\nAgora você receberá sinais de mais ativos e estratégias.`);
+        }
+      });
     }
-  } catch {}
-}
-
-async function sendWhatsAppAlert(phone, message) {
-  if (!phone) return;
-  try {
-    await fetch(`https://api.callmebot.com/whatsapp.php?phone=${phone}&text=${encodeURIComponent(message)}&apikey=YOUR_KEY`);
   } catch {}
 }
 
@@ -342,11 +671,10 @@ function notifyAllClients(signal) {
   const notification = JSON.stringify({
     type: "live_signal_notification",
     asset: signal.asset, direction: signal.direction,
-    strategy: signal.strategy, probability: signal.probability,
-    mode: signal.mode || "express",
-    entry: signal.entry, sl: signal.sl, tp1: signal.tp1,
-    hora: signal.hora,
-    message: `🔴 ${signal.direction} em ${signal.asset} — ${signal.probability}% (${STRATEGIES[signal.strategy]?.label || signal.strategy})`,
+    strategy: signal.strategy, strategy_label: STRATEGIES[signal.strategy]?.label || signal.strategy,
+    probability: signal.probability, mode: signal.mode || "express",
+    entry: signal.entry, sl: signal.sl, tp1: signal.tp1, hora: signal.hora,
+    message: `🔴 ${signal.direction} em ${signal.asset} — ${signal.probability}%`,
     timestamp: new Date().toISOString(),
   });
   siteClients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(notification); });
@@ -365,29 +693,22 @@ function checkScoreboardReset() {
 }
 
 // ─────────────────────────────────────────────
-// CHAMA eaSignal_v3 com mode e strategy
+// eaSignal_v3
 // ─────────────────────────────────────────────
 async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "express") {
   const priceData = allPrices.get(symbol);
   if (!priceData) throw new Error(`Sem dados para ${symbol}.`);
-
   let closes, highs, lows, opens;
   if (priceData.closes && Array.isArray(priceData.closes) && priceData.closes.length >= 30) {
-    closes = priceData.closes; highs = priceData.highs || [];
-    lows   = priceData.lows   || []; opens = priceData.opens || [];
+    closes = priceData.closes; highs = priceData.highs || []; lows = priceData.lows || []; opens = priceData.opens || [];
   } else {
     const bid = parseFloat(priceData.bid);
-    const c1  = parseFloat(priceData.close1 || bid), c2 = c1*0.9995, c3 = c1*0.999;
-    const h1  = parseFloat(priceData.high1 || c1*1.002), l1 = parseFloat(priceData.low1 || c1*0.998);
+    const c1 = parseFloat(priceData.close1 || bid), c2 = c1*0.9995, c3 = c1*0.999;
+    const h1 = parseFloat(priceData.high1 || c1*1.002), l1 = parseFloat(priceData.low1 || c1*0.998);
     closes = []; highs = []; lows = []; opens = [];
-    for(let i=54;i>=3;i--){
-      const f=1+(Math.random()-0.5)*0.001;
-      closes.push(parseFloat((bid*f).toFixed(5))); highs.push(parseFloat((bid*f*1.001).toFixed(5)));
-      lows.push(parseFloat((bid*f*0.999).toFixed(5))); opens.push(parseFloat((bid*f*0.9995).toFixed(5)));
-    }
-    closes.push(c3,c2,c1,bid); highs.push(h1,h1,h1,h1); lows.push(l1,l1,l1,l1); opens.push(c3,c2,c1,bid*0.9998);
+    for(let i=54;i>=3;i--){const f=1+(Math.random()-0.5)*0.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*0.999).toFixed(5)));opens.push(parseFloat((bid*f*0.9995).toFixed(5)));}
+    closes.push(c3,c2,c1,bid);highs.push(h1,h1,h1,h1);lows.push(l1,l1,l1,l1);opens.push(c3,c2,c1,bid*0.9998);
   }
-
   const body = {
     strategy, symbol, mode, closes, highs, lows, opens,
     historical_win_rate:    historicalData?.win_rate    ?? -1,
@@ -395,7 +716,6 @@ async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "e
     hour_win_rate:          historicalData?.hour_win_rate   ?? -1,
     hour_sample_size:       historicalData?.hour_sample_size ?? 0,
   };
-
   const response = await fetch(EA_SIGNAL_V3_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${EA_SIGNAL_KEY}` },
@@ -403,38 +723,32 @@ async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "e
   });
   if (!response.ok) throw new Error(`eaSignal_v3 retornou ${response.status}`);
   const result = await response.json();
-  result.live_price = priceData.bid;
-  result.live_symbol = symbol;
+  result.live_price = priceData.bid; result.live_symbol = symbol;
   return result;
 }
 
 // ─────────────────────────────────────────────
-// LIVE ROOM — Analisa um ativo
+// LIVE ROOM — Analisa ativo
 // ─────────────────────────────────────────────
 async function analyzeLiveAsset(symbol, isPriority = false) {
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) return;
-
-  const strategy = getStrategyForAsset(symbol);
-  const mode     = getMostUsedMode();
-  const price    = priceData.bid;
-  const hour     = new Date().getUTCHours();
-
-  const stats     = await fetchHistoricalStats(symbol, strategy);
-  const hourStats = stats.hour_stats?.[hour] || {};
+  const strategy   = getStrategyForAsset(symbol);
+  const mode       = getMostUsedMode();
+  const price      = priceData.bid;
+  const hour       = new Date().getUTCHours();
+  const stats      = await fetchHistoricalStats(symbol, strategy);
+  const hourStats  = stats.hour_stats?.[hour] || {};
   const historicalData = {
-    win_rate:         stats.win_rate,
-    sample_size:      stats.sample_size,
-    hour_win_rate:    hourStats.win_rate   ?? -1,
-    hour_sample_size: hourStats.count      ?? 0,
+    win_rate: stats.win_rate, sample_size: stats.sample_size,
+    hour_win_rate: hourStats.win_rate ?? -1, hour_sample_size: hourStats.count ?? 0,
   };
-
   const stratLabel = STRATEGIES[strategy]?.label || strategy;
 
   if (liveRoomClients.size > 0) {
     broadcastToLiveRoom({
       type: "thinking", asset: symbol, strategy, strategy_label: stratLabel, mode, price, is_priority: isPriority,
-      message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — ${stratLabel} [${mode.toUpperCase()}]${stats.sample_size > 0 ? ` | WR histórico: ${(stats.win_rate*100).toFixed(0)}%` : ""}`,
+      message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — ${stratLabel} [${mode.toUpperCase()}]`,
       timestamp: new Date().toISOString(),
     });
     await new Promise(r => setTimeout(r, 1200));
@@ -443,61 +757,28 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
   try {
     const result = await callEaSignalV3(strategy, symbol, historicalData, mode);
 
-    // Alertas com dados REAIS da IA
     if (liveRoomClients.size > 0 && result.indicators) {
-      const { rsi, ema9, ema21 } = result.indicators;
-      if (rsi > 65) {
-        broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", rsi,
-          message: `⚠ RSI em ${rsi} — sobrecompra`, timestamp: new Date().toISOString() });
-        await new Promise(r => setTimeout(r, 600));
-      } else if (rsi < 35) {
-        broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", rsi,
-          message: `⚠ RSI em ${rsi} — sobrevenda`, timestamp: new Date().toISOString() });
-        await new Promise(r => setTimeout(r, 600));
-      }
-      if (result.htf_bias && result.htf_bias !== "NEUTRAL") {
-        broadcastToLiveRoom({ type: "alert", asset: symbol, level: "info",
-          message: `📈 HTF: ${result.htf_bias === "BULL" ? "ALTISTA 🟢" : "BAIXISTA 🔴"}`,
-          timestamp: new Date().toISOString() });
-        await new Promise(r => setTimeout(r, 500));
-      }
-      // Alerta de captura de liquidez
-      if (result.analysis?.liquidity_sweeps?.bull?.detected) {
-        broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning",
-          message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bull.level} — possível reversão de alta!`,
-          timestamp: new Date().toISOString() });
-        await new Promise(r => setTimeout(r, 600));
-      }
-      if (result.analysis?.liquidity_sweeps?.bear?.detected) {
-        broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning",
-          message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bear.level} — possível reversão de baixa!`,
-          timestamp: new Date().toISOString() });
-        await new Promise(r => setTimeout(r, 600));
-      }
-      if (result.probability_adjustment) {
-        broadcastToLiveRoom({ type: "alert", asset: symbol, level: "info",
-          message: `🧠 Ajuste IA: ${result.probability_adjustment}`, timestamp: new Date().toISOString() });
-        await new Promise(r => setTimeout(r, 500));
-      }
+      const { rsi } = result.indicators;
+      if (rsi > 65) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", rsi, message: `⚠ RSI em ${rsi} — sobrecompra`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
+      else if (rsi < 35) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", rsi, message: `⚠ RSI em ${rsi} — sobrevenda`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
+      if (result.htf_bias && result.htf_bias !== "NEUTRAL") { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "info", message: `📈 HTF: ${result.htf_bias === "BULL" ? "ALTISTA 🟢" : "BAIXISTA 🔴"}`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 400)); }
+      if (result.analysis?.liquidity_sweeps?.bull?.detected) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bull.level}!`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
+      if (result.analysis?.liquidity_sweeps?.bear?.detected) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bear.level}!`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
     }
 
     if (result.status === "new_signal" && result.direction) {
       liveScoreboard.signals++;
-
       const signal = {
         type: "signal", asset: symbol, strategy, strategy_label: stratLabel, mode,
-        direction: result.direction, entry: result.entry,
-        sl: result.sl, tp: result.tp,
+        direction: result.direction, entry: result.entry, sl: result.sl, tp: result.tp,
         tp1: result.tp1, tp2: result.tp2 || null, tp3: result.tp3 || null,
         tp1_label: result.tp1_label, tp2_label: result.tp2_label, tp3_label: result.tp3_label,
         probability: result.probability, reason: result.reason,
         confirmations: result.confirmations, indicators: result.indicators,
         trend_strength: result.trend_strength, is_range: result.is_range,
         htf_bias: result.htf_bias, vwap: result.vwap,
-        volume_profile: result.volume_profile,
-        market_structure: result.market_structure,
-        analysis: result.analysis,
-        probability_adjustment: result.probability_adjustment,
+        volume_profile: result.volume_profile, market_structure: result.market_structure,
+        analysis: result.analysis, probability_adjustment: result.probability_adjustment,
         historical: stats.sample_size > 0 ? { win_rate: stats.win_rate, sample_size: stats.sample_size } : null,
         id: `LIVE-${Date.now()}`,
         hora: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
@@ -506,54 +787,29 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 
       liveSignalHistory.unshift(signal);
       if (liveSignalHistory.length > 50) liveSignalHistory.pop();
-
       await saveLiveSignal(signal);
-
       if (liveRoomClients.size > 0) broadcastToLiveRoom(signal);
       notifyAllClients(signal);
 
-      activeSlaves.forEach((slave) => {
-        const limits = getPlanLimits(slave.plan);
-        if (slave.whatsapp_phone && limits.whatsapp) {
-          sendWhatsAppAlert(slave.whatsapp_phone,
-            `🔴 Live Room [${mode.toUpperCase()}]\n${result.direction} ${symbol}\nEstratégia: ${stratLabel}\nProb: ${result.probability}%\nEntrada: ${result.entry} | SL: ${result.sl} | TP1: ${result.tp1}`
-          );
-        }
-      });
+      // Envia para subscribers WhatsApp
+      await sendSignalToSubscribers(signal);
 
-      console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}%`);
-
+      console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}% | WA: ${waSubscribers.size} subscribers`);
     } else {
       if (liveRoomClients.size > 0) {
-        broadcastToLiveRoom({
-          type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode,
-          reason: result.reason || "Aguardando setup ideal",
-          is_range: result.is_range || false,
-          indicators: result.indicators,
-          htf_bias: result.htf_bias,
-          timestamp: new Date().toISOString(),
-        });
+        broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: result.reason || "Aguardando setup ideal", is_range: result.is_range || false, indicators: result.indicators, htf_bias: result.htf_bias, timestamp: new Date().toISOString() });
       }
     }
-  } catch (err) {
-    console.error(`[LiveRoom] Erro ${symbol}:`, err.message);
-  }
+  } catch (err) { console.error(`[LiveRoom] Erro ${symbol}:`, err.message); }
 }
 
 // ─────────────────────────────────────────────
-// LIVE ROOM — Loops
+// LIVE ROOM — Loops 24h
 // ─────────────────────────────────────────────
 async function runLiveRoom() {
   checkScoreboardReset();
   if (liveRoomClients.size > 0) {
-    broadcastToLiveRoom({
-      type: "scoreboard",
-      signals: liveScoreboard.signals, wins: liveScoreboard.wins,
-      losses: liveScoreboard.losses,   profit: liveScoreboard.profit,
-      win_rate: liveScoreboard.signals > 0
-        ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0",
-      timestamp: new Date().toISOString(),
-    });
+    broadcastToLiveRoom({ type: "scoreboard", signals: liveScoreboard.signals, wins: liveScoreboard.wins, losses: liveScoreboard.losses, profit: liveScoreboard.profit, win_rate: liveScoreboard.signals > 0 ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0", timestamp: new Date().toISOString() });
   }
   const focusedAsset = getMostFocusedAsset();
   for (const symbol of LIVE_ASSETS) {
@@ -573,14 +829,8 @@ async function runFocusedAsset() {
 }
 
 function startLiveRoom24h() {
-  if (!liveRoomInterval) {
-    liveRoomInterval = setInterval(runLiveRoom, 30000);
-    console.log("[LiveRoom] Loop 30s iniciado — 24h ativo");
-  }
-  if (!focusInterval) {
-    focusInterval = setInterval(runFocusedAsset, 10000);
-    console.log("[LiveRoom] Loop 10s (foco) iniciado");
-  }
+  if (!liveRoomInterval) { liveRoomInterval = setInterval(runLiveRoom, 30000); console.log("[LiveRoom] Loop 30s iniciado"); }
+  if (!focusInterval)    { focusInterval    = setInterval(runFocusedAsset, 10000); console.log("[LiveRoom] Loop 10s iniciado"); }
 }
 
 // ─────────────────────────────────────────────
@@ -613,19 +863,11 @@ app.post("/master-trade", async (req, res) => {
   if (!symbol || !direction) return res.status(400).json({ error: "symbol e direction obrigatórios" });
   const eliteSlaves = [];
   activeSlaves.forEach((data, userId) => {
-    if ((new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S && data.plan === "elite")
-      eliteSlaves.push({ userId, ...data });
+    if ((new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S && data.plan === "elite") eliteSlaves.push({ userId, ...data });
   });
   let copied = 0;
   for (const slave of eliteSlaves) {
-    slavePendingOrders.set(slave.userId, {
-      order_id: generateOrderId(), direction, symbol, sl: 0, tp: 0, lot_size: 0,
-      risk_percent: risk_percent || 1.0, sl_percent: sl_percent || 0.5, tp_percent: tp_percent || 1.0,
-      strategy: strategy || "COPY", probability: probability || 0,
-      is_copy_trade: true, timestamp: new Date().toISOString(),
-    });
-    if (slave.whatsapp_phone)
-      await sendWhatsAppAlert(slave.whatsapp_phone, `🤖 Copy Trade: ${direction} ${symbol}\nProb: ${probability}%`);
+    slavePendingOrders.set(slave.userId, { order_id: generateOrderId(), direction, symbol, sl: 0, tp: 0, lot_size: 0, risk_percent: risk_percent || 1.0, sl_percent: sl_percent || 0.5, tp_percent: tp_percent || 1.0, strategy: strategy || "COPY", probability: probability || 0, is_copy_trade: true, timestamp: new Date().toISOString() });
     copied++;
   }
   broadcastToSite({ type: "copy_trade", symbol, direction, strategy, probability, clients: copied, timestamp: new Date().toISOString() });
@@ -633,151 +875,67 @@ app.post("/master-trade", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ROTAS — Preços MT5
+// ROTAS — Preços
 // ─────────────────────────────────────────────
 app.post("/price", (req, res) => {
   const data = req.body;
   if (!data || !data.symbol) return res.status(400).json({ error: "Dados inválidos" });
   mt5LastSeen = new Date();
-  const priceData = {
-    symbol: data.symbol, bid: data.bid, ask: data.ask, spread: data.spread,
-    rsi: data.rsi, ema20: data.ema20, ema50: data.ema50,
-    close1: data.close1, high1: data.high1, low1: data.low1,
-    closes: data.closes || null, highs: data.highs || null,
-    lows: data.lows || null, opens: data.opens || null,
-    strategy: data.strategy || "SMC_PRO", receivedAt: new Date().toISOString(),
-  };
+  const priceData = { symbol: data.symbol, bid: data.bid, ask: data.ask, spread: data.spread, rsi: data.rsi, ema20: data.ema20, ema50: data.ema50, close1: data.close1, high1: data.high1, low1: data.low1, closes: data.closes || null, highs: data.highs || null, lows: data.lows || null, opens: data.opens || null, strategy: data.strategy || "SMC_PRO", receivedAt: new Date().toISOString() };
   allPrices.set(data.symbol, priceData);
   broadcastToSite({ type: "price", ...priceData });
   broadcastToSite({ type: "mt5_status", connected: true });
   res.json({ status: "ok", symbols_tracked: allPrices.size });
 });
 
-app.get("/price/:symbol", (req, res) => {
-  const symbol    = req.params.symbol.toUpperCase();
-  const priceData = allPrices.get(symbol);
-  if (!priceData) return res.status(404).json({ error: "Preço não disponível.", symbol, available: Array.from(allPrices.keys()) });
-  if (!isPriceFresh(priceData)) return res.status(503).json({ error: "Preço desatualizado." });
-  res.json({ symbol: priceData.symbol, bid: priceData.bid, ask: priceData.ask, spread: priceData.spread, rsi: priceData.rsi, receivedAt: priceData.receivedAt });
-});
-
 app.get("/prices", (req, res) => {
   const prices = [];
-  allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, ask: data.ask, fresh: isPriceFresh(data), receivedAt: data.receivedAt }));
+  allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, ask: data.ask, fresh: isPriceFresh(data) }));
   res.json({ total: prices.length, mt5_connected: isMt5Online(), prices, timestamp: new Date().toISOString() });
 });
 
-// ─────────────────────────────────────────────
-// ROTAS — Estratégias disponíveis
-// ─────────────────────────────────────────────
 app.get("/strategies", (req, res) => {
   res.json({ strategies: STRATEGIES, timestamp: new Date().toISOString() });
-});
-
-app.get("/strategies/:plan", (req, res) => {
-  const plan   = req.params.plan;
-  const limits = getPlanLimits(plan);
-  const available = {};
-  limits.strategies.forEach(s => {
-    if (STRATEGIES[s]) available[s] = { ...STRATEGIES[s], modes: limits.modes };
-  });
-  res.json({ plan, strategies: available, modes: limits.modes });
 });
 
 // ─────────────────────────────────────────────
 // ROTAS — Live Room
 // ─────────────────────────────────────────────
 app.get("/live-signals", (req, res) => {
-  res.json({
-    active: true, clients: liveRoomClients.size,
-    signals: liveSignalHistory.slice(0, 20),
-    scoreboard: liveScoreboard, assets: LIVE_ASSETS,
-    focused_asset: getMostFocusedAsset(),
-    pending_notifications: pendingNotifications.slice(0, 5),
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ active: true, clients: liveRoomClients.size, signals: liveSignalHistory.slice(0, 20), scoreboard: liveScoreboard, assets: LIVE_ASSETS, focused_asset: getMostFocusedAsset(), pending_notifications: pendingNotifications.slice(0, 5), wa_connected: waConnected, wa_subscribers: waSubscribers.size, timestamp: new Date().toISOString() });
 });
 
 app.post("/live-signal-result", async (req, res) => {
   const { signal_id, result, profit, close_price, tp_hit } = req.body;
   const signal = liveSignalHistory.find(s => s.id === signal_id);
-  if (signal) {
-    signal.result = result; signal.profit = profit;
-    if (signal.supabase_id) await updateLiveSignalResult(signal.supabase_id, result, profit, close_price, tp_hit);
-  }
+  if (signal) { signal.result = result; signal.profit = profit; if (signal.supabase_id) await updateLiveSignalResult(signal.supabase_id, result, profit, close_price, tp_hit); }
   const profitVal = parseFloat(profit) || 0;
   if (result === "win") { liveScoreboard.wins++; liveScoreboard.profit += profitVal; }
   else if (result === "loss") { liveScoreboard.losses++; liveScoreboard.profit += profitVal; }
   broadcastToLiveRoom({ type: "signal_result", signal_id, result, profit: profitVal, scoreboard: liveScoreboard, timestamp: new Date().toISOString() });
-  broadcastToSite({ type: "signal_result", signal_id, result, profit: profitVal, timestamp: new Date().toISOString() });
   res.json({ status: "ok" });
 });
 
-// ─────────────────────────────────────────────
-// ROTA — Live Learning
-// ─────────────────────────────────────────────
 app.get("/live-learning", async (req, res) => {
   try {
-    const data = await supabaseGet(
-      "live_signals?result=neq.open&select=asset,strategy,result,profit,hour_of_day,probability,rsi,atr&order=created_at.desc&limit=500"
-    );
-    if (!data || data.length === 0)
-      return res.json({ status: "no_data", message: "Ainda sem dados suficientes.", assets: {} });
-
+    const data = await supabaseGet("live_signals?result=neq.open&select=asset,strategy,result,profit,hour_of_day,probability,rsi,atr&order=created_at.desc&limit=500");
+    if (!data || data.length === 0) return res.json({ status: "no_data", message: "Ainda sem dados suficientes.", assets: {} });
     const groups = {};
     data.forEach(d => {
       const key = `${d.asset}-${d.strategy}`;
-      if (!groups[key]) groups[key] = { asset: d.asset, strategy: d.strategy, wins: 0, losses: 0, total: 0, profit: 0, hours: {}, rsi_wins: [], rsi_losses: [] };
-      const g = groups[key];
-      g.total++; g.profit += d.profit || 0;
-      if (d.result === "win") { g.wins++; if (d.rsi) g.rsi_wins.push(d.rsi); }
-      else { g.losses++; if (d.rsi) g.rsi_losses.push(d.rsi); }
+      if (!groups[key]) groups[key] = { asset: d.asset, strategy: d.strategy, wins: 0, losses: 0, total: 0, profit: 0, hours: {} };
+      const g = groups[key]; g.total++; g.profit += d.profit || 0;
+      if (d.result === "win") g.wins++; else g.losses++;
       const h = d.hour_of_day;
-      if (h !== null) {
-        if (!g.hours[h]) g.hours[h] = { wins: 0, total: 0 };
-        g.hours[h].total++;
-        if (d.result === "win") g.hours[h].wins++;
-      }
+      if (h !== null) { if (!g.hours[h]) g.hours[h] = { wins: 0, total: 0 }; g.hours[h].total++; if (d.result === "win") g.hours[h].wins++; }
     });
-
     const assets = {};
-    Object.values(groups).forEach((g: any) => {
+    Object.values(groups).forEach((g) => {
       if (!assets[g.asset]) assets[g.asset] = {};
-      let bestHour = null, worstHour = null, bestHourWR = 0, worstHourWR = 1;
-      Object.entries(g.hours).forEach(([h, stats]: any) => {
-        if (stats.total >= 3) {
-          const wr = stats.wins / stats.total;
-          if (wr > bestHourWR)  { bestHourWR  = wr; bestHour  = parseInt(h); }
-          if (wr < worstHourWR) { worstHourWR = wr; worstHour = parseInt(h); }
-        }
-      });
-      const avgRsiWin  = g.rsi_wins.length  > 0 ? Math.round(g.rsi_wins.reduce((a,b)=>a+b,0)/g.rsi_wins.length)   : null;
-      const avgRsiLoss = g.rsi_losses.length > 0 ? Math.round(g.rsi_losses.reduce((a,b)=>a+b,0)/g.rsi_losses.length) : null;
-      const stratLabel = STRATEGIES[g.strategy]?.label || g.strategy;
-      assets[g.asset][g.strategy] = {
-        strategy_label: stratLabel,
-        total_signals: g.total, wins: g.wins, losses: g.losses,
-        win_rate: parseFloat((g.wins/g.total).toFixed(3)),
-        win_rate_pct: `${(g.wins/g.total*100).toFixed(1)}%`,
-        total_profit: parseFloat(g.profit.toFixed(2)),
-        best_hour:  bestHour  !== null ? { hour: bestHour,  win_rate: parseFloat(bestHourWR.toFixed(3))  } : null,
-        worst_hour: worstHour !== null ? { hour: worstHour, win_rate: parseFloat(worstHourWR.toFixed(3)) } : null,
-        avg_rsi_win: avgRsiWin, avg_rsi_loss: avgRsiLoss,
-        hour_breakdown: Object.fromEntries(
-          Object.entries(g.hours).filter(([,s]: any) => s.total >= 2)
-            .map(([h,s]: any) => [h, { win_rate: parseFloat((s.wins/s.total).toFixed(3)), count: s.total }])
-        ),
-        recommendation: g.total >= 20
-          ? g.wins/g.total >= 0.6  ? "✅ Estratégia performando bem"
-          : g.wins/g.total >= 0.45 ? "⚠ Performance moderada"
-          : "❌ Win rate baixo — ajustando filtros"
-          : "📊 Coletando dados...",
-      };
+      assets[g.asset][g.strategy] = { strategy_label: STRATEGIES[g.strategy]?.label || g.strategy, total_signals: g.total, wins: g.wins, losses: g.losses, win_rate: parseFloat((g.wins/g.total).toFixed(3)), win_rate_pct: `${(g.wins/g.total*100).toFixed(1)}%`, total_profit: parseFloat(g.profit.toFixed(2)), recommendation: g.total >= 20 ? g.wins/g.total >= 0.6 ? "✅ Performando bem" : g.wins/g.total >= 0.45 ? "⚠ Moderado" : "❌ Ajustando filtros" : "📊 Coletando dados..." };
     });
     res.json({ status: "ok", total_signals_analyzed: data.length, assets, last_updated: new Date().toISOString() });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ─────────────────────────────────────────────
@@ -786,22 +944,11 @@ app.get("/live-learning", async (req, res) => {
 app.post("/slave-register", async (req, res) => {
   const { user_id, account, symbol, balance, status, whatsapp_phone } = req.body;
   if (!user_id) return res.status(400).json({ error: "user_id obrigatório" });
-  if (status === "disconnected") {
-    activeSlaves.delete(user_id);
-    broadcastToSite({ type: "slave_status", user_id, connected: false });
-    return res.json({ status: "ok" });
-  }
+  if (status === "disconnected") { activeSlaves.delete(user_id); broadcastToSite({ type: "slave_status", user_id, connected: false }); return res.json({ status: "ok" }); }
   const planCheck = await checkProPlan(user_id);
-  if (!planCheck.allowed) {
-    return res.status(403).json({ status: "blocked", reason: planCheck.reason,
-      message: planCheck.reason === "Plan expired" ? "Seu plano expirou." : "Plano necessário." });
-  }
+  if (!planCheck.allowed) return res.status(403).json({ status: "blocked", message: "Plano necessário." });
   const limits = getPlanLimits(planCheck.plan || "basic");
-  activeSlaves.set(user_id, {
-    account: account || "unknown", symbol: symbol || "BTCUSD",
-    balance: balance || 0, plan: planCheck.plan || "basic",
-    whatsapp_phone: whatsapp_phone || null, limits, lastSeen: new Date(),
-  });
+  activeSlaves.set(user_id, { account: account || "unknown", symbol: symbol || "BTCUSD", balance: balance || 0, plan: planCheck.plan || "basic", whatsapp_phone: whatsapp_phone || null, limits, lastSeen: new Date() });
   broadcastToSite({ type: "slave_status", user_id, connected: true, balance, plan: planCheck.plan });
   res.json({ status: "ok", user_id, plan: planCheck.plan, limits });
 });
@@ -811,11 +958,7 @@ app.get("/slave-order", (req, res) => {
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
   if (activeSlaves.has(userId)) { const s = activeSlaves.get(userId); s.lastSeen = new Date(); activeSlaves.set(userId, s); }
   else activeSlaves.set(userId, { account: "unknown", symbol: "BTCUSD", balance: 0, plan: "basic", lastSeen: new Date() });
-  if (slavePendingOrders.has(userId)) {
-    const order = slavePendingOrders.get(userId);
-    slavePendingOrders.delete(userId);
-    return res.json({ hasOrder: true, ...order });
-  }
+  if (slavePendingOrders.has(userId)) { const order = slavePendingOrders.get(userId); slavePendingOrders.delete(userId); return res.json({ hasOrder: true, ...order }); }
   res.json({ hasOrder: false });
 });
 
@@ -833,88 +976,42 @@ app.post("/slave-trade-closed", async (req, res) => {
   const resultStr = profitVal > 0 ? "win" : "loss";
   broadcastToSite({ type: "trade_closed", user_id, symbol, direction, profit: profitVal, result: resultStr, strategy, timestamp: new Date().toISOString() });
   const now = new Date();
-  await saveTradeToSupabase({
-    user_code: user_id, symbol, direction: direction || "buy",
-    entry_price: parseFloat(close_price) || 0,
-    sl: parseFloat(sl) || 0, tp: parseFloat(tp) || 0,
-    profit: profitVal, result: resultStr,
-    hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(),
-    market_strength: 0, atr_value: 0,
-    probability: parseFloat(probability) || 0,
-    strategy: strategy || "UNKNOWN",
-    confirmations: parseInt(confirmations) || 0,
-    trend_strength: parseFloat(trend_strength) || 0,
-  });
+  await saveTradeToSupabase({ user_code: user_id, symbol, direction: direction || "buy", entry_price: parseFloat(close_price) || 0, sl: parseFloat(sl) || 0, tp: parseFloat(tp) || 0, profit: profitVal, result: resultStr, hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(), market_strength: 0, atr_value: 0, probability: parseFloat(probability) || 0, strategy: strategy || "UNKNOWN", confirmations: parseInt(confirmations) || 0, trend_strength: parseFloat(trend_strength) || 0 });
   res.json({ status: "ok" });
 });
 
-app.post("/slave-error", (req, res) => {
-  broadcastToSite({ type: "slave_error", ...req.body });
-  res.json({ status: "ok" });
-});
+app.post("/slave-error", (req, res) => { broadcastToSite({ type: "slave_error", ...req.body }); res.json({ status: "ok" }); });
 
 app.post("/client-execute-order", async (req, res) => {
   const { user_id, symbol, direction, sl, tp, lot_size, strategy, probability, confirmations, trend_strength, mode } = req.body;
   if (!user_id || !symbol || !direction) return res.status(400).json({ error: "user_id, symbol e direction obrigatórios." });
   const planCheck = await checkProPlan(user_id);
   const limits    = getPlanLimits(planCheck.plan || "basic");
-
-  if (limits.assets !== "ALL" && !limits.assets.includes(symbol))
-    return res.status(403).json({ error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}.` });
-  if (!limits.autoTrade)
-    return res.status(403).json({ error: "Auto Trade não disponível no plano Básico." });
-  if (strategy && !limits.strategies.includes(strategy))
-    return res.status(403).json({ error: `Estratégia ${strategy} não disponível no plano ${planCheck.plan}.` });
-  if (mode && !limits.modes.includes(mode))
-    return res.status(403).json({ error: `Modo ${mode} não disponível no plano ${planCheck.plan}. Faça upgrade para PRO.` });
-  if (!isSlaveOnline(user_id)) {
-    const exists = activeSlaves.has(user_id);
-    return res.status(503).json({ error: "EA Slave não está conectado.", slave_online: false,
-      last_seen: exists ? Math.round((new Date() - activeSlaves.get(user_id).lastSeen) / 1000) : null });
-  }
+  if (limits.assets !== "ALL" && !limits.assets.includes(symbol)) return res.status(403).json({ error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}.` });
+  if (!limits.autoTrade) return res.status(403).json({ error: "Auto Trade não disponível no plano Básico." });
+  if (!isSlaveOnline(user_id)) return res.status(503).json({ error: "EA Slave não está conectado.", slave_online: false });
   const slVal = parseFloat(sl), tpVal = parseFloat(tp);
   if (!slVal || !tpVal) return res.status(400).json({ error: "SL e TP inválidos." });
   const orderId = generateOrderId();
-  slavePendingOrders.set(user_id, {
-    order_id: orderId, direction, symbol, sl: slVal, tp: tpVal,
-    lot_size: parseFloat(lot_size) || 0.01, strategy: strategy || "SMC_PRO",
-    probability: parseFloat(probability) || 0, confirmations: parseInt(confirmations) || 0,
-    trend_strength: parseFloat(trend_strength) || 0, timestamp: new Date().toISOString(),
-  });
-  const slave = activeSlaves.get(user_id);
-  if (slave?.whatsapp_phone && limits.whatsapp)
-    await sendWhatsAppAlert(slave.whatsapp_phone, `📊 ${direction} ${symbol}\nEstratégia: ${STRATEGIES[strategy]?.label || strategy}\nProb: ${probability}%`);
+  slavePendingOrders.set(user_id, { order_id: orderId, direction, symbol, sl: slVal, tp: tpVal, lot_size: parseFloat(lot_size) || 0.01, strategy: strategy || "SMC_PRO", probability: parseFloat(probability) || 0, confirmations: parseInt(confirmations) || 0, trend_strength: parseFloat(trend_strength) || 0, timestamp: new Date().toISOString() });
   res.json({ status: "ok", message: "Ordem enviada.", order_id: orderId });
 });
 
 app.get("/slave-status", (req, res) => {
   const userId = req.query.user_id;
   if (!userId) return res.status(400).json({ error: "user_id obrigatório" });
-  const exists = activeSlaves.has(userId);
-  const slave  = activeSlaves.get(userId);
-  const ago    = exists ? Math.round((new Date() - slave.lastSeen) / 1000) : null;
+  const exists = activeSlaves.has(userId); const slave = activeSlaves.get(userId);
+  const ago = exists ? Math.round((new Date() - slave.lastSeen) / 1000) : null;
   res.json({ user_id: userId, slave_online: exists && ago < SLAVE_TIMEOUT_S, last_seen: ago, balance: slave?.balance ?? null, plan: slave?.plan ?? null });
-});
-
-app.get("/slaves-status", (req, res) => {
-  const slaves = [];
-  activeSlaves.forEach((data, userId) => {
-    const ago = Math.round((new Date() - data.lastSeen) / 1000);
-    slaves.push({ user_id: userId, online: ago < SLAVE_TIMEOUT_S, balance: data.balance, plan: data.plan, last_seen_secs: ago });
-  });
-  res.json({ total: slaves.length, online: slaves.filter(s => s.online).length, slaves, executions: slaveExecutions.slice(-20) });
 });
 
 app.get("/user-trades", async (req, res) => {
   const userCode = req.query.user_code;
   if (!userCode) return res.status(400).json({ error: "user_code obrigatório" });
   try {
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/trades?user_code=eq.${userCode}&order=created_at.desc&limit=500`,
-      { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } }
-    );
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/trades?user_code=eq.${userCode}&order=created_at.desc&limit=500`, { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } });
     res.json({ user_code: userCode, trades: await response.json() });
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get("/plan-limits/:userId", async (req, res) => {
@@ -927,21 +1024,17 @@ app.get("/plan-limits/:userId", async (req, res) => {
 // ─────────────────────────────────────────────
 wss.on("connection", (ws) => {
   siteClients.add(ws);
-  ws.send(JSON.stringify({ type: "mt5_status",        connected: isMt5Online() }));
-  ws.send(JSON.stringify({ type: "slaves_count",      count: activeSlaves.size }));
+  ws.send(JSON.stringify({ type: "mt5_status", connected: isMt5Online() }));
+  ws.send(JSON.stringify({ type: "wa_connected", connected: waConnected, subscribers: waSubscribers.size }));
   ws.send(JSON.stringify({ type: "symbols_available", symbols: Array.from(allPrices.keys()) }));
   ws.send(JSON.stringify({ type: "strategies_available", strategies: STRATEGIES }));
-  if (pendingNotifications.length > 0) {
-    ws.send(JSON.stringify({ type: "pending_notifications", notifications: pendingNotifications, timestamp: new Date().toISOString() }));
-  }
+  if (pendingNotifications.length > 0) ws.send(JSON.stringify({ type: "pending_notifications", notifications: pendingNotifications, timestamp: new Date().toISOString() }));
 
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
-
       if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
 
-      // Análise normal com mode e strategy
       if (msg.type === "analyze") {
         const strategy = msg.strategy || "SMC_PRO";
         const symbol   = msg.symbol   || "BTCUSD";
@@ -951,167 +1044,64 @@ wss.on("connection", (ws) => {
           const stats     = await fetchHistoricalStats(symbol, strategy);
           const hour      = new Date().getUTCHours();
           const hourStats = stats.hour_stats?.[hour] || {};
-          const result    = await callEaSignalV3(strategy, symbol, {
-            win_rate: stats.win_rate, sample_size: stats.sample_size,
-            hour_win_rate: hourStats.win_rate ?? -1, hour_sample_size: hourStats.count ?? 0,
-          }, mode);
-          ws.send(JSON.stringify({
-            type: "analysis_result", symbol, strategy, mode,
-            strategy_label: STRATEGIES[strategy]?.label || strategy,
-            direction: result.direction, entry: result.entry,
-            sl: result.sl, tp: result.tp,
-            tp1: result.tp1, tp2: result.tp2, tp3: result.tp3,
-            tp_levels: result.tp_levels,
-            tp1_label: result.tp1_label, tp2_label: result.tp2_label, tp3_label: result.tp3_label,
-            probability: result.probability, score: result.probability,
-            reason: result.reason, indicators: result.indicators,
-            live_price: result.live_price, status: result.status,
-            confirmations: result.confirmations, trend_strength: result.trend_strength,
-            is_range: result.is_range, htf_bias: result.htf_bias,
-            vwap: result.vwap, volume_profile: result.volume_profile,
-            market_structure: result.market_structure,
-            analysis: result.analysis,
-            probability_adjustment: result.probability_adjustment,
-            timestamp: new Date().toISOString(),
-          }));
-        } catch (err: any) { ws.send(JSON.stringify({ type: "error", message: err.message })); }
+          const result    = await callEaSignalV3(strategy, symbol, { win_rate: stats.win_rate, sample_size: stats.sample_size, hour_win_rate: hourStats.win_rate ?? -1, hour_sample_size: hourStats.count ?? 0 }, mode);
+          ws.send(JSON.stringify({ type: "analysis_result", symbol, strategy, mode, strategy_label: STRATEGIES[strategy]?.label || strategy, direction: result.direction, entry: result.entry, sl: result.sl, tp: result.tp, tp1: result.tp1, tp2: result.tp2, tp3: result.tp3, tp_levels: result.tp_levels, tp1_label: result.tp1_label, tp2_label: result.tp2_label, tp3_label: result.tp3_label, probability: result.probability, score: result.probability, reason: result.reason, indicators: result.indicators, live_price: result.live_price, status: result.status, confirmations: result.confirmations, trend_strength: result.trend_strength, is_range: result.is_range, htf_bias: result.htf_bias, vwap: result.vwap, volume_profile: result.volume_profile, market_structure: result.market_structure, analysis: result.analysis, probability_adjustment: result.probability_adjustment, timestamp: new Date().toISOString() }));
+        } catch (err) { ws.send(JSON.stringify({ type: "error", message: err.message })); }
       }
 
       if (msg.type === "get_price") {
-        const symbol    = msg.symbol?.toUpperCase();
+        const symbol = msg.symbol?.toUpperCase();
         const priceData = symbol ? allPrices.get(symbol) : null;
-        if (priceData && isPriceFresh(priceData))
-          ws.send(JSON.stringify({ type: "price", ...priceData }));
-        else
-          ws.send(JSON.stringify({ type: "price_unavailable", symbol }));
+        if (priceData && isPriceFresh(priceData)) ws.send(JSON.stringify({ type: "price", ...priceData }));
+        else ws.send(JSON.stringify({ type: "price_unavailable", symbol }));
       }
 
-      // Live Room
       if (msg.type === "join_live_room") {
         liveRoomClients.add(ws);
         clientFocusAsset.set(ws, null);
         clientStrategies.set(ws, { ...DEFAULT_STRATEGIES });
         clientModes.set(ws, msg.mode || "express");
-        ws.send(JSON.stringify({
-          type: "live_room_joined",
-          history:    liveSignalHistory.slice(0, 10),
-          scoreboard: liveScoreboard,
-          assets:     LIVE_ASSETS,
-          strategies: DEFAULT_STRATEGIES,
-          strategies_info: STRATEGIES,
-          message:    "Bem-vindo! A IA monitora o mercado 24h.",
-          timestamp:  new Date().toISOString(),
-        }));
+        ws.send(JSON.stringify({ type: "live_room_joined", history: liveSignalHistory.slice(0, 10), scoreboard: liveScoreboard, assets: LIVE_ASSETS, strategies: DEFAULT_STRATEGIES, strategies_info: STRATEGIES, message: "Bem-vindo! A IA monitora 24h.", timestamp: new Date().toISOString() }));
         broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size });
       }
 
-      if (msg.type === "leave_live_room") {
-        liveRoomClients.delete(ws);
-        clientFocusAsset.delete(ws);
-        clientStrategies.delete(ws);
-        clientModes.delete(ws);
-        broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size });
-      }
-
-      if (msg.type === "set_mode") {
-        const mode = msg.mode === "complete" ? "complete" : "express";
-        clientModes.set(ws, mode);
-        ws.send(JSON.stringify({ type: "mode_updated", mode, timestamp: new Date().toISOString() }));
-      }
-
-      if (msg.type === "focus_asset") {
-        const symbol = msg.asset?.toUpperCase();
-        if (symbol) {
-          clientFocusAsset.set(ws, symbol);
-          const priceData = allPrices.get(symbol);
-          if (priceData && isPriceFresh(priceData)) await analyzeLiveAsset(symbol, true);
-        }
-      }
-
-      if (msg.type === "set_live_strategy") {
-        const { asset, strategy } = msg;
-        if (asset && strategy) {
-          const strategies = clientStrategies.get(ws) || { ...DEFAULT_STRATEGIES };
-          strategies[asset] = strategy;
-          clientStrategies.set(ws, strategies);
-          const priceData = allPrices.get(asset);
-          if (priceData && isPriceFresh(priceData)) await analyzeLiveAsset(asset, true);
-          ws.send(JSON.stringify({
-            type: "strategy_updated", asset, strategy,
-            strategy_label: STRATEGIES[strategy]?.label || strategy,
-            timestamp: new Date().toISOString()
-          }));
-        }
-      }
+      if (msg.type === "leave_live_room") { liveRoomClients.delete(ws); clientFocusAsset.delete(ws); clientStrategies.delete(ws); clientModes.delete(ws); broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size }); }
+      if (msg.type === "set_mode") { clientModes.set(ws, msg.mode === "complete" ? "complete" : "express"); ws.send(JSON.stringify({ type: "mode_updated", mode: msg.mode, timestamp: new Date().toISOString() })); }
+      if (msg.type === "focus_asset") { const symbol = msg.asset?.toUpperCase(); if (symbol) { clientFocusAsset.set(ws, symbol); const pd = allPrices.get(symbol); if (pd && isPriceFresh(pd)) await analyzeLiveAsset(symbol, true); } }
+      if (msg.type === "set_live_strategy") { const { asset, strategy } = msg; if (asset && strategy) { const strategies = clientStrategies.get(ws) || { ...DEFAULT_STRATEGIES }; strategies[asset] = strategy; clientStrategies.set(ws, strategies); const pd = allPrices.get(asset); if (pd && isPriceFresh(pd)) await analyzeLiveAsset(asset, true); ws.send(JSON.stringify({ type: "strategy_updated", asset, strategy, strategy_label: STRATEGIES[strategy]?.label || strategy, timestamp: new Date().toISOString() })); } }
 
     } catch (e) { console.error("[WS] Erro:", e); }
   });
 
-  ws.on("close", () => {
-    siteClients.delete(ws);
-    liveRoomClients.delete(ws);
-    clientFocusAsset.delete(ws);
-        clientStrategies.delete(ws);
-    clientModes.delete(ws);
-    broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size });
-  });
+  ws.on("close", () => { siteClients.delete(ws); liveRoomClients.delete(ws); clientFocusAsset.delete(ws); clientStrategies.delete(ws); clientModes.delete(ws); broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size }); });
 });
 
 // ─────────────────────────────────────────────
 // Limpeza + Keep-alive
 // ─────────────────────────────────────────────
 setInterval(() => {
-  activeSlaves.forEach((data, userId) => {
-    if ((new Date() - data.lastSeen) / 1000 > SLAVE_REMOVE_S) {
-      activeSlaves.delete(userId);
-      broadcastToSite({ type: "slave_status", user_id: userId, connected: false });
-    }
-  });
-  if (mt5LastSeen && (new Date() - mt5LastSeen) > MT5_TIMEOUT_MS)
-    broadcastToSite({ type: "mt5_status", connected: false });
+  activeSlaves.forEach((data, userId) => { if ((new Date() - data.lastSeen) / 1000 > SLAVE_REMOVE_S) { activeSlaves.delete(userId); broadcastToSite({ type: "slave_status", user_id: userId, connected: false }); } });
+  if (mt5LastSeen && (new Date() - mt5LastSeen) > MT5_TIMEOUT_MS) broadcastToSite({ type: "mt5_status", connected: false });
 }, 5000);
 
-setInterval(async () => {
-  try { await fetch(`${RAILWAY_URL}/health`); console.log(`[Keep-alive] OK`); } catch {}
-}, 4 * 60 * 1000);
+setInterval(async () => { try { await fetch(`${RAILWAY_URL}/health`); } catch {} }, 4 * 60 * 1000);
 
 // ─────────────────────────────────────────────
 // HEALTH
 // ─────────────────────────────────────────────
 app.get("/health", (_, res) => {
-  const slaves = [];
-  activeSlaves.forEach((data, userId) => {
-    const ago = Math.round((new Date() - data.lastSeen) / 1000);
-    slaves.push({ user_id: userId, online: ago < SLAVE_TIMEOUT_S, balance: data.balance, plan: data.plan, last_seen_secs: ago });
-  });
-  const prices = [];
-  allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
-  res.json({
-    status: "online", version: "v15",
-    mt5_connected: isMt5Online(),
-    symbols_count: allPrices.size, symbols: prices,
-    site_clients: siteClients.size,
-    slaves_online: slaves.filter(s => s.online).length,
-    slaves_total: activeSlaves.size, slaves,
-    elite_online: slaves.filter(s => s.online && s.plan === "elite").length,
-    live_room_active: true,
-    live_room_clients: liveRoomClients.size,
-    live_signals_today: liveScoreboard.signals,
-    focused_asset: getMostFocusedAsset(),
-    current_mode: getMostUsedMode(),
-    learning_cache_size: historicalCache.size,
-    pending_notifications: pendingNotifications.length,
-    strategies: Object.keys(STRATEGIES),
-    timestamp: new Date().toISOString(),
-  });
+  const slaves = []; activeSlaves.forEach((data, userId) => { const ago = Math.round((new Date() - data.lastSeen) / 1000); slaves.push({ user_id: userId, online: ago < SLAVE_TIMEOUT_S, balance: data.balance, plan: data.plan, last_seen_secs: ago }); });
+  const prices = []; allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
+  res.json({ status: "online", version: "v16", mt5_connected: isMt5Online(), symbols_count: allPrices.size, symbols: prices, site_clients: siteClients.size, slaves_online: slaves.filter(s => s.online).length, slaves_total: activeSlaves.size, slaves, elite_online: slaves.filter(s => s.online && s.plan === "elite").length, live_room_active: true, live_room_clients: liveRoomClients.size, live_signals_today: liveScoreboard.signals, focused_asset: getMostFocusedAsset(), current_mode: getMostUsedMode(), learning_cache_size: historicalCache.size, whatsapp_connected: waConnected, whatsapp_subscribers: waSubscribers.size, strategies: Object.keys(STRATEGIES), timestamp: new Date().toISOString() });
 });
 
 // ─────────────────────────────────────────────
-// INICIA SERVIDOR
+// INICIA TUDO
 // ─────────────────────────────────────────────
-httpServer.listen(PORT, () => {
-  console.log(`[Railway] v15 rodando na porta ${PORT}`);
+httpServer.listen(PORT, async () => {
+  console.log(`[Railway] v16 rodando na porta ${PORT}`);
   console.log(`[Railway] Estratégias: ${Object.keys(STRATEGIES).join(", ")}`);
-  console.log(`[Railway] Modos: Express + Completo`);
   startLiveRoom24h();
+  // Inicia WhatsApp Bot
+  setTimeout(startWhatsApp, 3000);
 });
