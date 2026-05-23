@@ -199,18 +199,26 @@ async function supabasePatch(path, body) {
 // ─────────────────────────────────────────────
 async function startWhatsApp() {
   try {
-    const baileys = await import("@whiskeysockets/baileys");
-    const makeWASocket = baileys.default || baileys.makeWASocket || baileys;
-    const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileys;
-    const { Boom } = await import("@hapi/boom");
-    const pino = (await import("pino")).default;
+    const baileys = require("@whiskeysockets/baileys");
+    const makeWASocket = baileys.makeWASocket || baileys.default?.makeWASocket || baileys.default;
+    const useMultiFileAuthState = baileys.useMultiFileAuthState;
+    const DisconnectReason = baileys.DisconnectReason;
+    const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
+    const pino = require("pino");
+    const { Boom } = require("@hapi/boom");
+
+    if (typeof makeWASocket !== "function") {
+      console.error("[WhatsApp] makeWASocket não encontrado. Keys:", Object.keys(baileys).join(", "));
+      setTimeout(startWhatsApp, 30000);
+      return;
+    }
 
     const { state, saveCreds } = await useMultiFileAuthState("./wa_auth");
-    const { version }          = await fetchLatestBaileysVersion();
+    const { version } = await fetchLatestBaileysVersion();
 
     waSocket = makeWASocket({
       version,
-      auth:  state,
+      auth: state,
       logger: pino({ level: "silent" }),
       printQRInTerminal: true,
       browser: ["TraderAureonia AI", "Chrome", "1.0.0"],
