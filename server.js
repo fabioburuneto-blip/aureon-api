@@ -141,14 +141,17 @@ async function supabasePatch(p, body) {
 // WHATSAPP — Envia mensagem usando JID direto
 // ─────────────────────────────────────────────
 async function sendWAMessage(jid, message) {
-  if (!waConnected || !waSocket) return false;
+  if (!waConnected || !waSocket) {
+    console.log("[WhatsApp] Não conectado — não enviou para", jid);
+    return false;
+  }
   try {
-    // jid já vem no formato correto: 5518988041903@s.whatsapp.net
+    console.log("[WhatsApp] Enviando para:", jid);
     await waSocket.sendMessage(jid, { text: message });
-    console.log(`[WhatsApp] Mensagem enviada para ${jid}`);
+    console.log("[WhatsApp] ✅ Enviado com sucesso para:", jid);
     return true;
   } catch (err) {
-    console.error(`[WhatsApp] Erro ao enviar para ${jid}:`, err.message);
+    console.error(`[WhatsApp] ❌ Erro ao enviar para ${jid}:`, err.message);
     return false;
   }
 }
