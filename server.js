@@ -322,25 +322,37 @@ async function startWhatsApp() {
     });
 
     waSocket.ev.on("messages.upsert", async ({ messages, type }) => {
-      console.log("[WhatsApp] messages.upsert! type:", type, "qtd:", messages.length);
-      for (const msg of messages) {
-        const rawJid = msg.key.remoteJid;
-        console.log("[WhatsApp] msg from:", rawJid, "fromMe:", msg.key.fromMe);
-        if (!msg.message || msg.key.fromMe) continue;
-        if (rawJid.includes("@g.us")) continue;
+  console.log("[WhatsApp] messages.upsert! type:", type, "qtd:", messages.length);
+  for (const msg of messages) {
+    const rawJid = msg.key.remoteJid;
+    console.log("[WhatsApp] msg from:", rawJid, "fromMe:", msg.key.fromMe);
+    if (!msg.message || msg.key.fromMe) continue;
+    if (rawJid.includes("@g.us")) continue;
 
-        // ── NORMALIZAÇÃO DO NÚMERO BRASILEIRO ──
-        // O Baileys às vezes deforma números +55
-        // Normalizamos para garantir o formato correto
-        const phone     = normalizePhone(rawJid);
-        const jid       = buildJid(phone);
-        console.log(`[WhatsApp] Número original: ${rawJid} → Normalizado: ${phone} → JID: ${jid}`);
+    // DIAGNÓSTICO — mostra todas as chaves da mensagem
+    console.log("[WhatsApp] Tipos de conteúdo:", JSON.stringify(Object.keys(msg.message)));
 
-        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
-        if (!text) continue;
-        await handleWhatsAppMessage(phone, jid, text);
-      }
-    });
+    // Extrai o texto de todos os tipos possíveis
+    const text = (
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      msg.message.imageMessage?.caption ||
+      msg.message.videoMessage?.caption ||
+      msg.message.buttonsResponseMessage?.selectedDisplayText ||
+      msg.message.listResponseMessage?.title ||
+      ""
+    ).trim().toLowerCase();
+
+    console.log("[WhatsApp] Texto extraído:", text);
+
+    const phone = normalizePhone(rawJid);
+    const jid   = buildJid(phone);
+    console.log(`[WhatsApp] ${rawJid} → normalizado: ${phone} → jid: ${jid}`);
+
+    if (!text) continue;
+    await handleWhatsAppMessage(phone, jid, text);
+  }
+});
 
   } catch (err) {
     console.error("[WhatsApp] ERRO:", err.message);
