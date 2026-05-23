@@ -51,8 +51,8 @@ let waSocket       = null;
 let waConnected    = false;
 let waQRCode       = null;
 let waQRCodeBase64 = null;
-const waSubscribers          = new Map();
-const waPendingRegistrations = new Map();
+const waSubscribers          = new Map(); // phone → { plan, email, active, jid }
+const waPendingRegistrations = new Map(); // phone → { step }
 
 const STRATEGIES = {
   SMC_PRO:   { label: "SMC Pro",        plan: "basic" },
@@ -138,189 +138,35 @@ async function supabasePatch(p, body) {
 }
 
 // ─────────────────────────────────────────────
-// WHATSAPP — Inicializa Baileys (COM LOGS DETALHADOS)
+// WHATSAPP — Envia mensagem usando JID direto
 // ─────────────────────────────────────────────
-async function startWhatsApp() {
-  try {
-    console.log("[WhatsApp] Iniciando...");
-
-    let baileys;
-    try {
-      baileys = require("@whiskeysockets/baileys");
-      console.log("[WhatsApp] Baileys carregado via require");
-    } catch(e) {
-      console.log("[WhatsApp] require falhou, tentando import...", e.message);
-      baileys = await import("@whiskeysockets/baileys");
-      console.log("[WhatsApp] Baileys carregado via import");
-    }
-
-    console.log("[WhatsApp] Keys do módulo:", Object.keys(baileys).slice(0, 15).join(", "));
-
-    const makeWASocket = (
-      baileys.makeWASocket ||
-      baileys.default?.makeWASocket ||
-      (typeof baileys.default === "function" ? baileys.default : null) ||
-      baileys
-    );
-
-    const useMultiFileAuthState     = baileys.useMultiFileAuthState     || baileys.default?.useMultiFileAuthState;
-    const DisconnectReason          = baileys.DisconnectReason          || baileys.default?.DisconnectReason;
-    const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion || baileys.default?.fetchLatestBaileysVersion;
-
-    console.log("[WhatsApp] makeWASocket tipo:", typeof makeWASocket);
-    console.log("[WhatsApp] useMultiFileAuthState tipo:", typeof useMultiFileAuthState);
-    console.log("[WhatsApp] fetchLatestBaileysVersion tipo:", typeof fetchLatestBaileysVersion);
-
-    if (typeof makeWASocket !== "function") {
-      console.error("[WhatsApp] ERRO: makeWASocket não é função. Tentando novamente em 30s...");
-      setTimeout(startWhatsApp, 30000);
-      return;
-    }
-
-    if (typeof useMultiFileAuthState !== "function") {
-      console.error("[WhatsApp] ERRO: useMultiFileAuthState não encontrado. Tentando novamente em 30s...");
-      setTimeout(startWhatsApp, 30000);
-      return;
-    }
-
-    let pino;
-    try {
-      pino = require("pino");
-      console.log("[WhatsApp] Pino carregado");
-    } catch {
-      console.log("[WhatsApp] Pino não encontrado, usando fallback");
-      pino = () => ({ level: "silent", child: () => ({}) });
-    }
-
-    const { Boom } = require("@hapi/boom");
-    console.log("[WhatsApp] Carregando auth state...");
-    const { state, saveCreds } = await useMultiFileAuthState("./wa_auth");
-    console.log("[WhatsApp] Auth state carregado!");
-
-    let version = [2, 3000, 1015901307];
-    try {
-      console.log("[WhatsApp] Buscando versão mais recente...");
-      const v = await fetchLatestBaileysVersion();
-      version = v.version;
-      console.log("[WhatsApp] Versão:", version.join("."));
-    } catch(e) {
-      console.log("[WhatsApp] Usando versão padrão (erro:", e.message, ")");
-    }
-
-    console.log("[WhatsApp] Criando socket...");
-    waSocket = makeWASocket({
-      version,
-      auth:  state,
-      logger: pino({ level: "silent" }),
-      printQRInTerminal: true,
-      browser: ["TraderAureonia AI", "Chrome", "1.0.0"],
-    });
-    console.log("[WhatsApp] Socket criado! Aguardando eventos...");
-
-    waSocket.ev.on("creds.update", saveCreds);
-
-    waSocket.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
-      console.log("[WhatsApp] connection.update:", connection || "sem connection", qr ? "QR disponível" : "sem QR");
-
-      if (qr) {
-        waQRCode = qr;
-        console.log("[WhatsApp] QR Code recebido! Gerando imagem...");
-        try {
-          const QRCode = require("qrcode");
-          QRCode.toDataURL(qr, (err, url) => {
-            if (!err) {
-              waQRCodeBase64 = url;
-              broadcastToSite({ type: "wa_qr", qr: url });
-              console.log("[WhatsApp] ✅ QR Code gerado — acesse /whatsapp/qr");
-            } else {
-              console.log("[WhatsApp] Erro ao gerar QR imagem:", err.message);
-            }
-          });
-        } catch(e) {
-          console.log("[WhatsApp] qrcode lib não disponível:", e.message);
-          broadcastToSite({ type: "wa_qr_text", qr });
-          console.log("[WhatsApp] QR texto disponível em /whatsapp/qr");
-        }
-      }
-
-      if (connection === "open") {
-        waConnected    = true;
-        waQRCode       = null;
-        waQRCodeBase64 = null;
-        console.log("[WhatsApp] ✅ CONECTADO COM SUCESSO!");
-        broadcastToSite({ type: "wa_connected", connected: true });
-        loadWaSubscribers();
-      }
-
-      if (connection === "close") {
-        waConnected = false;
-        broadcastToSite({ type: "wa_connected", connected: false });
-        const statusCode      = (lastDisconnect?.error)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason?.loggedOut;
-        console.log(`[WhatsApp] Conexão fechada. StatusCode: ${statusCode} | Reconectar: ${shouldReconnect}`);
-        if (shouldReconnect) {
-          console.log("[WhatsApp] Reconectando em 5s...");
-          setTimeout(startWhatsApp, 5000);
-        } else {
-          console.log("[WhatsApp] Deslogado — não vai reconectar automaticamente");
-        }
-      }
-    });
-
-    waSocket.ev.on("messages.upsert", async ({ messages, type }) => {
-  console.log("[WhatsApp] messages.upsert disparou! type:", type, "qtd:", messages.length);
-  for (const msg of messages) {
-    console.log("[WhatsApp] msg from:", msg.key.remoteJid, "fromMe:", msg.key.fromMe);
-    if (!msg.message || msg.key.fromMe) continue;
-        const from  = msg.key.remoteJid;
-        const phone = from.replace("@s.whatsapp.net", "").replace("@g.us", "");
-        const text  = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
-        if (!text || from.includes("@g.us")) continue;
-        await handleWhatsAppMessage(phone, from, text);
-      }
-    });
-
-  } catch (err) {
-    console.error("[WhatsApp] ERRO CRÍTICO:", err.message);
-    console.error("[WhatsApp] Stack:", err.stack?.substring(0, 300));
-    console.log("[WhatsApp] Tentando novamente em 10s...");
-    setTimeout(startWhatsApp, 10000);
-  }
-}
-
-async function loadWaSubscribers() {
-  try {
-    const data = await supabaseGet("wa_subscribers?active=eq.true&select=phone,plan,email,name");
-    if (data && Array.isArray(data)) {
-      data.forEach(s => waSubscribers.set(s.phone, { plan: s.plan, email: s.email, name: s.name, active: true }));
-      console.log(`[WhatsApp] ${data.length} subscribers carregados`);
-    }
-  } catch {}
-}
-
-async function sendWAMessage(phone, message) {
+async function sendWAMessage(jid, message) {
   if (!waConnected || !waSocket) return false;
   try {
-    const jid = phone.includes("@") ? phone : `${phone}@s.whatsapp.net`;
+    // jid já vem no formato correto: 5518988041903@s.whatsapp.net
     await waSocket.sendMessage(jid, { text: message });
+    console.log(`[WhatsApp] Mensagem enviada para ${jid}`);
     return true;
   } catch (err) {
-    console.error(`[WhatsApp] Erro ao enviar para ${phone}:`, err.message);
+    console.error(`[WhatsApp] Erro ao enviar para ${jid}:`, err.message);
     return false;
   }
 }
 
+// ─────────────────────────────────────────────
+// WHATSAPP — Bot de respostas automáticas
+// ─────────────────────────────────────────────
 async function handleWhatsAppMessage(phone, jid, text) {
-  console.log(`[WhatsApp] Mensagem de ${phone}: ${text}`);
+  console.log(`[WhatsApp] Mensagem de ${phone} (${jid}): ${text}`);
   const pending = waPendingRegistrations.get(phone);
 
   if (text === "parar" || text === "stop" || text === "cancelar") {
     if (waSubscribers.has(phone)) {
       waSubscribers.delete(phone);
       await supabasePatch(`wa_subscribers?phone=eq.${phone}`, { active: false });
-      await sendWAMessage(phone, "✅ Você foi removido da lista de sinais.\n\nPara receber novamente envie *OI*.");
+      await sendWAMessage(jid, "✅ Você foi removido da lista de sinais.\n\nPara receber novamente envie *OI*.");
     } else {
-      await sendWAMessage(phone, "Você não estava cadastrado na lista de sinais.");
+      await sendWAMessage(jid, "Você não estava cadastrado na lista de sinais.");
     }
     waPendingRegistrations.delete(phone);
     return;
@@ -332,26 +178,22 @@ async function handleWhatsAppMessage(phone, jid, text) {
       const planLabel = sub.plan === "elite" ? "🏆 Elite" : sub.plan === "pro" ? "⭐ PRO" : "📊 Básico";
       const limits    = getPlanLimits(sub.plan);
       const assets    = limits.assets === "ALL" ? "Todos os ativos" : limits.assets.join(", ");
-      await sendWAMessage(phone,
-        `📊 *Seu Status TraderAureonia AI*\n\nPlano: ${planLabel}\nAtivos: ${assets}\n\nPara parar envie *PARAR*\nAcesse: traderaureonia.com.br`
-      );
+      await sendWAMessage(jid, `📊 *Seu Status TraderAureonia AI*\n\nPlano: ${planLabel}\nAtivos: ${assets}\n\nPara parar envie *PARAR*\nAcesse: traderaureonia.com.br`);
     } else {
-      await sendWAMessage(phone, `Você não está cadastrado.\n\nEnvie *OI* para se cadastrar.`);
+      await sendWAMessage(jid, `Você não está cadastrado.\n\nEnvie *OI* para se cadastrar.`);
     }
     return;
   }
 
   if (text === "ajuda" || text === "help" || text === "menu") {
-    await sendWAMessage(phone,
-      `🤖 *TraderAureonia AI — Comandos*\n\n*OI* — Cadastrar\n*STATUS* — Ver plano\n*PARAR* — Parar sinais\n*AJUDA* — Ver menu\n\n🌐 traderaureonia.com.br`
-    );
+    await sendWAMessage(jid, `🤖 *TraderAureonia AI — Comandos*\n\n*OI* — Cadastrar\n*STATUS* — Ver plano\n*PARAR* — Parar sinais\n*AJUDA* — Ver menu\n\n🌐 traderaureonia.com.br`);
     return;
   }
 
   if (pending && pending.step === "waiting_email") {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(text)) {
-      await sendWAMessage(phone, "❌ Email inválido. Envie um email válido.\n\nEx: seuemail@gmail.com");
+      await sendWAMessage(jid, "❌ Email inválido. Envie um email válido.\n\nEx: seuemail@gmail.com");
       return;
     }
     const users = await supabaseGet(`users?email=eq.${encodeURIComponent(text)}&select=id,email,plan`);
@@ -361,9 +203,10 @@ async function handleWhatsAppMessage(phone, jid, text) {
     const limits    = getPlanLimits(plan);
     const assets    = limits.assets === "ALL" ? "Todos os ativos" : limits.assets.join(", ");
     await supabasePost("wa_subscribers", { phone, email: text, plan, active: true, created_at: new Date().toISOString() });
-    waSubscribers.set(phone, { plan, email: text, active: true });
+    // Salva jid junto com os dados para enviar sinais depois
+    waSubscribers.set(phone, { plan, email: text, active: true, jid });
     waPendingRegistrations.delete(phone);
-    await sendWAMessage(phone,
+    await sendWAMessage(jid,
       `✅ *Cadastro realizado!*\n\n📧 Email: ${text}\n📊 Plano: ${planLabel}\n📈 Ativos: ${assets}\n\nVocê receberá sinais automaticamente!\n\nFormato:\n🟢 SINAL BUY BTCUSD\nEntrada: 78.250 | SL: 77.900 | TP1: 78.800\nProb: 84%\n\nPara parar envie *PARAR*\n🌐 traderaureonia.com.br`
     );
     console.log(`[WhatsApp] ✅ Novo subscriber: ${phone} | Plano: ${plan}`);
@@ -374,19 +217,138 @@ async function handleWhatsAppMessage(phone, jid, text) {
     if (waSubscribers.has(phone)) {
       const sub       = waSubscribers.get(phone);
       const planLabel = sub.plan === "elite" ? "🏆 Elite" : sub.plan === "pro" ? "⭐ PRO" : "📊 Básico";
-      await sendWAMessage(phone, `👋 Você já está cadastrado!\nPlano: ${planLabel}\n\nEnvie *STATUS* para ver detalhes.\nEnvie *PARAR* para cancelar.`);
+      // Atualiza jid caso tenha mudado
+      sub.jid = jid;
+      waSubscribers.set(phone, sub);
+      await sendWAMessage(jid, `👋 Você já está cadastrado!\nPlano: ${planLabel}\n\nEnvie *STATUS* para ver detalhes.\nEnvie *PARAR* para cancelar.`);
       return;
     }
     waPendingRegistrations.set(phone, { step: "waiting_email" });
-    await sendWAMessage(phone,
+    await sendWAMessage(jid,
       `👋 *Bem-vindo à TraderAureonia AI!*\n\n🤖 Receba sinais de trading com IA no WhatsApp!\n\n📊 Estratégias:\n• SMC Pro | Price Action\n• Wyckoff | Supply & Demand\n• Fibonacci | IA (todas)\n\nPara começar, envie o *email* que você usa em traderaureonia.com.br:\n\n_(Não tem conta? Crie em traderaureonia.com.br)_`
     );
     return;
   }
 
-  await sendWAMessage(phone, `🤖 Não entendi. Envie *AJUDA* para ver os comandos.`);
+  await sendWAMessage(jid, `🤖 Não entendi. Envie *AJUDA* para ver os comandos.`);
 }
 
+// ─────────────────────────────────────────────
+// WHATSAPP — Inicializa Baileys
+// ─────────────────────────────────────────────
+async function startWhatsApp() {
+  try {
+    console.log("[WhatsApp] Iniciando...");
+    let baileys;
+    try { baileys = require("@whiskeysockets/baileys"); console.log("[WhatsApp] Baileys carregado via require"); }
+    catch(e) { console.log("[WhatsApp] require falhou:", e.message); baileys = await import("@whiskeysockets/baileys"); console.log("[WhatsApp] Baileys carregado via import"); }
+
+    console.log("[WhatsApp] Keys do módulo:", Object.keys(baileys).slice(0, 15).join(", "));
+
+    const makeWASocket              = baileys.makeWASocket || baileys.default?.makeWASocket || (typeof baileys.default === "function" ? baileys.default : null) || baileys;
+    const useMultiFileAuthState     = baileys.useMultiFileAuthState     || baileys.default?.useMultiFileAuthState;
+    const DisconnectReason          = baileys.DisconnectReason          || baileys.default?.DisconnectReason;
+    const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion || baileys.default?.fetchLatestBaileysVersion;
+
+    console.log("[WhatsApp] makeWASocket tipo:", typeof makeWASocket);
+    console.log("[WhatsApp] useMultiFileAuthState tipo:", typeof useMultiFileAuthState);
+
+    if (typeof makeWASocket !== "function") { console.error("[WhatsApp] ERRO: makeWASocket não é função"); setTimeout(startWhatsApp, 30000); return; }
+    if (typeof useMultiFileAuthState !== "function") { console.error("[WhatsApp] ERRO: useMultiFileAuthState não encontrado"); setTimeout(startWhatsApp, 30000); return; }
+
+    let pino;
+    try { pino = require("pino"); } catch { pino = () => ({ level: "silent", child: () => ({}) }); }
+
+    const { Boom } = require("@hapi/boom");
+    console.log("[WhatsApp] Carregando auth state...");
+    const { state, saveCreds } = await useMultiFileAuthState("./wa_auth");
+    console.log("[WhatsApp] Auth state carregado!");
+
+    let version = [2, 3000, 1015901307];
+    try {
+      console.log("[WhatsApp] Buscando versão...");
+      const v = await fetchLatestBaileysVersion();
+      version = v.version;
+      console.log("[WhatsApp] Versão:", version.join("."));
+    } catch(e) { console.log("[WhatsApp] Versão padrão (erro:", e.message, ")"); }
+
+    console.log("[WhatsApp] Criando socket...");
+    waSocket = makeWASocket({
+      version, auth: state,
+      logger: pino({ level: "silent" }),
+      printQRInTerminal: true,
+      browser: ["TraderAureonia AI", "Chrome", "1.0.0"],
+    });
+    console.log("[WhatsApp] Socket criado! Aguardando eventos...");
+
+    waSocket.ev.on("creds.update", saveCreds);
+
+    waSocket.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+      console.log("[WhatsApp] connection.update:", connection || "sem connection", qr ? "QR disponível" : "sem QR");
+      if (qr) {
+        waQRCode = qr;
+        try {
+          const QRCode = require("qrcode");
+          QRCode.toDataURL(qr, (err, url) => {
+            if (!err) { waQRCodeBase64 = url; broadcastToSite({ type: "wa_qr", qr: url }); console.log("[WhatsApp] ✅ QR Code gerado — acesse /whatsapp/qr"); }
+            else console.log("[WhatsApp] Erro ao gerar QR imagem:", err.message);
+          });
+        } catch(e) { broadcastToSite({ type: "wa_qr_text", qr }); console.log("[WhatsApp] QR texto disponível"); }
+      }
+      if (connection === "open") {
+        waConnected = true; waQRCode = null; waQRCodeBase64 = null;
+        console.log("[WhatsApp] ✅ CONECTADO COM SUCESSO!");
+        broadcastToSite({ type: "wa_connected", connected: true });
+        loadWaSubscribers();
+      }
+      if (connection === "close") {
+        waConnected = false;
+        broadcastToSite({ type: "wa_connected", connected: false });
+        const statusCode      = (lastDisconnect?.error)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason?.loggedOut;
+        console.log(`[WhatsApp] Conexão fechada. StatusCode: ${statusCode} | Reconectar: ${shouldReconnect}`);
+        if (shouldReconnect) { console.log("[WhatsApp] Reconectando em 5s..."); setTimeout(startWhatsApp, 5000); }
+        else console.log("[WhatsApp] Deslogado — não vai reconectar");
+      }
+    });
+
+    // ─── RECEBE MENSAGENS — usa "from" como JID direto ───
+    waSocket.ev.on("messages.upsert", async ({ messages, type }) => {
+      console.log("[WhatsApp] messages.upsert disparou! type:", type, "qtd:", messages.length);
+      for (const msg of messages) {
+        const from = msg.key.remoteJid;
+        console.log("[WhatsApp] msg from:", from, "fromMe:", msg.key.fromMe);
+        if (!msg.message || msg.key.fromMe) continue;
+        if (from.includes("@g.us")) continue; // ignora grupos
+        // Extrai phone do JID para usar como chave
+        const phone = from.replace("@s.whatsapp.net", "");
+        const text  = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
+        if (!text) continue;
+        // Passa "from" como JID completo — garante formato correto
+        await handleWhatsAppMessage(phone, from, text);
+      }
+    });
+
+  } catch (err) {
+    console.error("[WhatsApp] ERRO CRÍTICO:", err.message);
+    console.error("[WhatsApp] Stack:", err.stack?.substring(0, 300));
+    setTimeout(startWhatsApp, 10000);
+  }
+}
+
+async function loadWaSubscribers() {
+  try {
+    const data = await supabaseGet("wa_subscribers?active=eq.true&select=phone,plan,email,name");
+    if (data && Array.isArray(data)) {
+      data.forEach(s => waSubscribers.set(s.phone, { plan: s.plan, email: s.email, name: s.name, active: true, jid: `${s.phone}@s.whatsapp.net` }));
+      console.log(`[WhatsApp] ${data.length} subscribers carregados`);
+    }
+  } catch {}
+}
+
+// ─────────────────────────────────────────────
+// WHATSAPP — Envia sinal para subscribers
+// ─────────────────────────────────────────────
 async function sendSignalToSubscribers(signal) {
   if (!waConnected || waSubscribers.size === 0) return;
   const { asset, direction, strategy, probability, entry, sl, tp1, tp2, tp3, mode } = signal;
@@ -399,6 +361,8 @@ async function sendSignalToSubscribers(signal) {
     const limits = getPlanLimits(sub.plan);
     if (limits.assets !== "ALL" && !limits.assets.includes(asset)) continue;
     if (!limits.strategies.includes(strategy)) continue;
+    // Usa o JID salvo ou monta o padrão
+    const recipientJid = sub.jid || `${phone}@s.whatsapp.net`;
     const message =
       `${emoji} *SINAL ${direction} — ${asset}*\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -409,7 +373,7 @@ async function sendSignalToSubscribers(signal) {
       `✅ TP1: ${tp1}${tp2 ? `\n✅ TP2: ${tp2}` : ""}${tp3 ? `\n✅ TP3: ${tp3}` : ""}\n\n` +
       `⏰ ${new Date().toLocaleTimeString("pt-BR")}\n` +
       `🌐 traderaureonia.com.br`;
-    await sendWAMessage(phone, message);
+    await sendWAMessage(recipientJid, message);
     await new Promise(r => setTimeout(r, 500));
     sent++;
   }
@@ -417,35 +381,22 @@ async function sendSignalToSubscribers(signal) {
 }
 
 app.get("/whatsapp/qr", (req, res) => {
-  if (waConnected) {
-    return res.send(`<html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px"><h1>✅ WhatsApp Conectado!</h1><p>Subscribers: ${waSubscribers.size}</p></body></html>`);
-  }
-  if (waQRCodeBase64) {
-    return res.send(`<html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px"><h1>📱 Escanear QR Code</h1><p>WhatsApp → Menu → Aparelhos conectados → Conectar aparelho</p><img src="${waQRCodeBase64}" style="width:300px;height:300px;border:3px solid #00ff00;border-radius:12px"/><script>setTimeout(()=>location.reload(),10000)</script></body></html>`);
-  }
+  if (waConnected) return res.send(`<html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px"><h1>✅ WhatsApp Conectado!</h1><p>Subscribers: ${waSubscribers.size}</p></body></html>`);
+  if (waQRCodeBase64) return res.send(`<html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px"><h1>📱 Escanear QR Code</h1><p>WhatsApp → Menu → Aparelhos conectados → Conectar aparelho</p><img src="${waQRCodeBase64}" style="width:300px;height:300px;border:3px solid #00ff00;border-radius:12px"/><script>setTimeout(()=>location.reload(),10000)</script></body></html>`);
   res.send(`<html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px"><h1>⏳ Aguardando QR Code...</h1><p>Aguarde alguns segundos.</p><script>setTimeout(()=>location.reload(),3000)</script></body></html>`);
 });
+
 app.get("/whatsapp/reset", async (req, res) => {
   try {
     const fs = require("fs");
-    if (fs.existsSync("./wa_auth")) {
-      fs.rmSync("./wa_auth", { recursive: true, force: true });
-    }
-    waConnected = false;
-    waQRCode = null;
-    waQRCodeBase64 = null;
-    waSocket = null;
+    if (fs.existsSync("./wa_auth")) fs.rmSync("./wa_auth", { recursive: true, force: true });
+    waConnected = false; waQRCode = null; waQRCodeBase64 = null; waSocket = null;
     console.log("[WhatsApp] Auth resetado! Reiniciando...");
     setTimeout(startWhatsApp, 2000);
-    res.send(`<html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px">
-      <h1>✅ Auth resetado!</h1>
-      <p>Aguarde 5 segundos e acesse o QR Code</p>
-      <script>setTimeout(()=>location.href='/whatsapp/qr',5000)</script>
-    </body></html>`);
-  } catch(err) {
-    res.send("Erro: " + err.message);
-  }
+    res.send(`<html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px"><h1>✅ Auth resetado!</h1><p>Aguarde 5 segundos e acesse o QR Code</p><script>setTimeout(()=>location.href='/whatsapp/qr',5000)</script></body></html>`);
+  } catch(err) { res.send("Erro: " + err.message); }
 });
+
 app.get("/whatsapp/status", (req, res) => {
   res.json({ connected: waConnected, subscribers: waSubscribers.size, has_qr: !!waQRCode, timestamp: new Date().toISOString() });
 });
@@ -457,8 +408,7 @@ app.get("/whatsapp/subscribers", (req, res) => {
 });
 
 async function fetchHistoricalStats(asset, strategy) {
-  const key = `${asset}-${strategy}`;
-  const now = Date.now();
+  const key = `${asset}-${strategy}`; const now = Date.now();
   if (historicalCache.has(key) && (now - lastCacheUpdate) < CACHE_TTL_MS) return historicalCache.get(key);
   try {
     const data = await supabaseGet(`live_signals?asset=eq.${encodeURIComponent(asset)}&strategy=eq.${strategy}&result=neq.open&select=result,profit,hour_of_day&order=created_at.desc&limit=200`);
@@ -474,7 +424,7 @@ async function fetchHistoricalStats(asset, strategy) {
 }
 
 async function saveLiveSignal(signal) {
-  const now  = new Date();
+  const now = new Date();
   const data = { asset: signal.asset, strategy: signal.strategy, direction: signal.direction, entry_price: signal.entry, sl: signal.sl, tp1: signal.tp1, tp2: signal.tp2 || null, tp3: signal.tp3 || null, probability: signal.probability, confirmations: signal.confirmations || 0, rsi: signal.indicators?.rsi || null, ema9: signal.indicators?.ema9 || null, ema21: signal.indicators?.ema21 || null, atr: signal.indicators?.atr || null, trend_strength: signal.trend_strength || null, is_range: signal.is_range || false, hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(), result: "open" };
   try { const saved = await supabasePost("live_signals", data); if (saved && saved[0]) signal.supabase_id = saved[0].id; } catch {}
 }
@@ -500,7 +450,14 @@ async function activateUserPlan(email, plan, months) {
     const exp   = new Date(); exp.setMonth(exp.getMonth() + (months || 1));
     if (users && users.length > 0) {
       await fetch(`${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal" }, body: JSON.stringify({ plan, plan_expires_at: exp.toISOString() }) });
-      waSubscribers.forEach((sub, phone) => { if (sub.email === email) { sub.plan = plan; waSubscribers.set(phone, sub); supabasePatch(`wa_subscribers?phone=eq.${phone}`, { plan }); sendWAMessage(phone, `🎉 Plano atualizado para *${plan.toUpperCase()}*!\nVocê receberá sinais de mais ativos.`); } });
+      waSubscribers.forEach((sub, phone) => {
+        if (sub.email === email) {
+          sub.plan = plan; waSubscribers.set(phone, sub);
+          supabasePatch(`wa_subscribers?phone=eq.${phone}`, { plan });
+          const jid = sub.jid || `${phone}@s.whatsapp.net`;
+          sendWAMessage(jid, `🎉 Plano atualizado para *${plan.toUpperCase()}*!\nVocê receberá sinais de mais ativos.`);
+        }
+      });
     }
   } catch {}
 }
@@ -537,11 +494,11 @@ async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "e
 
 async function analyzeLiveAsset(symbol, isPriority = false) {
   const priceData = allPrices.get(symbol); if (!priceData || !isPriceFresh(priceData)) return;
-  const strategy = getStrategyForAsset(symbol); const mode = getMostUsedMode(); const price = priceData.bid; const hour = new Date().getUTCHours();
+  const strategy = getStrategyForAsset(symbol); const mode = getMostUsedMode(); const hour = new Date().getUTCHours();
   const stats = await fetchHistoricalStats(symbol, strategy); const hourStats = stats.hour_stats?.[hour] || {};
   const historicalData = { win_rate: stats.win_rate, sample_size: stats.sample_size, hour_win_rate: hourStats.win_rate ?? -1, hour_sample_size: hourStats.count ?? 0 };
   const stratLabel = STRATEGIES[strategy]?.label || strategy;
-  if (liveRoomClients.size > 0) { broadcastToLiveRoom({ type: "thinking", asset: symbol, strategy, strategy_label: stratLabel, mode, price, is_priority: isPriority, message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — ${stratLabel} [${mode.toUpperCase()}]`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 1200)); }
+  if (liveRoomClients.size > 0) { broadcastToLiveRoom({ type: "thinking", asset: symbol, strategy, strategy_label: stratLabel, mode, price: priceData.bid, is_priority: isPriority, message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — ${stratLabel} [${mode.toUpperCase()}]`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 1200)); }
   try {
     const result = await callEaSignalV3(strategy, symbol, historicalData, mode);
     if (liveRoomClients.size > 0 && result.indicators) {
