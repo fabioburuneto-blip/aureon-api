@@ -423,7 +423,27 @@ app.get("/whatsapp/qr", (req, res) => {
   }
   res.send(`<html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px"><h1>⏳ Aguardando QR Code...</h1><p>Aguarde alguns segundos.</p><script>setTimeout(()=>location.reload(),3000)</script></body></html>`);
 });
-
+app.get("/whatsapp/reset", async (req, res) => {
+  try {
+    const fs = require("fs");
+    if (fs.existsSync("./wa_auth")) {
+      fs.rmSync("./wa_auth", { recursive: true, force: true });
+    }
+    waConnected = false;
+    waQRCode = null;
+    waQRCodeBase64 = null;
+    waSocket = null;
+    console.log("[WhatsApp] Auth resetado! Reiniciando...");
+    setTimeout(startWhatsApp, 2000);
+    res.send(`<html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px">
+      <h1>✅ Auth resetado!</h1>
+      <p>Aguarde 5 segundos e acesse o QR Code</p>
+      <script>setTimeout(()=>location.href='/whatsapp/qr',5000)</script>
+    </body></html>`);
+  } catch(err) {
+    res.send("Erro: " + err.message);
+  }
+});
 app.get("/whatsapp/status", (req, res) => {
   res.json({ connected: waConnected, subscribers: waSubscribers.size, has_qr: !!waQRCode, timestamp: new Date().toISOString() });
 });
