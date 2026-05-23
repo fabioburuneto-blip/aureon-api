@@ -267,9 +267,11 @@ async function startWhatsApp() {
       }
     });
 
-    waSocket.ev.on("messages.upsert", async ({ messages }) => {
-      for (const msg of messages) {
-        if (!msg.message || msg.key.fromMe) continue;
+    waSocket.ev.on("messages.upsert", async ({ messages, type }) => {
+  console.log("[WhatsApp] messages.upsert disparou! type:", type, "qtd:", messages.length);
+  for (const msg of messages) {
+    console.log("[WhatsApp] msg from:", msg.key.remoteJid, "fromMe:", msg.key.fromMe);
+    if (!msg.message || msg.key.fromMe) continue;
         const from  = msg.key.remoteJid;
         const phone = from.replace("@s.whatsapp.net", "").replace("@g.us", "");
         const text  = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
