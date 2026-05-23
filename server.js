@@ -138,19 +138,24 @@ async function supabasePatch(p, body) {
 }
 
 // ─────────────────────────────────────────────
-// WHATSAPP — Inicializa Baileys (CORRIGIDO)
+// WHATSAPP — Inicializa Baileys (COM LOGS DETALHADOS)
 // ─────────────────────────────────────────────
 async function startWhatsApp() {
   try {
-    // Importa o módulo e trata todas as formas possíveis de exportação
+    console.log("[WhatsApp] Iniciando...");
+
     let baileys;
     try {
       baileys = require("@whiskeysockets/baileys");
+      console.log("[WhatsApp] Baileys carregado via require");
     } catch(e) {
+      console.log("[WhatsApp] require falhou, tentando import...", e.message);
       baileys = await import("@whiskeysockets/baileys");
+      console.log("[WhatsApp] Baileys carregado via import");
     }
 
-    // Descobre como o makeWASocket está exportado nessa versão
+    console.log("[WhatsApp] Keys do módulo:", Object.keys(baileys).slice(0, 15).join(", "));
+
     const makeWASocket = (
       baileys.makeWASocket ||
       baileys.default?.makeWASocket ||
@@ -158,38 +163,51 @@ async function startWhatsApp() {
       baileys
     );
 
-    const useMultiFileAuthState    = baileys.useMultiFileAuthState    || baileys.default?.useMultiFileAuthState;
-    const DisconnectReason         = baileys.DisconnectReason         || baileys.default?.DisconnectReason;
+    const useMultiFileAuthState     = baileys.useMultiFileAuthState     || baileys.default?.useMultiFileAuthState;
+    const DisconnectReason          = baileys.DisconnectReason          || baileys.default?.DisconnectReason;
     const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion || baileys.default?.fetchLatestBaileysVersion;
 
-    // Log para diagnóstico
     console.log("[WhatsApp] makeWASocket tipo:", typeof makeWASocket);
     console.log("[WhatsApp] useMultiFileAuthState tipo:", typeof useMultiFileAuthState);
+    console.log("[WhatsApp] fetchLatestBaileysVersion tipo:", typeof fetchLatestBaileysVersion);
 
     if (typeof makeWASocket !== "function") {
-      console.error("[WhatsApp] makeWASocket não é uma função. Keys disponíveis:", Object.keys(baileys).join(", "));
+      console.error("[WhatsApp] ERRO: makeWASocket não é função. Tentando novamente em 30s...");
       setTimeout(startWhatsApp, 30000);
       return;
     }
 
     if (typeof useMultiFileAuthState !== "function") {
-      console.error("[WhatsApp] useMultiFileAuthState não encontrado");
+      console.error("[WhatsApp] ERRO: useMultiFileAuthState não encontrado. Tentando novamente em 30s...");
       setTimeout(startWhatsApp, 30000);
       return;
     }
 
     let pino;
-    try { pino = require("pino"); } catch { pino = () => ({ level: "silent", child: () => ({}) }); }
+    try {
+      pino = require("pino");
+      console.log("[WhatsApp] Pino carregado");
+    } catch {
+      console.log("[WhatsApp] Pino não encontrado, usando fallback");
+      pino = () => ({ level: "silent", child: () => ({}) });
+    }
 
     const { Boom } = require("@hapi/boom");
+    console.log("[WhatsApp] Carregando auth state...");
     const { state, saveCreds } = await useMultiFileAuthState("./wa_auth");
+    console.log("[WhatsApp] Auth state carregado!");
 
     let version = [2, 3000, 1015901307];
     try {
+      console.log("[WhatsApp] Buscando versão mais recente...");
       const v = await fetchLatestBaileysVersion();
       version = v.version;
-    } catch {}
+      console.log("[WhatsApp] Versão:", version.join("."));
+    } catch(e) {
+      console.log("[WhatsApp] Usando versão padrão (erro:", e.message, ")");
+    }
 
+    console.log("[WhatsApp] Criando socket...");
     waSocket = makeWASocket({
       version,
       auth:  state,
@@ -197,24 +215,31 @@ async function startWhatsApp() {
       printQRInTerminal: true,
       browser: ["TraderAureonia AI", "Chrome", "1.0.0"],
     });
+    console.log("[WhatsApp] Socket criado! Aguardando eventos...");
 
     waSocket.ev.on("creds.update", saveCreds);
 
     waSocket.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+      console.log("[WhatsApp] connection.update:", connection || "sem connection", qr ? "QR disponível" : "sem QR");
+
       if (qr) {
         waQRCode = qr;
+        console.log("[WhatsApp] QR Code recebido! Gerando imagem...");
         try {
           const QRCode = require("qrcode");
           QRCode.toDataURL(qr, (err, url) => {
             if (!err) {
               waQRCodeBase64 = url;
               broadcastToSite({ type: "wa_qr", qr: url });
-              console.log("[WhatsApp] QR Code gerado — acesse /whatsapp/qr");
+              console.log("[WhatsApp] ✅ QR Code gerado — acesse /whatsapp/qr");
+            } else {
+              console.log("[WhatsApp] Erro ao gerar QR imagem:", err.message);
             }
           });
-        } catch {
+        } catch(e) {
+          console.log("[WhatsApp] qrcode lib não disponível:", e.message);
           broadcastToSite({ type: "wa_qr_text", qr });
-          console.log("[WhatsApp] QR (texto):", qr.substring(0, 50) + "...");
+          console.log("[WhatsApp] QR texto disponível em /whatsapp/qr");
         }
       }
 
@@ -222,7 +247,7 @@ async function startWhatsApp() {
         waConnected    = true;
         waQRCode       = null;
         waQRCodeBase64 = null;
-        console.log("[WhatsApp] ✅ Conectado com sucesso!");
+        console.log("[WhatsApp] ✅ CONECTADO COM SUCESSO!");
         broadcastToSite({ type: "wa_connected", connected: true });
         loadWaSubscribers();
       }
@@ -232,8 +257,13 @@ async function startWhatsApp() {
         broadcastToSite({ type: "wa_connected", connected: false });
         const statusCode      = (lastDisconnect?.error)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason?.loggedOut;
-        console.log(`[WhatsApp] Conexão fechada. Reconectar: ${shouldReconnect}`);
-        if (shouldReconnect) setTimeout(startWhatsApp, 5000);
+        console.log(`[WhatsApp] Conexão fechada. StatusCode: ${statusCode} | Reconectar: ${shouldReconnect}`);
+        if (shouldReconnect) {
+          console.log("[WhatsApp] Reconectando em 5s...");
+          setTimeout(startWhatsApp, 5000);
+        } else {
+          console.log("[WhatsApp] Deslogado — não vai reconectar automaticamente");
+        }
       }
     });
 
@@ -249,7 +279,9 @@ async function startWhatsApp() {
     });
 
   } catch (err) {
-    console.error("[WhatsApp] Erro ao iniciar:", err.message);
+    console.error("[WhatsApp] ERRO CRÍTICO:", err.message);
+    console.error("[WhatsApp] Stack:", err.stack?.substring(0, 300));
+    console.log("[WhatsApp] Tentando novamente em 10s...");
     setTimeout(startWhatsApp, 10000);
   }
 }
@@ -338,7 +370,7 @@ async function handleWhatsAppMessage(phone, jid, text) {
 
   if (["oi","olá","ola","hello","hi","início","inicio"].includes(text)) {
     if (waSubscribers.has(phone)) {
-      const sub      = waSubscribers.get(phone);
+      const sub       = waSubscribers.get(phone);
       const planLabel = sub.plan === "elite" ? "🏆 Elite" : sub.plan === "pro" ? "⭐ PRO" : "📊 Básico";
       await sendWAMessage(phone, `👋 Você já está cadastrado!\nPlano: ${planLabel}\n\nEnvie *STATUS* para ver detalhes.\nEnvie *PARAR* para cancelar.`);
       return;
@@ -551,7 +583,6 @@ app.post("/price", (req, res) => {
 
 app.get("/prices", (req, res) => { const prices = []; allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, ask: data.ask, fresh: isPriceFresh(data) })); res.json({ total: prices.length, mt5_connected: isMt5Online(), prices, timestamp: new Date().toISOString() }); });
 app.get("/strategies", (req, res) => { res.json({ strategies: STRATEGIES, timestamp: new Date().toISOString() }); });
-
 app.get("/live-signals", (req, res) => { res.json({ active: true, clients: liveRoomClients.size, signals: liveSignalHistory.slice(0, 20), scoreboard: liveScoreboard, assets: LIVE_ASSETS, focused_asset: getMostFocusedAsset(), pending_notifications: pendingNotifications.slice(0, 5), wa_connected: waConnected, wa_subscribers: waSubscribers.size, timestamp: new Date().toISOString() }); });
 
 app.post("/live-signal-result", async (req, res) => {
