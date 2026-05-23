@@ -199,7 +199,9 @@ async function supabasePatch(path, body) {
 // ─────────────────────────────────────────────
 async function startWhatsApp() {
   try {
-    const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = await import("@whiskeysockets/baileys");
+    const baileys = await import("@whiskeysockets/baileys");
+    const makeWASocket = baileys.default || baileys.makeWASocket || baileys;
+    const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileys;
     const { Boom } = await import("@hapi/boom");
     const pino = (await import("pino")).default;
 
