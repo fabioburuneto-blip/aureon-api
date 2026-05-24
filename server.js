@@ -1,10 +1,11 @@
 /**
  * TraderAureonia AI — Servidor Railway v17
+ * - Anti-duplicata: 30s foco, 60s normal
+ * - Cooldown de sinal: 5 minutos por ativo+direção
  * - Sala ao vivo 24h
  * - Live Learning com Supabase
  * - Copy Trade Elite
  * - Webhook Hotmart
- * - Anti-duplicata no Live Room
  */
 
 const express = require("express");
@@ -65,11 +66,19 @@ const clientFocusAsset     = new Map();
 const clientStrategies     = new Map();
 const clientModes          = new Map();
 const pendingNotifications = [];
-const analysisCache        = new Map();
+
+// ─── CACHES ANTI-DUPLICATA ───
+const analysisCache = new Map(); // symbol-strategy → timestamp da última análise
+const signalCache   = new Map(); // symbol-direction → timestamp do último sinal
 
 const historicalCache = new Map();
 let   lastCacheUpdate = 0;
 const CACHE_TTL_MS    = 5 * 60 * 1000;
+
+// Intervalos de cooldown
+const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;  // 30s para ativo em foco
+const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;  // 60s para análise normal
+const SIGNAL_COOLDOWN            = 5 * 60 * 1000; // 5 min entre sinais iguais
 
 const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
 const DEFAULT_STRATEGIES = {
@@ -182,15 +191,24 @@ function notifyAllClients(signal) {
 }
 function checkScoreboardReset() {
   const today = new Date().toDateString();
-  if (liveScoreboard.date !== today) { liveScoreboard.signals = 0; liveScoreboard.wins = 0; liveScoreboard.losses = 0; liveScoreboard.profit = 0; liveScoreboard.date = today; pendingNotifications.length = 0; }
+  if (liveScoreboard.date !== today) {
+    liveScoreboard.signals = 0; liveScoreboard.wins = 0;
+    liveScoreboard.losses  = 0; liveScoreboard.profit = 0;
+    liveScoreboard.date    = today;
+    pendingNotifications.length = 0;
+    // Limpa caches de sinal ao virar o dia
+    signalCache.clear();
+    analysisCache.clear();
+  }
 }
 
 async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "express") {
   const priceData = allPrices.get(symbol);
   if (!priceData) throw new Error(`Sem dados para ${symbol}.`);
   let closes, highs, lows, opens;
-  if (priceData.closes && Array.isArray(priceData.closes) && priceData.closes.length >= 30) { closes = priceData.closes; highs = priceData.highs || []; lows = priceData.lows || []; opens = priceData.opens || []; }
-  else {
+  if (priceData.closes && Array.isArray(priceData.closes) && priceData.closes.length >= 30) {
+    closes = priceData.closes; highs = priceData.highs || []; lows = priceData.lows || []; opens = priceData.opens || [];
+  } else {
     const bid = parseFloat(priceData.bid); const c1 = parseFloat(priceData.close1 || bid), c2 = c1*0.9995, c3 = c1*0.999; const h1 = parseFloat(priceData.high1 || c1*1.002), l1 = parseFloat(priceData.low1 || c1*0.998);
     closes = []; highs = []; lows = []; opens = [];
     for(let i=54;i>=3;i--){const f=1+(Math.random()-0.5)*0.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*0.999).toFixed(5)));opens.push(parseFloat((bid*f*0.9995).toFixed(5)));}
@@ -208,13 +226,13 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 
   const strategy = getStrategyForAsset(symbol);
 
-  // Anti-duplicata — 1x por minuto por ativo+estratégia (exceto foco)
-  if (!isPriority) {
-    const cacheKey = `${symbol}-${strategy}`;
-    const lastTime = analysisCache.get(cacheKey) || 0;
-    if (Date.now() - lastTime < 60000) return;
-    analysisCache.set(cacheKey, Date.now());
-  }
+  // ─── ANTI-DUPLICATA DE ANÁLISE ───
+  // Foco: 30s | Normal: 60s (ambos têm cache agora)
+  const cacheKey    = `${symbol}-${strategy}`;
+  const lastAnalysis = analysisCache.get(cacheKey) || 0;
+  const minInterval  = isPriority ? ANALYSIS_INTERVAL_PRIORITY : ANALYSIS_INTERVAL_NORMAL;
+  if (Date.now() - lastAnalysis < minInterval) return;
+  analysisCache.set(cacheKey, Date.now());
 
   const mode = getMostUsedMode();
   const hour = new Date().getUTCHours();
@@ -230,6 +248,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 
   try {
     const result = await callEaSignalV3(strategy, symbol, historicalData, mode);
+
     if (liveRoomClients.size > 0 && result.indicators) {
       const { rsi } = result.indicators;
       if (rsi > 65) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", rsi, message: `⚠ RSI em ${rsi} — sobrecompra`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
@@ -238,36 +257,94 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
       if (result.analysis?.liquidity_sweeps?.bull?.detected) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bull.level}!`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
       if (result.analysis?.liquidity_sweeps?.bear?.detected) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bear.level}!`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
     }
+
     if (result.status === "new_signal" && result.direction) {
+
+      // ─── COOLDOWN DE SINAL — 5 minutos por ativo+direção ───
+      const signalKey  = `${symbol}-${result.direction}`;
+      const lastSignal = signalCache.get(signalKey) || 0;
+      if (Date.now() - lastSignal < SIGNAL_COOLDOWN) {
+        console.log(`[LiveRoom] ⏱ Sinal bloqueado (cooldown 5min): ${symbol} ${result.direction}`);
+        if (liveRoomClients.size > 0) {
+          broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: `Aguardando cooldown — último sinal ${symbol} ${result.direction} há menos de 5 minutos`, timestamp: new Date().toISOString() });
+        }
+        return;
+      }
+      signalCache.set(signalKey, Date.now());
+
       liveScoreboard.signals++;
-      const signal = { type: "signal", asset: symbol, strategy, strategy_label: stratLabel, mode, direction: result.direction, entry: result.entry, sl: result.sl, tp: result.tp, tp1: result.tp1, tp2: result.tp2 || null, tp3: result.tp3 || null, tp1_label: result.tp1_label, tp2_label: result.tp2_label, tp3_label: result.tp3_label, probability: result.probability, reason: result.reason, confirmations: result.confirmations, indicators: result.indicators, trend_strength: result.trend_strength, is_range: result.is_range, htf_bias: result.htf_bias, vwap: result.vwap, volume_profile: result.volume_profile, market_structure: result.market_structure, analysis: result.analysis, probability_adjustment: result.probability_adjustment, historical: stats.sample_size > 0 ? { win_rate: stats.win_rate, sample_size: stats.sample_size } : null, id: `LIVE-${Date.now()}`, hora: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }), timestamp: new Date().toISOString() };
-      liveSignalHistory.unshift(signal); if (liveSignalHistory.length > 50) liveSignalHistory.pop();
+      const signal = {
+        type: "signal", asset: symbol, strategy, strategy_label: stratLabel, mode,
+        direction: result.direction, entry: result.entry, sl: result.sl, tp: result.tp,
+        tp1: result.tp1, tp2: result.tp2 || null, tp3: result.tp3 || null,
+        tp1_label: result.tp1_label, tp2_label: result.tp2_label, tp3_label: result.tp3_label,
+        probability: result.probability, reason: result.reason,
+        confirmations: result.confirmations, indicators: result.indicators,
+        trend_strength: result.trend_strength, is_range: result.is_range,
+        htf_bias: result.htf_bias, vwap: result.vwap,
+        volume_profile: result.volume_profile, market_structure: result.market_structure,
+        analysis: result.analysis, probability_adjustment: result.probability_adjustment,
+        historical: stats.sample_size > 0 ? { win_rate: stats.win_rate, sample_size: stats.sample_size } : null,
+        id: `LIVE-${Date.now()}`,
+        hora: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        timestamp: new Date().toISOString(),
+      };
+
+      liveSignalHistory.unshift(signal);
+      if (liveSignalHistory.length > 50) liveSignalHistory.pop();
       await saveLiveSignal(signal);
       if (liveRoomClients.size > 0) broadcastToLiveRoom(signal);
       notifyAllClients(signal);
+
       console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}%`);
     } else {
-      if (liveRoomClients.size > 0) broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: result.reason || "Aguardando setup ideal", is_range: result.is_range || false, indicators: result.indicators, htf_bias: result.htf_bias, timestamp: new Date().toISOString() });
+      if (liveRoomClients.size > 0) {
+        broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: result.reason || "Aguardando setup ideal", is_range: result.is_range || false, indicators: result.indicators, htf_bias: result.htf_bias, timestamp: new Date().toISOString() });
+      }
     }
   } catch (err) { console.error(`[LiveRoom] Erro ${symbol}:`, err.message); }
 }
 
 async function runLiveRoom() {
   checkScoreboardReset();
-  if (liveRoomClients.size > 0) broadcastToLiveRoom({ type: "scoreboard", signals: liveScoreboard.signals, wins: liveScoreboard.wins, losses: liveScoreboard.losses, profit: liveScoreboard.profit, win_rate: liveScoreboard.signals > 0 ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0", timestamp: new Date().toISOString() });
+  if (liveRoomClients.size > 0) {
+    broadcastToLiveRoom({ type: "scoreboard", signals: liveScoreboard.signals, wins: liveScoreboard.wins, losses: liveScoreboard.losses, profit: liveScoreboard.profit, win_rate: liveScoreboard.signals > 0 ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0", timestamp: new Date().toISOString() });
+  }
   const focusedAsset = getMostFocusedAsset();
   for (const symbol of LIVE_ASSETS) {
     if (symbol === focusedAsset) continue;
-    if (allPrices.get(symbol) && isPriceFresh(allPrices.get(symbol))) { await analyzeLiveAsset(symbol, false); if (liveRoomClients.size > 0) await new Promise(r => setTimeout(r, 1500)); }
+    if (allPrices.get(symbol) && isPriceFresh(allPrices.get(symbol))) {
+      await analyzeLiveAsset(symbol, false);
+      if (liveRoomClients.size > 0) await new Promise(r => setTimeout(r, 1500));
+    }
   }
 }
-async function runFocusedAsset() { const f = getMostFocusedAsset(); if (!f) return; const pd = allPrices.get(f); if (pd && isPriceFresh(pd)) await analyzeLiveAsset(f, true); }
-function startLiveRoom24h() { if (!liveRoomInterval) { liveRoomInterval = setInterval(runLiveRoom, 30000); console.log("[LiveRoom] Loop 30s iniciado"); } if (!focusInterval) { focusInterval = setInterval(runFocusedAsset, 10000); console.log("[LiveRoom] Loop 10s iniciado"); } }
+
+async function runFocusedAsset() {
+  const f = getMostFocusedAsset();
+  if (!f) return;
+  const pd = allPrices.get(f);
+  if (pd && isPriceFresh(pd)) await analyzeLiveAsset(f, true);
+}
+
+function startLiveRoom24h() {
+  if (!liveRoomInterval) { liveRoomInterval = setInterval(runLiveRoom, 30000); console.log("[LiveRoom] Loop 30s iniciado"); }
+  if (!focusInterval)    { focusInterval    = setInterval(runFocusedAsset, 10000); console.log("[LiveRoom] Loop 10s iniciado"); }
+}
 
 app.post("/webhook/hotmart", async (req, res) => {
   const event = req.body;
-  if (["PURCHASE_APPROVED","PURCHASE_COMPLETE","SUBSCRIPTION_REACTIVATED"].includes(event?.event)) { const email = event?.data?.buyer?.email; const product = event?.data?.product?.name || ""; const price = event?.data?.purchase?.price?.value || 0; let plan = "basic", months = 1; if (product.toLowerCase().includes("elite") || price >= 390) plan = "elite"; else if (product.toLowerCase().includes("pro") || price >= 190) plan = "pro"; if (price >= 900) months = 12; if (email) { await activateUserPlan(email, plan, months); broadcastToSite({ type: "plan_activated", email, plan }); } }
-  if (["PURCHASE_CANCELED","PURCHASE_REFUNDED","SUBSCRIPTION_CANCELLATION"].includes(event?.event)) { const email = event?.data?.buyer?.email; if (email) await activateUserPlan(email, "basic", 0); }
+  if (["PURCHASE_APPROVED","PURCHASE_COMPLETE","SUBSCRIPTION_REACTIVATED"].includes(event?.event)) {
+    const email = event?.data?.buyer?.email; const product = event?.data?.product?.name || ""; const price = event?.data?.purchase?.price?.value || 0;
+    let plan = "basic", months = 1;
+    if (product.toLowerCase().includes("elite") || price >= 390) plan = "elite";
+    else if (product.toLowerCase().includes("pro") || price >= 190) plan = "pro";
+    if (price >= 900) months = 12;
+    if (email) { await activateUserPlan(email, plan, months); broadcastToSite({ type: "plan_activated", email, plan }); }
+  }
+  if (["PURCHASE_CANCELED","PURCHASE_REFUNDED","SUBSCRIPTION_CANCELLATION"].includes(event?.event)) {
+    const email = event?.data?.buyer?.email; if (email) await activateUserPlan(email, "basic", 0);
+  }
   res.json({ status: "ok" });
 });
 
@@ -275,7 +352,8 @@ app.post("/master-trade", async (req, res) => {
   const { symbol, direction, risk_percent, sl_percent, tp_percent, strategy, probability } = req.body;
   if (!symbol || !direction) return res.status(400).json({ error: "symbol e direction obrigatórios" });
   const eliteSlaves = []; activeSlaves.forEach((data, userId) => { if ((new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S && data.plan === "elite") eliteSlaves.push({ userId, ...data }); });
-  let copied = 0; for (const slave of eliteSlaves) { slavePendingOrders.set(slave.userId, { order_id: generateOrderId(), direction, symbol, sl: 0, tp: 0, lot_size: 0, risk_percent: risk_percent || 1.0, sl_percent: sl_percent || 0.5, tp_percent: tp_percent || 1.0, strategy: strategy || "COPY", probability: probability || 0, is_copy_trade: true, timestamp: new Date().toISOString() }); copied++; }
+  let copied = 0;
+  for (const slave of eliteSlaves) { slavePendingOrders.set(slave.userId, { order_id: generateOrderId(), direction, symbol, sl: 0, tp: 0, lot_size: 0, risk_percent: risk_percent || 1.0, sl_percent: sl_percent || 0.5, tp_percent: tp_percent || 1.0, strategy: strategy || "COPY", probability: probability || 0, is_copy_trade: true, timestamp: new Date().toISOString() }); copied++; }
   broadcastToSite({ type: "copy_trade", symbol, direction, strategy, probability, clients: copied, timestamp: new Date().toISOString() });
   res.json({ status: "ok", clients_copied: copied });
 });
@@ -315,7 +393,7 @@ app.get("/live-learning", async (req, res) => {
 });
 
 app.post("/slave-register", async (req, res) => {
-  const { user_id, account, symbol, balance, status, whatsapp_phone } = req.body;
+  const { user_id, account, symbol, balance, status } = req.body;
   if (!user_id) return res.status(400).json({ error: "user_id obrigatório" });
   if (status === "disconnected") { activeSlaves.delete(user_id); broadcastToSite({ type: "slave_status", user_id, connected: false }); return res.json({ status: "ok" }); }
   const planCheck = await checkProPlan(user_id); if (!planCheck.allowed) return res.status(403).json({ status: "blocked", message: "Plano necessário." });
@@ -402,11 +480,25 @@ setInterval(async () => { try { await fetch(`${RAILWAY_URL}/health`); } catch {}
 app.get("/health", (_, res) => {
   const slaves = []; activeSlaves.forEach((data, userId) => { const ago = Math.round((new Date() - data.lastSeen) / 1000); slaves.push({ user_id: userId, online: ago < SLAVE_TIMEOUT_S, balance: data.balance, plan: data.plan, last_seen_secs: ago }); });
   const prices = []; allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
-  res.json({ status: "online", version: "v17", mt5_connected: isMt5Online(), symbols_count: allPrices.size, symbols: prices, site_clients: siteClients.size, slaves_online: slaves.filter(s => s.online).length, slaves_total: activeSlaves.size, slaves, elite_online: slaves.filter(s => s.online && s.plan === "elite").length, live_room_active: true, live_room_clients: liveRoomClients.size, live_signals_today: liveScoreboard.signals, focused_asset: getMostFocusedAsset(), current_mode: getMostUsedMode(), learning_cache_size: historicalCache.size, strategies: Object.keys(STRATEGIES), timestamp: new Date().toISOString() });
+  res.json({
+    status: "online", version: "v17",
+    mt5_connected: isMt5Online(), symbols_count: allPrices.size, symbols: prices,
+    site_clients: siteClients.size,
+    slaves_online: slaves.filter(s => s.online).length, slaves_total: activeSlaves.size, slaves,
+    elite_online: slaves.filter(s => s.online && s.plan === "elite").length,
+    live_room_active: true, live_room_clients: liveRoomClients.size,
+    live_signals_today: liveScoreboard.signals,
+    focused_asset: getMostFocusedAsset(), current_mode: getMostUsedMode(),
+    learning_cache_size: historicalCache.size,
+    analysis_cache_size: analysisCache.size,
+    signal_cache_size: signalCache.size,
+    strategies: Object.keys(STRATEGIES),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 httpServer.listen(PORT, async () => {
   console.log(`[Railway] v17 rodando na porta ${PORT}`);
-  console.log(`[Railway] Estratégias: ${Object.keys(STRATEGIES).join(", ")}`);
+  console.log(`[Railway] Anti-duplicata: análise ${ANALYSIS_INTERVAL_NORMAL/1000}s | sinal ${SIGNAL_COOLDOWN/60000}min`);
   startLiveRoom24h();
 });
