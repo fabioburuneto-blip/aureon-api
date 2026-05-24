@@ -1,12 +1,10 @@
 /**
- * TraderAureonia AI — Servidor Railway v16
- * - WhatsApp Bot via Baileys
- * - Usa JID original sem normalização
- * - Anti-duplicata no Live Room
+ * TraderAureonia AI — Servidor Railway v17
  * - Sala ao vivo 24h
  * - Live Learning com Supabase
  * - Copy Trade Elite
  * - Webhook Hotmart
+ * - Anti-duplicata no Live Room
  */
 
 const express = require("express");
@@ -42,13 +40,6 @@ const PRICE_EXPIRE_S   = 30;
 const SUPABASE_URL = "https://vxxdkxlvkrxkfbrvxdal.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ4eGRreGx2a3J4a2ZicnZ4ZGFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNjE5MzksImV4cCI6MjA5MTkzNzkzOX0.Z1A_L_ObyDwWSoT0lp9uoB0qpRx7-Tt_oEDpifd-U7s";
 
-let waSocket       = null;
-let waConnected    = false;
-let waQRCode       = null;
-let waQRCodeBase64 = null;
-const waSubscribers          = new Map(); // jid → { plan, email, active }
-const waPendingRegistrations = new Map(); // jid → { step }
-
 const STRATEGIES = {
   SMC_PRO:   { label: "SMC Pro",        plan: "basic" },
   PA:        { label: "Price Action",    plan: "basic" },
@@ -74,7 +65,7 @@ const clientFocusAsset     = new Map();
 const clientStrategies     = new Map();
 const clientModes          = new Map();
 const pendingNotifications = [];
-const analysisCache        = new Map(); // anti-duplicata
+const analysisCache        = new Map();
 
 const historicalCache = new Map();
 let   lastCacheUpdate = 0;
@@ -89,9 +80,9 @@ const DEFAULT_STRATEGIES = {
 const liveScoreboard = { signals: 0, wins: 0, losses: 0, profit: 0, date: new Date().toDateString() };
 
 const PLAN_LIMITS = {
-  basic: { assets: ["BTCUSD"], strategies: ["SMC_PRO","PA"], modes: ["express"], maxPositions: 3, autoTrade: false, copyTrade: false, liveRoom: true, whatsapp: true },
-  pro:   { assets: ["BTCUSD","EURUSD","XAUUSD.s"], strategies: ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI"], modes: ["express","complete"], maxPositions: 10, autoTrade: true, copyTrade: false, liveRoom: true, whatsapp: true },
-  elite: { assets: "ALL", strategies: ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI","AI"], modes: ["express","complete"], maxPositions: 20, autoTrade: true, copyTrade: true, liveRoom: true, whatsapp: true },
+  basic: { assets: ["BTCUSD"], strategies: ["SMC_PRO","PA"], modes: ["express"], maxPositions: 3, autoTrade: false, copyTrade: false, liveRoom: true },
+  pro:   { assets: ["BTCUSD","EURUSD","XAUUSD.s"], strategies: ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI"], modes: ["express","complete"], maxPositions: 10, autoTrade: true, copyTrade: false, liveRoom: true },
+  elite: { assets: "ALL", strategies: ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI","AI"], modes: ["express","complete"], maxPositions: 20, autoTrade: true, copyTrade: true, liveRoom: true },
 };
 function getPlanLimits(plan) { return PLAN_LIMITS[plan] || PLAN_LIMITS.basic; }
 
@@ -132,273 +123,6 @@ async function supabasePost(p, body) {
 async function supabasePatch(p, body) {
   try { await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { method: "PATCH", headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal" }, body: JSON.stringify(body) }); } catch {}
 }
-
-// ─────────────────────────────────────────────
-// WHATSAPP — Envia mensagem usando JID original
-// ─────────────────────────────────────────────
-async function sendWAMessage(jid, message) {
-  if (!waConnected || !waSocket) {
-    console.log("[WhatsApp] Não conectado — não enviou para", jid);
-    return false;
-  }
-  try {
-    // Usa o JID exatamente como veio do Baileys — não modifica nada
-    await waSocket.sendMessage(jid, { text: message });
-    console.log("[WhatsApp] ✅ Enviado para:", jid);
-    return true;
-  } catch (err) {
-    console.error(`[WhatsApp] ❌ Erro ao enviar para ${jid}:`, err.message);
-    return false;
-  }
-}
-
-// ─────────────────────────────────────────────
-// WHATSAPP — Bot de respostas
-// Usa jid como chave principal (não phone)
-// ─────────────────────────────────────────────
-async function handleWhatsAppMessage(jid, text) {
-  console.log(`[WhatsApp] Processando mensagem de ${jid}: "${text}"`);
-  const pending = waPendingRegistrations.get(jid);
-
-  if (text === "parar" || text === "stop" || text === "cancelar") {
-    if (waSubscribers.has(jid)) {
-      const sub = waSubscribers.get(jid);
-      waSubscribers.delete(jid);
-      if (sub.phone) await supabasePatch(`wa_subscribers?phone=eq.${sub.phone}`, { active: false });
-      await sendWAMessage(jid, "✅ Você foi removido da lista de sinais.\n\nPara receber novamente envie *OI*.");
-    } else {
-      await sendWAMessage(jid, "Você não estava cadastrado na lista de sinais.");
-    }
-    waPendingRegistrations.delete(jid);
-    return;
-  }
-
-  if (text === "status" || text === "plano") {
-    const sub = waSubscribers.get(jid);
-    if (sub) {
-      const planLabel = sub.plan === "elite" ? "🏆 Elite" : sub.plan === "pro" ? "⭐ PRO" : "📊 Básico";
-      const limits    = getPlanLimits(sub.plan);
-      const assets    = limits.assets === "ALL" ? "Todos os ativos" : limits.assets.join(", ");
-      await sendWAMessage(jid, `📊 *Seu Status TraderAureonia AI*\n\nPlano: ${planLabel}\nAtivos: ${assets}\n\nPara parar envie *PARAR*\nAcesse: traderaureonia.com.br`);
-    } else {
-      await sendWAMessage(jid, `Você não está cadastrado.\n\nEnvie *OI* para se cadastrar.`);
-    }
-    return;
-  }
-
-  if (text === "ajuda" || text === "help" || text === "menu") {
-    await sendWAMessage(jid, `🤖 *TraderAureonia AI — Comandos*\n\n*OI* — Cadastrar\n*STATUS* — Ver plano\n*PARAR* — Parar sinais\n*AJUDA* — Ver menu\n\n🌐 traderaureonia.com.br`);
-    return;
-  }
-
-  if (pending && pending.step === "waiting_email") {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(text)) {
-      await sendWAMessage(jid, "❌ Email inválido. Envie um email válido.\n\nEx: seuemail@gmail.com");
-      return;
-    }
-    const users = await supabaseGet(`users?email=eq.${encodeURIComponent(text)}&select=id,email,plan`);
-    let plan = "basic";
-    if (users && users.length > 0) plan = users[0].plan || "basic";
-    const planLabel = plan === "elite" ? "🏆 Elite" : plan === "pro" ? "⭐ PRO" : "📊 Básico";
-    const limits    = getPlanLimits(plan);
-    const assets    = limits.assets === "ALL" ? "Todos os ativos" : limits.assets.join(", ");
-    // Salva o jid como identificador (não o phone deformado)
-    const phone = jid.replace("@s.whatsapp.net", "");
-    await supabasePost("wa_subscribers", { phone, email: text, plan, active: true, created_at: new Date().toISOString() });
-    waSubscribers.set(jid, { plan, email: text, active: true, phone });
-    waPendingRegistrations.delete(jid);
-    await sendWAMessage(jid,
-      `✅ *Cadastro realizado!*\n\n📧 Email: ${text}\n📊 Plano: ${planLabel}\n📈 Ativos: ${assets}\n\nVocê receberá sinais automaticamente!\n\nFormato:\n🟢 SINAL BUY BTCUSD\nEntrada: 78.250 | SL: 77.900 | TP1: 78.800\nProb: 84%\n\nPara parar envie *PARAR*\n🌐 traderaureonia.com.br`
-    );
-    console.log(`[WhatsApp] ✅ Novo subscriber: ${jid} | Plano: ${plan}`);
-    return;
-  }
-
-  if (["oi","olá","ola","hello","hi","início","inicio"].includes(text)) {
-    if (waSubscribers.has(jid)) {
-      const sub       = waSubscribers.get(jid);
-      const planLabel = sub.plan === "elite" ? "🏆 Elite" : sub.plan === "pro" ? "⭐ PRO" : "📊 Básico";
-      await sendWAMessage(jid, `👋 Você já está cadastrado!\nPlano: ${planLabel}\n\nEnvie *STATUS* para ver detalhes.\nEnvie *PARAR* para cancelar.`);
-      return;
-    }
-    waPendingRegistrations.set(jid, { step: "waiting_email" });
-    await sendWAMessage(jid,
-      `👋 *Bem-vindo à TraderAureonia AI!*\n\n🤖 Receba sinais de trading com IA no WhatsApp!\n\n📊 Estratégias:\n• SMC Pro | Price Action\n• Wyckoff | Supply & Demand\n• Fibonacci | IA (todas)\n\nPara começar, envie o *email* que você usa em traderaureonia.com.br:\n\n_(Não tem conta? Crie em traderaureonia.com.br)_`
-    );
-    return;
-  }
-
-  await sendWAMessage(jid, `🤖 Não entendi. Envie *AJUDA* para ver os comandos.`);
-}
-
-// ─────────────────────────────────────────────
-// WHATSAPP — Inicializa Baileys
-// ─────────────────────────────────────────────
-async function startWhatsApp() {
-  try {
-    console.log("[WhatsApp] Iniciando...");
-    let baileys;
-    try { baileys = require("@whiskeysockets/baileys"); console.log("[WhatsApp] Baileys carregado via require"); }
-    catch(e) { baileys = await import("@whiskeysockets/baileys"); console.log("[WhatsApp] Baileys carregado via import"); }
-
-    console.log("[WhatsApp] Keys:", Object.keys(baileys).slice(0,10).join(", "));
-    const makeWASocket              = baileys.makeWASocket || baileys.default?.makeWASocket || (typeof baileys.default === "function" ? baileys.default : null);
-    const useMultiFileAuthState     = baileys.useMultiFileAuthState     || baileys.default?.useMultiFileAuthState;
-    const DisconnectReason          = baileys.DisconnectReason          || baileys.default?.DisconnectReason;
-    const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion || baileys.default?.fetchLatestBaileysVersion;
-
-    console.log("[WhatsApp] makeWASocket:", typeof makeWASocket);
-    if (typeof makeWASocket !== "function") { setTimeout(startWhatsApp, 30000); return; }
-
-    let pino; try { pino = require("pino"); } catch { pino = () => ({ level: "silent", child: () => ({}) }); }
-    const { state, saveCreds } = await useMultiFileAuthState("./wa_auth");
-
-    let version = [2, 3000, 1015901307];
-    try { const v = await fetchLatestBaileysVersion(); version = v.version; console.log("[WhatsApp] Versão:", version.join(".")); } catch { console.log("[WhatsApp] Versão padrão"); }
-
-    waSocket = makeWASocket({
-      version, auth: state,
-      logger: pino({ level: "silent" }),
-      printQRInTerminal: true,
-      browser: ["TraderAureonia AI", "Chrome", "1.0.0"],
-    });
-    console.log("[WhatsApp] Socket criado!");
-
-    waSocket.ev.on("creds.update", saveCreds);
-
-    waSocket.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
-      console.log("[WhatsApp] connection.update:", connection || "sem connection", qr ? "QR disponível" : "");
-      if (qr) {
-        waQRCode = qr;
-        try {
-          const QRCode = require("qrcode");
-          QRCode.toDataURL(qr, (err, url) => {
-            if (!err) { waQRCodeBase64 = url; broadcastToSite({ type: "wa_qr", qr: url }); console.log("[WhatsApp] ✅ QR Code gerado"); }
-          });
-        } catch { broadcastToSite({ type: "wa_qr_text", qr }); }
-      }
-      if (connection === "open") {
-        waConnected = true; waQRCode = null; waQRCodeBase64 = null;
-        console.log("[WhatsApp] ✅ CONECTADO!");
-        broadcastToSite({ type: "wa_connected", connected: true });
-        loadWaSubscribers();
-      }
-      if (connection === "close") {
-        waConnected = false;
-        broadcastToSite({ type: "wa_connected", connected: false });
-        const statusCode      = (lastDisconnect?.error)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason?.loggedOut;
-        console.log(`[WhatsApp] Fechado. StatusCode: ${statusCode} | Reconectar: ${shouldReconnect}`);
-        if (shouldReconnect) setTimeout(startWhatsApp, 5000);
-        else console.log("[WhatsApp] Deslogado permanentemente");
-      }
-    });
-
-    // ── RECEBE MENSAGENS — usa JID original do Baileys ──
-    waSocket.ev.on("messages.upsert", async ({ messages, type }) => {
-      console.log("[WhatsApp] messages.upsert! type:", type, "qtd:", messages.length);
-      for (const msg of messages) {
-        const jid = msg.key.remoteJid;
-        console.log("[WhatsApp] msg from:", jid, "fromMe:", msg.key.fromMe);
-        if (!msg.message || msg.key.fromMe) continue;
-        if (jid.includes("@g.us")) continue; // ignora grupos
-
-        // Log de diagnóstico
-        console.log("[WhatsApp] Tipos de conteúdo:", JSON.stringify(Object.keys(msg.message)));
-
-        // Extrai texto de todos os tipos possíveis
-        const text = (
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          msg.message.imageMessage?.caption ||
-          msg.message.videoMessage?.caption ||
-          msg.message.buttonsResponseMessage?.selectedDisplayText ||
-          msg.message.listResponseMessage?.title ||
-          ""
-        ).trim().toLowerCase();
-
-        console.log("[WhatsApp] Texto:", text, "| JID:", jid);
-
-        if (!text) continue;
-
-        // Usa o JID original do Baileys — sem modificar nada
-        await handleWhatsAppMessage(jid, text);
-      }
-    });
-
-  } catch (err) {
-    console.error("[WhatsApp] ERRO:", err.message);
-    setTimeout(startWhatsApp, 10000);
-  }
-}
-
-async function loadWaSubscribers() {
-  try {
-    const data = await supabaseGet("wa_subscribers?active=eq.true&select=phone,plan,email,name");
-    if (data && Array.isArray(data)) {
-      data.forEach(s => {
-        // Reconstrói JID aproximado — será atualizado quando o usuário mandar mensagem
-        const jid = `${s.phone}@s.whatsapp.net`;
-        waSubscribers.set(jid, { plan: s.plan, email: s.email, name: s.name, active: true, phone: s.phone });
-      });
-      console.log(`[WhatsApp] ${data.length} subscribers carregados`);
-    }
-  } catch {}
-}
-
-async function sendSignalToSubscribers(signal) {
-  if (!waConnected || waSubscribers.size === 0) return;
-  const { asset, direction, strategy, probability, entry, sl, tp1, tp2, tp3, mode } = signal;
-  const stratLabel = STRATEGIES[strategy]?.label || strategy;
-  const emoji      = direction === "BUY" ? "🟢" : "🔴";
-  const modeLabel  = mode === "complete" ? "📊 Completo" : "⚡ Express";
-  let sent = 0;
-  for (const [jid, sub] of waSubscribers.entries()) {
-    if (!sub.active) continue;
-    const limits = getPlanLimits(sub.plan);
-    if (limits.assets !== "ALL" && !limits.assets.includes(asset)) continue;
-    if (!limits.strategies.includes(strategy)) continue;
-    const message =
-      `${emoji} *SINAL ${direction} — ${asset}*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📊 ${stratLabel} | ${modeLabel}\n` +
-      `🎯 Probabilidade: ${probability}%\n\n` +
-      `💵 Entrada: *${entry}*\n` +
-      `🛑 Stop Loss: ${sl}\n` +
-      `✅ TP1: ${tp1}${tp2 ? `\n✅ TP2: ${tp2}` : ""}${tp3 ? `\n✅ TP3: ${tp3}` : ""}\n\n` +
-      `⏰ ${new Date().toLocaleTimeString("pt-BR")}\n` +
-      `🌐 traderaureonia.com.br`;
-    await sendWAMessage(jid, message);
-    await new Promise(r => setTimeout(r, 500));
-    sent++;
-  }
-  if (sent > 0) console.log(`[WhatsApp] Sinal enviado para ${sent} subscribers`);
-}
-
-app.get("/whatsapp/qr", (req, res) => {
-  if (waConnected) return res.send(`<html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px"><h1>✅ WhatsApp Conectado!</h1><p>Subscribers: ${waSubscribers.size}</p></body></html>`);
-  if (waQRCodeBase64) return res.send(`<html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px"><h1>📱 Escanear QR Code</h1><p>WhatsApp → Menu → Aparelhos conectados → Conectar aparelho</p><img src="${waQRCodeBase64}" style="width:300px;height:300px;border:3px solid #00ff00;border-radius:12px"/><script>setTimeout(()=>location.reload(),10000)</script></body></html>`);
-  res.send(`<html><body style="background:#0a0a0a;color:#fff;font-family:monospace;text-align:center;padding:50px"><h1>⏳ Aguardando QR Code...</h1><p>Aguarde alguns segundos.</p><script>setTimeout(()=>location.reload(),3000)</script></body></html>`);
-});
-
-app.get("/whatsapp/reset", async (req, res) => {
-  try {
-    const fs = require("fs");
-    if (fs.existsSync("./wa_auth")) fs.rmSync("./wa_auth", { recursive: true, force: true });
-    waConnected = false; waQRCode = null; waQRCodeBase64 = null; waSocket = null;
-    console.log("[WhatsApp] Auth resetado!");
-    setTimeout(startWhatsApp, 2000);
-    res.send(`<html><body style="background:#0a0a0a;color:#00ff00;font-family:monospace;text-align:center;padding:50px"><h1>✅ Auth resetado!</h1><p>Aguarde 5 segundos</p><script>setTimeout(()=>location.href='/whatsapp/qr',5000)</script></body></html>`);
-  } catch(err) { res.send("Erro: " + err.message); }
-});
-
-app.get("/whatsapp/status", (req, res) => { res.json({ connected: waConnected, subscribers: waSubscribers.size, has_qr: !!waQRCode, timestamp: new Date().toISOString() }); });
-app.get("/whatsapp/subscribers", (req, res) => {
-  const list = [];
-  waSubscribers.forEach((data, jid) => list.push({ jid, plan: data.plan, email: data.email, active: data.active }));
-  res.json({ total: list.length, subscribers: list });
-});
 
 async function fetchHistoricalStats(asset, strategy) {
   const key = `${asset}-${strategy}`; const now = Date.now();
@@ -443,13 +167,7 @@ async function activateUserPlan(email, plan, months) {
     const exp = new Date(); exp.setMonth(exp.getMonth() + (months || 1));
     if (users && users.length > 0) {
       await fetch(`${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Prefer": "return=minimal" }, body: JSON.stringify({ plan, plan_expires_at: exp.toISOString() }) });
-      waSubscribers.forEach((sub, jid) => {
-        if (sub.email === email) {
-          sub.plan = plan; waSubscribers.set(jid, sub);
-          if (sub.phone) supabasePatch(`wa_subscribers?phone=eq.${sub.phone}`, { plan });
-          sendWAMessage(jid, `🎉 Plano atualizado para *${plan.toUpperCase()}*!\nVocê receberá sinais de mais ativos.`);
-        }
-      });
+      console.log(`[Hotmart] Plano ${plan} ativado para ${email}`);
     }
   } catch {}
 }
@@ -490,7 +208,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 
   const strategy = getStrategyForAsset(symbol);
 
-  // Anti-duplicata — 1x por minuto (exceto foco)
+  // Anti-duplicata — 1x por minuto por ativo+estratégia (exceto foco)
   if (!isPriority) {
     const cacheKey = `${symbol}-${strategy}`;
     const lastTime = analysisCache.get(cacheKey) || 0;
@@ -527,8 +245,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
       await saveLiveSignal(signal);
       if (liveRoomClients.size > 0) broadcastToLiveRoom(signal);
       notifyAllClients(signal);
-      await sendSignalToSubscribers(signal);
-      console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}% | WA: ${waSubscribers.size}`);
+      console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}%`);
     } else {
       if (liveRoomClients.size > 0) broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: result.reason || "Aguardando setup ideal", is_range: result.is_range || false, indicators: result.indicators, htf_bias: result.htf_bias, timestamp: new Date().toISOString() });
     }
@@ -573,7 +290,7 @@ app.post("/price", (req, res) => {
 
 app.get("/prices", (req, res) => { const prices = []; allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, ask: data.ask, fresh: isPriceFresh(data) })); res.json({ total: prices.length, mt5_connected: isMt5Online(), prices, timestamp: new Date().toISOString() }); });
 app.get("/strategies", (req, res) => { res.json({ strategies: STRATEGIES, timestamp: new Date().toISOString() }); });
-app.get("/live-signals", (req, res) => { res.json({ active: true, clients: liveRoomClients.size, signals: liveSignalHistory.slice(0, 20), scoreboard: liveScoreboard, assets: LIVE_ASSETS, focused_asset: getMostFocusedAsset(), pending_notifications: pendingNotifications.slice(0, 5), wa_connected: waConnected, wa_subscribers: waSubscribers.size, timestamp: new Date().toISOString() }); });
+app.get("/live-signals", (req, res) => { res.json({ active: true, clients: liveRoomClients.size, signals: liveSignalHistory.slice(0, 20), scoreboard: liveScoreboard, assets: LIVE_ASSETS, focused_asset: getMostFocusedAsset(), pending_notifications: pendingNotifications.slice(0, 5), timestamp: new Date().toISOString() }); });
 
 app.post("/live-signal-result", async (req, res) => {
   const { signal_id, result, profit, close_price, tp_hit } = req.body;
@@ -603,7 +320,7 @@ app.post("/slave-register", async (req, res) => {
   if (status === "disconnected") { activeSlaves.delete(user_id); broadcastToSite({ type: "slave_status", user_id, connected: false }); return res.json({ status: "ok" }); }
   const planCheck = await checkProPlan(user_id); if (!planCheck.allowed) return res.status(403).json({ status: "blocked", message: "Plano necessário." });
   const limits = getPlanLimits(planCheck.plan || "basic");
-  activeSlaves.set(user_id, { account: account || "unknown", symbol: symbol || "BTCUSD", balance: balance || 0, plan: planCheck.plan || "basic", whatsapp_phone: whatsapp_phone || null, limits, lastSeen: new Date() });
+  activeSlaves.set(user_id, { account: account || "unknown", symbol: symbol || "BTCUSD", balance: balance || 0, plan: planCheck.plan || "basic", limits, lastSeen: new Date() });
   broadcastToSite({ type: "slave_status", user_id, connected: true, balance, plan: planCheck.plan });
   res.json({ status: "ok", user_id, plan: planCheck.plan, limits });
 });
@@ -651,7 +368,6 @@ app.get("/plan-limits/:userId", async (req, res) => { const planCheck = await ch
 wss.on("connection", (ws) => {
   siteClients.add(ws);
   ws.send(JSON.stringify({ type: "mt5_status", connected: isMt5Online() }));
-  ws.send(JSON.stringify({ type: "wa_connected", connected: waConnected, subscribers: waSubscribers.size }));
   ws.send(JSON.stringify({ type: "symbols_available", symbols: Array.from(allPrices.keys()) }));
   ws.send(JSON.stringify({ type: "strategies_available", strategies: STRATEGIES }));
   if (pendingNotifications.length > 0) ws.send(JSON.stringify({ type: "pending_notifications", notifications: pendingNotifications, timestamp: new Date().toISOString() }));
@@ -686,12 +402,11 @@ setInterval(async () => { try { await fetch(`${RAILWAY_URL}/health`); } catch {}
 app.get("/health", (_, res) => {
   const slaves = []; activeSlaves.forEach((data, userId) => { const ago = Math.round((new Date() - data.lastSeen) / 1000); slaves.push({ user_id: userId, online: ago < SLAVE_TIMEOUT_S, balance: data.balance, plan: data.plan, last_seen_secs: ago }); });
   const prices = []; allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
-  res.json({ status: "online", version: "v16", mt5_connected: isMt5Online(), symbols_count: allPrices.size, symbols: prices, site_clients: siteClients.size, slaves_online: slaves.filter(s => s.online).length, slaves_total: activeSlaves.size, slaves, elite_online: slaves.filter(s => s.online && s.plan === "elite").length, live_room_active: true, live_room_clients: liveRoomClients.size, live_signals_today: liveScoreboard.signals, focused_asset: getMostFocusedAsset(), current_mode: getMostUsedMode(), learning_cache_size: historicalCache.size, whatsapp_connected: waConnected, whatsapp_subscribers: waSubscribers.size, strategies: Object.keys(STRATEGIES), timestamp: new Date().toISOString() });
+  res.json({ status: "online", version: "v17", mt5_connected: isMt5Online(), symbols_count: allPrices.size, symbols: prices, site_clients: siteClients.size, slaves_online: slaves.filter(s => s.online).length, slaves_total: activeSlaves.size, slaves, elite_online: slaves.filter(s => s.online && s.plan === "elite").length, live_room_active: true, live_room_clients: liveRoomClients.size, live_signals_today: liveScoreboard.signals, focused_asset: getMostFocusedAsset(), current_mode: getMostUsedMode(), learning_cache_size: historicalCache.size, strategies: Object.keys(STRATEGIES), timestamp: new Date().toISOString() });
 });
 
 httpServer.listen(PORT, async () => {
-  console.log(`[Railway] v16 rodando na porta ${PORT}`);
+  console.log(`[Railway] v17 rodando na porta ${PORT}`);
   console.log(`[Railway] Estratégias: ${Object.keys(STRATEGIES).join(", ")}`);
   startLiveRoom24h();
-  setTimeout(startWhatsApp, 3000);
 });
