@@ -1,5 +1,6 @@
 /**
  * TraderAureonia AI — Servidor Railway v17
+ * - Trava de processamento simultâneo por ativo
  * - Anti-duplicata: 30s foco, 60s normal
  * - Cooldown de sinal: 5 minutos por ativo+direção
  * - Sala ao vivo 24h
@@ -67,18 +68,18 @@ const clientStrategies     = new Map();
 const clientModes          = new Map();
 const pendingNotifications = [];
 
-// ─── CACHES ANTI-DUPLICATA ───
-const analysisCache = new Map(); // symbol-strategy → timestamp da última análise
-const signalCache   = new Map(); // symbol-direction → timestamp do último sinal
+// ─── CACHES E TRAVAS ───
+const analysisCache   = new Map(); // symbol-strategy → timestamp última análise
+const signalCache     = new Map(); // symbol-direction → timestamp último sinal
+const processingAssets = new Set(); // symbol-strategy → em análise agora
 
 const historicalCache = new Map();
 let   lastCacheUpdate = 0;
 const CACHE_TTL_MS    = 5 * 60 * 1000;
 
-// Intervalos de cooldown
-const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;  // 30s para ativo em foco
-const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;  // 60s para análise normal
-const SIGNAL_COOLDOWN            = 5 * 60 * 1000; // 5 min entre sinais iguais
+const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;   // 30s para ativo em foco
+const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;   // 60s para análise normal
+const SIGNAL_COOLDOWN            = 5 * 60 * 1000; // 5min entre sinais iguais
 
 const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
 const DEFAULT_STRATEGIES = {
@@ -196,9 +197,10 @@ function checkScoreboardReset() {
     liveScoreboard.losses  = 0; liveScoreboard.profit = 0;
     liveScoreboard.date    = today;
     pendingNotifications.length = 0;
-    // Limpa caches de sinal ao virar o dia
     signalCache.clear();
     analysisCache.clear();
+    processingAssets.clear();
+    console.log("[LiveRoom] Novo dia — caches limpos");
   }
 }
 
@@ -220,33 +222,45 @@ async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "e
   const result = await response.json(); result.live_price = priceData.bid; result.live_symbol = symbol; return result;
 }
 
+// ─────────────────────────────────────────────
+// LIVE ROOM — Analisa ativo
+// Com trava, anti-duplicata e cooldown de sinal
+// ─────────────────────────────────────────────
 async function analyzeLiveAsset(symbol, isPriority = false) {
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) return;
 
   const strategy = getStrategyForAsset(symbol);
+  const lockKey  = `${symbol}-${strategy}`;
 
-  // ─── ANTI-DUPLICATA DE ANÁLISE ───
-  // Foco: 30s | Normal: 60s (ambos têm cache agora)
-  const cacheKey    = `${symbol}-${strategy}`;
-  const lastAnalysis = analysisCache.get(cacheKey) || 0;
-  const minInterval  = isPriority ? ANALYSIS_INTERVAL_PRIORITY : ANALYSIS_INTERVAL_NORMAL;
-  if (Date.now() - lastAnalysis < minInterval) return;
-  analysisCache.set(cacheKey, Date.now());
-
-  const mode = getMostUsedMode();
-  const hour = new Date().getUTCHours();
-  const stats = await fetchHistoricalStats(symbol, strategy);
-  const hourStats = stats.hour_stats?.[hour] || {};
-  const historicalData = { win_rate: stats.win_rate, sample_size: stats.sample_size, hour_win_rate: hourStats.win_rate ?? -1, hour_sample_size: hourStats.count ?? 0 };
-  const stratLabel = STRATEGIES[strategy]?.label || strategy;
-
-  if (liveRoomClients.size > 0) {
-    broadcastToLiveRoom({ type: "thinking", asset: symbol, strategy, strategy_label: stratLabel, mode, price: priceData.bid, is_priority: isPriority, message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — ${stratLabel} [${mode.toUpperCase()}]`, timestamp: new Date().toISOString() });
-    await new Promise(r => setTimeout(r, 1200));
+  // ── TRAVA — impede análise simultânea do mesmo ativo ──
+  if (processingAssets.has(lockKey)) {
+    console.log(`[LiveRoom] ⚙️ Já em análise: ${lockKey} — ignorando`);
+    return;
   }
+  processingAssets.add(lockKey);
 
   try {
+    // ── ANTI-DUPLICATA — intervalo mínimo entre análises ──
+    const lastAnalysis = analysisCache.get(lockKey) || 0;
+    const minInterval  = isPriority ? ANALYSIS_INTERVAL_PRIORITY : ANALYSIS_INTERVAL_NORMAL;
+    if (Date.now() - lastAnalysis < minInterval) {
+      return; // ainda dentro do intervalo
+    }
+    analysisCache.set(lockKey, Date.now());
+
+    const mode      = getMostUsedMode();
+    const hour      = new Date().getUTCHours();
+    const stats     = await fetchHistoricalStats(symbol, strategy);
+    const hourStats = stats.hour_stats?.[hour] || {};
+    const historicalData = { win_rate: stats.win_rate, sample_size: stats.sample_size, hour_win_rate: hourStats.win_rate ?? -1, hour_sample_size: hourStats.count ?? 0 };
+    const stratLabel = STRATEGIES[strategy]?.label || strategy;
+
+    if (liveRoomClients.size > 0) {
+      broadcastToLiveRoom({ type: "thinking", asset: symbol, strategy, strategy_label: stratLabel, mode, price: priceData.bid, is_priority: isPriority, message: `${isPriority ? "🎯" : "🧠"} ${isPriority ? "Análise prioritária" : "Monitorando"} ${symbol} — ${stratLabel} [${mode.toUpperCase()}]`, timestamp: new Date().toISOString() });
+      await new Promise(r => setTimeout(r, 1200));
+    }
+
     const result = await callEaSignalV3(strategy, symbol, historicalData, mode);
 
     if (liveRoomClients.size > 0 && result.indicators) {
@@ -260,13 +274,13 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 
     if (result.status === "new_signal" && result.direction) {
 
-      // ─── COOLDOWN DE SINAL — 5 minutos por ativo+direção ───
+      // ── COOLDOWN DE SINAL — 5 minutos por ativo+direção ──
       const signalKey  = `${symbol}-${result.direction}`;
       const lastSignal = signalCache.get(signalKey) || 0;
       if (Date.now() - lastSignal < SIGNAL_COOLDOWN) {
-        console.log(`[LiveRoom] ⏱ Sinal bloqueado (cooldown 5min): ${symbol} ${result.direction}`);
+        console.log(`[LiveRoom] ⏱ Cooldown ativo: ${signalKey} — próximo em ${Math.round((SIGNAL_COOLDOWN - (Date.now() - lastSignal)) / 1000)}s`);
         if (liveRoomClients.size > 0) {
-          broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: `Aguardando cooldown — último sinal ${symbol} ${result.direction} há menos de 5 minutos`, timestamp: new Date().toISOString() });
+          broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: `Cooldown ativo — aguardando ${Math.round((SIGNAL_COOLDOWN - (Date.now() - lastSignal)) / 1000)}s`, timestamp: new Date().toISOString() });
         }
         return;
       }
@@ -297,12 +311,19 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
       notifyAllClients(signal);
 
       console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}%`);
+
     } else {
       if (liveRoomClients.size > 0) {
         broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: result.reason || "Aguardando setup ideal", is_range: result.is_range || false, indicators: result.indicators, htf_bias: result.htf_bias, timestamp: new Date().toISOString() });
       }
     }
-  } catch (err) { console.error(`[LiveRoom] Erro ${symbol}:`, err.message); }
+
+  } catch (err) {
+    console.error(`[LiveRoom] Erro ${symbol}:`, err.message);
+  } finally {
+    // ── Libera trava SEMPRE — mesmo em erro ──
+    processingAssets.delete(lockKey);
+  }
 }
 
 async function runLiveRoom() {
@@ -492,6 +513,7 @@ app.get("/health", (_, res) => {
     learning_cache_size: historicalCache.size,
     analysis_cache_size: analysisCache.size,
     signal_cache_size: signalCache.size,
+    processing_count: processingAssets.size,
     strategies: Object.keys(STRATEGIES),
     timestamp: new Date().toISOString(),
   });
@@ -499,6 +521,6 @@ app.get("/health", (_, res) => {
 
 httpServer.listen(PORT, async () => {
   console.log(`[Railway] v17 rodando na porta ${PORT}`);
-  console.log(`[Railway] Anti-duplicata: análise ${ANALYSIS_INTERVAL_NORMAL/1000}s | sinal ${SIGNAL_COOLDOWN/60000}min`);
+  console.log(`[Railway] Trava: processingAssets | Análise: ${ANALYSIS_INTERVAL_NORMAL/1000}s | Sinal: ${SIGNAL_COOLDOWN/60000}min`);
   startLiveRoom24h();
 });
