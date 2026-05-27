@@ -152,8 +152,25 @@ async function fetchHistoricalStats(asset, strategy) {
 
 async function saveLiveSignal(signal) {
   const now = new Date();
-  const data = { asset: signal.asset, strategy: signal.strategy, direction: signal.direction, entry_price: signal.entry, sl: signal.sl, tp1: signal.tp1, tp2: signal.tp2 || null, tp3: signal.tp3 || null, probability: signal.probability, confirmations: signal.confirmations || 0, rsi: signal.indicators?.rsi || null, ema9: signal.indicators?.ema9 || null, ema21: signal.indicators?.ema21 || null, atr: signal.indicators?.atr || null, trend_strength: signal.trend_strength || null, is_range: signal.is_range || false, hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(), result: "open" };
-  try { const saved = await supabasePost("live_signals", data); if (saved && saved[0]) signal.supabase_id = saved[0].id; } catch {}
+  const data = {
+    asset: signal.asset, strategy: signal.strategy, direction: signal.direction,
+    entry_price: signal.entry, sl: signal.sl, tp1: signal.tp1,
+    tp2: signal.tp2 || null, tp3: signal.tp3 || null,
+    probability: signal.probability, confirmations: signal.confirmations || 0,
+    rsi: signal.indicators?.rsi || null, ema9: signal.indicators?.ema9 || null,
+    ema21: signal.indicators?.ema21 || null, atr: signal.indicators?.atr || null,
+    trend_strength: signal.trend_strength || null, is_range: signal.is_range || false,
+    hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(), result: "open"
+  };
+  try {
+    console.log("[Supabase] Salvando sinal:", signal.asset, signal.direction);
+    const saved = await supabasePost("live_signals", data);
+    console.log("[Supabase] Resposta:", JSON.stringify(saved)?.substring(0, 200));
+    if (saved && saved[0]) signal.supabase_id = saved[0].id;
+    else console.log("[Supabase] ⚠️ Sinal não salvo — resposta vazia ou erro");
+  } catch(err) {
+    console.error("[Supabase] ❌ Erro ao salvar sinal:", err.message);
+  }
 }
 
 async function updateLiveSignalResult(id, result, profit, closePrice, tpHit) {
