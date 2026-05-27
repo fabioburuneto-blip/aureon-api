@@ -6,7 +6,7 @@
  * - Sala ao vivo 24h
  * - Live Learning com Supabase
  * - Copy Trade Elite
- * - Webhook Hotmart
+ * - Webhook Hotmart 
  */
 
 const express = require("express");
