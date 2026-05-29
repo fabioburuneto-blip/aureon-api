@@ -418,6 +418,22 @@ app.post("/live-signal-result", async (req, res) => {
   res.json({ status: "ok" });
 });
 
+app.get("/supabase-test", async (req, res) => {
+  try {
+    const testData = {
+      asset: "TEST", strategy: "SMC_PRO", direction: "BUY",
+      entry_price: 100, sl: 99, tp1: 101, probability: 80,
+      confirmations: 1, hour_of_day: new Date().getUTCHours(),
+      day_of_week: new Date().getUTCDay(), result: "open"
+    };
+    const result = await supabasePost("live_signals", testData);
+    console.log("[Test] Resultado Supabase:", JSON.stringify(result));
+    res.json({ status: "ok", result, timestamp: new Date().toISOString() });
+  } catch(err) {
+    res.json({ status: "error", error: err.message });
+  }
+});
+
 app.get("/live-learning", async (req, res) => {
   try {
     const data = await supabaseGet("live_signals?result=neq.open&select=asset,strategy,result,profit,hour_of_day,probability,rsi,atr&order=created_at.desc&limit=500");
@@ -429,7 +445,6 @@ app.get("/live-learning", async (req, res) => {
     res.json({ status: "ok", total_signals_analyzed: data.length, assets, last_updated: new Date().toISOString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.post("/slave-register", async (req, res) => {
   const { user_id, account, symbol, balance, status } = req.body;
   if (!user_id) return res.status(400).json({ error: "user_id obrigatório" });
