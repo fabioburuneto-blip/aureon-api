@@ -1,5 +1,6 @@
 /**
  * TraderAureonia AI — Servidor Railway v17
+ * - Endpoint /all-trades para Performance IA
  * - Ordens automáticas do Live Room
  * - Trava de processamento simultâneo
  * - Anti-duplicata: 30s foco, 60s normal
@@ -82,7 +83,6 @@ const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
 const SIGNAL_COOLDOWN            = 5 * 60 * 1000;
 
-// Live Room Bot — abre ordens automáticas
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
 
 const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
@@ -158,9 +158,7 @@ async function saveLiveSignal(signal) {
   const now = new Date();
   const data = { asset: signal.asset, strategy: signal.strategy, direction: signal.direction, entry_price: signal.entry, sl: signal.sl, tp1: signal.tp1, tp2: signal.tp2 || null, tp3: signal.tp3 || null, probability: signal.probability, confirmations: signal.confirmations || 0, rsi: signal.indicators?.rsi || null, ema9: signal.indicators?.ema9 || null, ema21: signal.indicators?.ema21 || null, atr: signal.indicators?.atr || null, trend_strength: signal.trend_strength || null, is_range: signal.is_range || false, hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(), result: "open" };
   try {
-    console.log("[Supabase] Salvando sinal:", signal.asset, signal.direction);
     const saved = await supabasePost("live_signals", data);
-    console.log("[Supabase] Resposta:", JSON.stringify(saved)?.substring(0, 100));
     if (saved && saved[0]) signal.supabase_id = saved[0].id;
     else console.log("[Supabase] ⚠️ Sinal não salvo");
   } catch(err) { console.error("[Supabase] ❌ Erro:", err.message); }
@@ -233,9 +231,6 @@ async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "e
   const result = await response.json(); result.live_price = priceData.bid; result.live_symbol = symbol; return result;
 }
 
-// ─────────────────────────────────────────────
-// LIVE ROOM — Analisa ativo
-// ─────────────────────────────────────────────
 async function analyzeLiveAsset(symbol, isPriority = false) {
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) return;
@@ -243,15 +238,10 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
   const strategy = getStrategyForAsset(symbol);
   const lockKey  = `${symbol}-${strategy}`;
 
-  // ── TRAVA ──
-  if (processingAssets.has(lockKey)) {
-    console.log(`[LiveRoom] ⚙️ Já em análise: ${lockKey}`);
-    return;
-  }
+  if (processingAssets.has(lockKey)) return;
   processingAssets.add(lockKey);
 
   try {
-    // ── ANTI-DUPLICATA ──
     const lastAnalysis = analysisCache.get(lockKey) || 0;
     const minInterval  = isPriority ? ANALYSIS_INTERVAL_PRIORITY : ANALYSIS_INTERVAL_NORMAL;
     if (Date.now() - lastAnalysis < minInterval) return;
@@ -281,12 +271,9 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
     }
 
     if (result.status === "new_signal" && result.direction) {
-
-      // ── COOLDOWN DE SINAL ──
       const signalKey  = `${symbol}-${result.direction}`;
       const lastSignal = signalCache.get(signalKey) || 0;
       if (Date.now() - lastSignal < SIGNAL_COOLDOWN) {
-        console.log(`[LiveRoom] ⏱ Cooldown: ${signalKey} — ${Math.round((SIGNAL_COOLDOWN - (Date.now() - lastSignal)) / 1000)}s`);
         if (liveRoomClients.size > 0) broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: `Cooldown ativo — aguardando ${Math.round((SIGNAL_COOLDOWN - (Date.now() - lastSignal)) / 1000)}s`, timestamp: new Date().toISOString() });
         return;
       }
@@ -315,44 +302,28 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
       await saveLiveSignal(signal);
       if (liveRoomClients.size > 0) broadcastToLiveRoom(signal);
       notifyAllClients(signal);
-
       console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}%`);
 
       // ── ORDEM AUTOMÁTICA DO LIVE ROOM ──
-      // Envia para o EA Slave do LIVE-ROOM-BOT se existir
-      // Ou para o primeiro slave online disponível
       let targetSlaveId = null;
-
-      // Verifica se tem slave do Live Room Bot
       if (isSlaveOnline(LIVE_ROOM_BOT_ID)) {
         targetSlaveId = LIVE_ROOM_BOT_ID;
       } else if (activeSlaves.size > 0) {
-        // Usa o primeiro slave online
         activeSlaves.forEach((data, userId) => {
           if (!targetSlaveId && (new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S) {
             targetSlaveId = userId;
           }
         });
       }
-
       if (targetSlaveId) {
         slavePendingOrders.set(targetSlaveId, {
-          order_id: generateOrderId(),
-          direction: result.direction,
-          symbol: symbol,
-          sl: result.sl,
-          tp: result.tp1 || result.tp,
-          lot_size: 0.01,
-          strategy: strategy,
-          probability: result.probability,
-          confirmations: result.confirmations || 0,
-          trend_strength: result.trend_strength || 0,
-          source: "LIVE-ROOM",
-          timestamp: new Date().toISOString()
+          order_id: generateOrderId(), direction: result.direction, symbol,
+          sl: result.sl, tp: result.tp1 || result.tp, lot_size: 0.01,
+          strategy, probability: result.probability,
+          confirmations: result.confirmations || 0, trend_strength: result.trend_strength || 0,
+          source: "LIVE-ROOM", timestamp: new Date().toISOString()
         });
-        console.log(`[LiveRoom] 📤 Ordem automática enviada: ${result.direction} ${symbol} → ${targetSlaveId}`);
-      } else {
-        console.log(`[LiveRoom] ℹ️ Sem slave conectado para ordem automática: ${symbol}`);
+        console.log(`[LiveRoom] 📤 Ordem automática: ${result.direction} ${symbol} → ${targetSlaveId}`);
       }
 
     } else {
@@ -447,7 +418,6 @@ app.get("/supabase-test", async (req, res) => {
   try {
     const testData = { asset: "TEST", strategy: "SMC_PRO", direction: "BUY", entry_price: 100, sl: 99, tp1: 101, probability: 80, confirmations: 1, hour_of_day: new Date().getUTCHours(), day_of_week: new Date().getUTCDay(), result: "open" };
     const result = await supabasePost("live_signals", testData);
-    console.log("[Test] Resultado Supabase:", JSON.stringify(result));
     res.json({ status: "ok", result, timestamp: new Date().toISOString() });
   } catch(err) { res.json({ status: "error", error: err.message }); }
 });
@@ -461,6 +431,33 @@ app.get("/live-learning", async (req, res) => {
     const assets = {};
     Object.values(groups).forEach((g) => { if (!assets[g.asset]) assets[g.asset] = {}; assets[g.asset][g.strategy] = { strategy_label: STRATEGIES[g.strategy]?.label || g.strategy, total_signals: g.total, wins: g.wins, losses: g.losses, win_rate: parseFloat((g.wins/g.total).toFixed(3)), win_rate_pct: `${(g.wins/g.total*100).toFixed(1)}%`, total_profit: parseFloat(g.profit.toFixed(2)), recommendation: g.total >= 20 ? g.wins/g.total >= 0.6 ? "✅ Performando bem" : g.wins/g.total >= 0.45 ? "⚠ Moderado" : "❌ Ajustando filtros" : "📊 Coletando dados..." }; });
     res.json({ status: "ok", total_signals_analyzed: data.length, assets, last_updated: new Date().toISOString() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── TODOS OS TRADES — Para Performance IA ───
+app.get("/all-trades", async (req, res) => {
+  try {
+    const limit = req.query.limit || 500;
+    const trades = await supabaseGet(`trades?order=created_at.desc&limit=${limit}`);
+    if (!trades || trades.length === 0) return res.json({ total: 0, trades: [], stats: { total: 0, wins: 0, losses: 0, win_rate: 0, total_profit: 0 } });
+    const validTrades = trades.filter(t => t.result === "win" || t.result === "loss");
+    const wins   = validTrades.filter(t => t.result === "win").length;
+    const losses = validTrades.filter(t => t.result === "loss").length;
+    const totalProfit = validTrades.reduce((sum, t) => sum + (parseFloat(t.profit) || 0), 0);
+    const winRate = validTrades.length > 0 ? ((wins / validTrades.length) * 100).toFixed(1) : 0;
+    res.json({
+      total: trades.length,
+      trades,
+      stats: {
+        total: validTrades.length,
+        wins, losses,
+        win_rate: parseFloat(winRate),
+        win_rate_pct: `${winRate}%`,
+        total_profit: parseFloat(totalProfit.toFixed(2)),
+        total_profit_formatted: `$${totalProfit.toFixed(2)}`
+      },
+      timestamp: new Date().toISOString()
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -492,7 +489,6 @@ app.post("/slave-trade-closed", async (req, res) => {
   const now = new Date();
   const source = req.body.source || "SLAVE";
   await saveTradeToSupabase({ user_code: user_id, symbol, direction: direction || "buy", entry_price: parseFloat(close_price) || 0, sl: parseFloat(sl) || 0, tp: parseFloat(tp) || 0, profit: profitVal, result: resultStr, hour_of_day: now.getUTCHours(), day_of_week: now.getUTCDay(), market_strength: 0, atr_value: 0, probability: parseFloat(probability) || 0, strategy: strategy || "UNKNOWN", confirmations: parseInt(confirmations) || 0, trend_strength: parseFloat(trend_strength) || 0, source });
-  // Atualiza live_signal result se for do Live Room
   if (source === "LIVE-ROOM") {
     const recentSignal = liveSignalHistory.find(s => s.asset === symbol && s.direction?.toUpperCase() === direction?.toUpperCase() && s.result === "open");
     if (recentSignal) {
@@ -501,7 +497,6 @@ app.post("/slave-trade-closed", async (req, res) => {
       if (resultStr === "win") { liveScoreboard.wins++; liveScoreboard.profit += profitVal; }
       else { liveScoreboard.losses++; liveScoreboard.profit += profitVal; }
       broadcastToLiveRoom({ type: "signal_result", signal_id: recentSignal.id, result: resultStr, profit: profitVal, scoreboard: liveScoreboard, timestamp: new Date().toISOString() });
-      console.log(`[LiveRoom] 📊 Resultado atualizado: ${symbol} ${resultStr} $${profitVal}`);
     }
   }
   res.json({ status: "ok" });
@@ -510,11 +505,11 @@ app.post("/slave-trade-closed", async (req, res) => {
 app.post("/slave-error", (req, res) => { broadcastToSite({ type: "slave_error", ...req.body }); res.json({ status: "ok" }); });
 
 app.post("/client-execute-order", async (req, res) => {
-  const { user_id, symbol, direction, sl, tp, lot_size, strategy, probability, confirmations, trend_strength, mode } = req.body;
+  const { user_id, symbol, direction, sl, tp, lot_size, strategy, probability, confirmations, trend_strength } = req.body;
   if (!user_id || !symbol || !direction) return res.status(400).json({ error: "user_id, symbol e direction obrigatórios." });
   const planCheck = await checkProPlan(user_id); const limits = getPlanLimits(planCheck.plan || "basic");
   if (limits.assets !== "ALL" && !limits.assets.includes(symbol)) return res.status(403).json({ error: `Ativo ${symbol} não disponível no plano ${planCheck.plan}.` });
-  if (!limits.autoTrade) return res.status(403).json({ error: "Auto Trade não disponível no plano Básico." });
+  if (!limits.autoTrade) return res.status(403).json({ error: "Auto Trade não disponível." });
   if (!isSlaveOnline(user_id)) return res.status(503).json({ error: "EA Slave não está conectado.", slave_online: false });
   const slVal = parseFloat(sl), tpVal = parseFloat(tp); if (!slVal || !tpVal) return res.status(400).json({ error: "SL e TP inválidos." });
   const orderId = generateOrderId();
@@ -586,7 +581,7 @@ app.get("/health", (_, res) => {
 
 httpServer.listen(PORT, async () => {
   console.log(`[Railway] v17 rodando na porta ${PORT}`);
-  console.log(`[Railway] Trava: processingAssets | Análise: ${ANALYSIS_INTERVAL_NORMAL/1000}s | Sinal: ${SIGNAL_COOLDOWN/60000}min`);
+  console.log(`[Railway] /all-trades endpoint ativo`);
   console.log(`[Railway] Ordens automáticas do Live Room: ATIVAS`);
   startLiveRoom24h();
 });
