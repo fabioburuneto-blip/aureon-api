@@ -1,11 +1,11 @@
 /**
- * TraderAureonia AI — Servidor Railway v17
- * - Cooldown aprimorado: 10 minutos por ativo+direção
- * - Verificação de preço: não emite sinal se preço não mudou
- * - Máximo 1 sinal por ativo por vez (não BUY e SELL simultâneos)
+ * TraderAureonia AI — Servidor Railway v18
+ * - Filtro de horário por sessão (Londres + NY)
+ * - Filtro HTF (a favor/neutro/contra tendência)
+ * - Cooldown 15 minutos
+ * - Alertas de mudança de mercado
  * - Ordens automáticas do Live Room
  * - Trava de processamento simultâneo
- * - Anti-duplicata: 30s foco, 60s normal
  */
 
 const express = require("express");
@@ -50,6 +50,33 @@ const STRATEGIES = {
   AI:        { label: "IA (Todas)",      plan: "elite" },
 };
 
+// ─── CONFIGURAÇÃO DE HORÁRIOS ───
+const SESSION_HOURS = {
+  // Forex e XAU: só opera nas sessões Londres e NY
+  FOREX: { start: 8, end: 17 }, // 08h-17h UTC (05h-14h BR)
+  XAU:   { start: 8, end: 17 }, // 08h-17h UTC (05h-14h BR)
+  // Crypto: 24h sem restrição
+  CRYPTO: null,
+};
+
+// Ativos por tipo
+const FOREX_ASSETS  = ["EURUSD", "GBPUSD"];
+const XAU_ASSETS    = ["XAUUSD.s"];
+const CRYPTO_ASSETS = ["BTCUSD", "ETHUSD"];
+
+// ─── CONFIGURAÇÃO HTF ───
+const HTF_MIN_PROB = {
+  WITH:    65, // A favor da tendência
+  NEUTRAL: 70, // Tendência neutra
+  AGAINST: 78, // Contra a tendência
+};
+
+// ─── CONFIGURAÇÃO DE COOLDOWN ───
+const SIGNAL_COOLDOWN        = 15 * 60 * 1000; // 15 minutos
+const ALERT_COOLDOWN         = 3  * 60 * 1000; // 3 minutos para alertas
+const PRICE_CHANGE_THRESHOLD = 0.002;           // 0.2% mudança mínima
+const PRICE_ALERT_THRESHOLD  = 0.005;           // 0.5% = movimento brusco
+
 const siteClients        = new Set();
 const allPrices          = new Map();
 let   mt5LastSeen        = null;
@@ -68,10 +95,12 @@ const clientModes          = new Map();
 const pendingNotifications = [];
 
 // ─── CACHES E TRAVAS ───
-const analysisCache    = new Map(); // symbol-strategy → timestamp última análise
-const signalCache      = new Map(); // symbol-direction → { timestamp, price }
-const processingAssets = new Set(); // symbol-strategy → em análise agora
-const activeSignals    = new Map(); // symbol → direção ativa (impede BUY e SELL simultâneos)
+const analysisCache    = new Map();
+const signalCache      = new Map();   // symbol-direction → { timestamp, price }
+const alertCache       = new Map();   // symbol-alertType → timestamp
+const processingAssets = new Set();
+const activeSignals    = new Map();   // symbol → direção ativa
+const lastHTFBias      = new Map();   // symbol → último htf_bias
 
 const historicalCache = new Map();
 let   lastCacheUpdate = 0;
@@ -79,8 +108,6 @@ const CACHE_TTL_MS    = 5 * 60 * 1000;
 
 const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
-const SIGNAL_COOLDOWN            = 10 * 60 * 1000; // 10 minutos entre sinais
-const PRICE_CHANGE_THRESHOLD     = 0.002;           // 0.2% de mudança mínima de preço
 
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
 
@@ -98,6 +125,50 @@ const PLAN_LIMITS = {
   elite: { assets: "ALL", strategies: ["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI","AI"], modes: ["express","complete"], maxPositions: 20, autoTrade: true, copyTrade: true, liveRoom: true },
 };
 function getPlanLimits(plan) { return PLAN_LIMITS[plan] || PLAN_LIMITS.basic; }
+
+// ─────────────────────────────────────────────
+// FILTRO DE HORÁRIO
+// ─────────────────────────────────────────────
+function isGoodTradingHour(symbol) {
+  const hour = new Date().getUTCHours();
+
+  // Crypto: sempre pode operar
+  if (CRYPTO_ASSETS.includes(symbol)) return true;
+
+  // XAU: sessões Londres e NY
+  if (XAU_ASSETS.includes(symbol)) {
+    const { start, end } = SESSION_HOURS.XAU;
+    return hour >= start && hour < end;
+  }
+
+  // Forex: sessões Londres e NY
+  if (FOREX_ASSETS.includes(symbol)) {
+    const { start, end } = SESSION_HOURS.FOREX;
+    return hour >= start && hour < end;
+  }
+
+  return true;
+}
+
+function getSessionName() {
+  const hour = new Date().getUTCHours();
+  if (hour >= 8 && hour < 12)  return "🇬🇧 Sessão Londres";
+  if (hour >= 12 && hour < 13) return "🌍 Transição";
+  if (hour >= 13 && hour < 17) return "🇺🇸 Overlap NY+Londres ⭐⭐⭐";
+  if (hour >= 17 && hour < 21) return "🇺🇸 Sessão NY";
+  return "🌙 Fora de sessão";
+}
+
+// ─────────────────────────────────────────────
+// FILTRO HTF
+// ─────────────────────────────────────────────
+function getMinProbByHTF(direction, htfBias) {
+  if (!htfBias || htfBias === "NEUTRAL") return HTF_MIN_PROB.NEUTRAL;
+  const isWith = (direction === "BUY" && htfBias === "BULL") ||
+                 (direction === "SELL" && htfBias === "BEAR");
+  if (isWith) return HTF_MIN_PROB.WITH;
+  return HTF_MIN_PROB.AGAINST;
+}
 
 function isMt5Online() { return mt5LastSeen && (new Date() - mt5LastSeen) < MT5_TIMEOUT_MS; }
 function generateOrderId() { return `ORD-${Date.now()}-${orderCounter++}`; }
@@ -197,6 +268,89 @@ function notifyAllClients(signal) {
   if (pendingNotifications.length > 5) pendingNotifications.pop();
 }
 
+// ─────────────────────────────────────────────
+// ALERTAS DE MERCADO (sem cooldown de sinal)
+// ─────────────────────────────────────────────
+function sendMarketAlert(symbol, alertType, message, level = "warning") {
+  const alertKey = `${symbol}-${alertType}`;
+  const lastAlert = alertCache.get(alertKey) || 0;
+  if (Date.now() - lastAlert < ALERT_COOLDOWN) return; // 3 min entre alertas
+  alertCache.set(alertKey, Date.now());
+
+  broadcastToLiveRoom({
+    type: "alert",
+    asset: symbol,
+    level,
+    alert_type: alertType,
+    message,
+    timestamp: new Date().toISOString()
+  });
+  console.log(`[Alerta] ${symbol}: ${message}`);
+}
+
+function checkMarketAlerts(symbol, result, currentPrice) {
+  const priceData = allPrices.get(symbol);
+  if (!priceData) return;
+
+  // 1. Movimento brusco de preço
+  const lastPrice = parseFloat(priceData.bid);
+  if (lastPrice > 0) {
+    const priceMove = Math.abs(currentPrice - lastPrice) / lastPrice;
+    if (priceMove >= PRICE_ALERT_THRESHOLD) {
+      const direction = currentPrice > lastPrice ? "📈 subiu" : "📉 caiu";
+      sendMarketAlert(symbol, "price_move",
+        `⚡ ${symbol} ${direction} ${(priceMove * 100).toFixed(2)}% rapidamente! Fique atento.`,
+        "warning"
+      );
+    }
+  }
+
+  // 2. RSI extremo
+  const rsi = result.indicators?.rsi;
+  if (rsi !== undefined) {
+    if (rsi < 25) sendMarketAlert(symbol, "rsi_oversold", `⚠️ RSI em ${rsi} — sobrevendido extremo! Possível reversão de alta`, "warning");
+    else if (rsi > 75) sendMarketAlert(symbol, "rsi_overbought", `⚠️ RSI em ${rsi} — sobrecomprado extremo! Possível reversão de baixa`, "warning");
+  }
+
+  // 3. Mudança de HTF Bias
+  const newHTF = result.htf_bias;
+  const oldHTF = lastHTFBias.get(symbol);
+  if (oldHTF && newHTF && oldHTF !== newHTF && newHTF !== "NEUTRAL") {
+    const emoji = newHTF === "BULL" ? "🟢" : "🔴";
+    sendMarketAlert(symbol, "htf_change",
+      `🔄 CENÁRIO MUDOU — ${symbol}: HTF virou ${newHTF === "BULL" ? "ALTISTA" : "BAIXISTA"} ${emoji}. Revise posições abertas!`,
+      "info"
+    );
+    // Se tem sinal ativo na direção errada avisa
+    const activeDir = activeSignals.get(symbol);
+    if (activeDir) {
+      const isConflict = (activeDir === "BUY" && newHTF === "BEAR") ||
+                         (activeDir === "SELL" && newHTF === "BULL");
+      if (isConflict) {
+        sendMarketAlert(symbol, "signal_conflict",
+          `⚠️ ATENÇÃO: Sinal ${activeDir} ativo em ${symbol} mas HTF virou contra! Considere gerenciar a posição.`,
+          "warning"
+        );
+      }
+    }
+  }
+  if (newHTF) lastHTFBias.set(symbol, newHTF);
+
+  // 4. Captura de liquidez
+  if (result.analysis?.liquidity_sweeps?.bull?.detected) {
+    sendMarketAlert(symbol, "liq_bull",
+      `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bull.level}! Setup de reversão de alta possível.`,
+      "warning"
+    );
+  }
+  if (result.analysis?.liquidity_sweeps?.bear?.detected) {
+    sendMarketAlert(symbol, "liq_bear",
+      `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bear.level}! Setup de reversão de baixa possível.`,
+      "warning"
+    );
+  }
+}
+
 function checkScoreboardReset() {
   const today = new Date().toDateString();
   if (liveScoreboard.date !== today) {
@@ -208,6 +362,7 @@ function checkScoreboardReset() {
     analysisCache.clear();
     processingAssets.clear();
     activeSignals.clear();
+    alertCache.clear();
     console.log("[LiveRoom] Novo dia — caches limpos");
   }
 }
@@ -231,7 +386,7 @@ async function callEaSignalV3(strategy, symbol, historicalData = null, mode = "e
 }
 
 // ─────────────────────────────────────────────
-// LIVE ROOM — Analisa ativo com filtros aprimorados
+// LIVE ROOM — Analisa ativo v18
 // ─────────────────────────────────────────────
 async function analyzeLiveAsset(symbol, isPriority = false) {
   const priceData = allPrices.get(symbol);
@@ -240,11 +395,26 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
   const strategy = getStrategyForAsset(symbol);
   const lockKey  = `${symbol}-${strategy}`;
 
-  // ── TRAVA — impede análise simultânea ──
+  // ── TRAVA ──
   if (processingAssets.has(lockKey)) return;
   processingAssets.add(lockKey);
 
   try {
+    // ── FILTRO DE HORÁRIO ──
+    if (!isGoodTradingHour(symbol)) {
+      if (liveRoomClients.size > 0) {
+        const session = getSessionName();
+        broadcastToLiveRoom({
+          type: "no_signal", asset: symbol, strategy,
+          strategy_label: STRATEGIES[strategy]?.label || strategy,
+          mode: getMostUsedMode(),
+          reason: `${symbol} fora do horário de negociação — ${session}`,
+          timestamp: new Date().toISOString()
+        });
+      }
+      return;
+    }
+
     // ── ANTI-DUPLICATA DE ANÁLISE ──
     const lastAnalysis = analysisCache.get(lockKey) || 0;
     const minInterval  = isPriority ? ANALYSIS_INTERVAL_PRIORITY : ANALYSIS_INTERVAL_NORMAL;
@@ -264,40 +434,51 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
     }
 
     const result = await callEaSignalV3(strategy, symbol, histData, mode);
+    const currentPrice = parseFloat(priceData.bid);
 
-    if (liveRoomClients.size > 0 && result.indicators) {
-      const { rsi } = result.indicators;
-      if (rsi > 65) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", rsi, message: `⚠ RSI em ${rsi} — sobrecompra`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
-      else if (rsi < 35) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", rsi, message: `⚠ RSI em ${rsi} — sobrevenda`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
-      if (result.htf_bias && result.htf_bias !== "NEUTRAL") { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "info", message: `📈 HTF: ${result.htf_bias === "BULL" ? "ALTISTA 🟢" : "BAIXISTA 🔴"}`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 400)); }
-      if (result.analysis?.liquidity_sweeps?.bull?.detected) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bull.level}!`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
-      if (result.analysis?.liquidity_sweeps?.bear?.detected) { broadcastToLiveRoom({ type: "alert", asset: symbol, level: "warning", message: `⚡ LIQUIDEZ CAPTURADA em ${result.analysis.liquidity_sweeps.bear.level}!`, timestamp: new Date().toISOString() }); await new Promise(r => setTimeout(r, 500)); }
-    }
+    // ── VERIFICA ALERTAS DE MERCADO ──
+    checkMarketAlerts(symbol, result, currentPrice);
 
     if (result.status === "new_signal" && result.direction) {
-      const currentPrice = parseFloat(priceData.bid);
 
-      // ── COOLDOWN DE SINAL — 10 minutos + verificação de preço ──
-      const signalKey    = `${symbol}-${result.direction}`;
-      const lastSignal   = signalCache.get(signalKey) || { timestamp: 0, price: 0 };
-      const timePassed   = Date.now() - lastSignal.timestamp;
-      const priceChange  = Math.abs(currentPrice - lastSignal.price) / lastSignal.price;
+      // ── FILTRO HTF ──
+      const htfBias   = result.htf_bias || "NEUTRAL";
+      const minProb   = getMinProbByHTF(result.direction, htfBias);
+      const isWith    = (result.direction === "BUY" && htfBias === "BULL") ||
+                        (result.direction === "SELL" && htfBias === "BEAR");
+      const isAgainst = (result.direction === "BUY" && htfBias === "BEAR") ||
+                        (result.direction === "SELL" && htfBias === "BULL");
 
-      if (timePassed < SIGNAL_COOLDOWN && priceChange < PRICE_CHANGE_THRESHOLD) {
-        const remaining = Math.round((SIGNAL_COOLDOWN - timePassed) / 1000);
-        console.log(`[LiveRoom] ⏱ Cooldown: ${signalKey} — ${remaining}s restantes | mudança preço: ${(priceChange*100).toFixed(3)}%`);
-        if (liveRoomClients.size > 0) broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: `Aguardando cooldown — ${remaining}s`, timestamp: new Date().toISOString() });
+      if (result.probability < minProb) {
+        const htfMsg = isAgainst
+          ? `Contra HTF ${htfBias} — exige ${minProb}% (atual: ${result.probability}%)`
+          : `HTF neutro — exige ${minProb}% (atual: ${result.probability}%)`;
+        console.log(`[LiveRoom] ❌ HTF bloqueou: ${symbol} ${result.direction} — ${htfMsg}`);
+        if (liveRoomClients.size > 0) {
+          broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: `Filtro HTF: ${htfMsg}`, timestamp: new Date().toISOString() });
+        }
         return;
       }
 
-      // ── IMPEDE BUY E SELL SIMULTÂNEOS NO MESMO ATIVO ──
+      // ── COOLDOWN DE SINAL ──
+      const signalKey  = `${symbol}-${result.direction}`;
+      const lastSignal = signalCache.get(signalKey) || { timestamp: 0, price: 0 };
+      const timePassed = Date.now() - lastSignal.timestamp;
+      const priceChg   = lastSignal.price > 0 ? Math.abs(currentPrice - lastSignal.price) / lastSignal.price : 1;
+
+      if (timePassed < SIGNAL_COOLDOWN && priceChg < PRICE_CHANGE_THRESHOLD) {
+        const remaining = Math.round((SIGNAL_COOLDOWN - timePassed) / 1000);
+        if (liveRoomClients.size > 0) broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: `Cooldown ativo — ${remaining}s restantes`, timestamp: new Date().toISOString() });
+        return;
+      }
+
+      // ── IMPEDE BUY E SELL SIMULTÂNEOS ──
       const currentDirection = activeSignals.get(symbol);
       if (currentDirection && currentDirection !== result.direction) {
-        // Verifica se o sinal oposto foi há menos de 10 minutos
         const oppositeKey = `${symbol}-${currentDirection}`;
-        const oppositeSignal = signalCache.get(oppositeKey) || { timestamp: 0 };
-        if (Date.now() - oppositeSignal.timestamp < SIGNAL_COOLDOWN) {
-          console.log(`[LiveRoom] ⚠️ Conflito: ${symbol} já tem ${currentDirection} ativo — ignorando ${result.direction}`);
+        const opp = signalCache.get(oppositeKey) || { timestamp: 0 };
+        if (Date.now() - opp.timestamp < SIGNAL_COOLDOWN) {
+          console.log(`[LiveRoom] ⚠️ Conflito: ${symbol} já tem ${currentDirection} — ignorando ${result.direction}`);
           return;
         }
       }
@@ -305,13 +486,9 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
       // Atualiza caches
       signalCache.set(signalKey, { timestamp: Date.now(), price: currentPrice });
       activeSignals.set(symbol, result.direction);
+      setTimeout(() => { if (activeSignals.get(symbol) === result.direction) activeSignals.delete(symbol); }, SIGNAL_COOLDOWN);
 
-      // Remove direção ativa após 10 minutos
-      setTimeout(() => {
-        if (activeSignals.get(symbol) === result.direction) {
-          activeSignals.delete(symbol);
-        }
-      }, SIGNAL_COOLDOWN);
+      const htfLabel = isWith ? "✅ A favor do HTF" : isAgainst ? "⚠️ Contra HTF" : "➡️ HTF neutro";
 
       liveScoreboard.signals++;
       const signal = {
@@ -322,13 +499,14 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
         probability: result.probability, reason: result.reason,
         confirmations: result.confirmations, indicators: result.indicators,
         trend_strength: result.trend_strength, is_range: result.is_range,
-        htf_bias: result.htf_bias, vwap: result.vwap,
+        htf_bias: htfBias, htf_label: htfLabel, vwap: result.vwap,
         volume_profile: result.volume_profile, market_structure: result.market_structure,
         analysis: result.analysis, probability_adjustment: result.probability_adjustment,
         historical: stats.sample_size > 0 ? { win_rate: stats.win_rate, sample_size: stats.sample_size } : null,
         id: `LIVE-${Date.now()}`,
         hora: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
         timestamp: new Date().toISOString(),
+        session: getSessionName(),
       };
 
       liveSignalHistory.unshift(signal);
@@ -336,7 +514,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
       await saveLiveSignal(signal);
       if (liveRoomClients.size > 0) broadcastToLiveRoom(signal);
       notifyAllClients(signal);
-      console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} [${mode}] | Prob: ${result.probability}% | Preço: ${currentPrice}`);
+      console.log(`[LiveRoom] 🟢 ${result.direction} ${symbol} | ${stratLabel} | Prob: ${result.probability}% | HTF: ${htfBias} (${htfLabel}) | Sessão: ${getSessionName()}`);
 
       // ── ORDEM AUTOMÁTICA DO LIVE ROOM ──
       let targetSlaveId = null;
@@ -344,9 +522,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
         targetSlaveId = LIVE_ROOM_BOT_ID;
       } else if (activeSlaves.size > 0) {
         activeSlaves.forEach((data, userId) => {
-          if (!targetSlaveId && (new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S) {
-            targetSlaveId = userId;
-          }
+          if (!targetSlaveId && (new Date() - data.lastSeen) / 1000 < SLAVE_TIMEOUT_S) targetSlaveId = userId;
         });
       }
       if (targetSlaveId) {
@@ -362,7 +538,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 
     } else {
       if (liveRoomClients.size > 0) {
-        broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: stratLabel, mode, reason: result.reason || "Aguardando setup ideal", is_range: result.is_range || false, indicators: result.indicators, htf_bias: result.htf_bias, timestamp: new Date().toISOString() });
+        broadcastToLiveRoom({ type: "no_signal", asset: symbol, strategy, strategy_label: STRATEGIES[strategy]?.label || strategy, mode: getMostUsedMode(), reason: result.reason || "Aguardando setup ideal", is_range: result.is_range || false, indicators: result.indicators, htf_bias: result.htf_bias, timestamp: new Date().toISOString() });
       }
     }
 
@@ -376,7 +552,7 @@ async function analyzeLiveAsset(symbol, isPriority = false) {
 async function runLiveRoom() {
   checkScoreboardReset();
   if (liveRoomClients.size > 0) {
-    broadcastToLiveRoom({ type: "scoreboard", signals: liveScoreboard.signals, wins: liveScoreboard.wins, losses: liveScoreboard.losses, profit: liveScoreboard.profit, win_rate: liveScoreboard.signals > 0 ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0", timestamp: new Date().toISOString() });
+    broadcastToLiveRoom({ type: "scoreboard", signals: liveScoreboard.signals, wins: liveScoreboard.wins, losses: liveScoreboard.losses, profit: liveScoreboard.profit, win_rate: liveScoreboard.signals > 0 ? ((liveScoreboard.wins / liveScoreboard.signals) * 100).toFixed(1) : "0.0", session: getSessionName(), timestamp: new Date().toISOString() });
   }
   const focusedAsset = getMostFocusedAsset();
   for (const symbol of LIVE_ASSETS) {
@@ -436,7 +612,7 @@ app.post("/price", (req, res) => {
 
 app.get("/prices", (req, res) => { const prices = []; allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, ask: data.ask, fresh: isPriceFresh(data) })); res.json({ total: prices.length, mt5_connected: isMt5Online(), prices, timestamp: new Date().toISOString() }); });
 app.get("/strategies", (req, res) => { res.json({ strategies: STRATEGIES, timestamp: new Date().toISOString() }); });
-app.get("/live-signals", (req, res) => { res.json({ active: true, clients: liveRoomClients.size, signals: liveSignalHistory.slice(0, 20), scoreboard: liveScoreboard, assets: LIVE_ASSETS, focused_asset: getMostFocusedAsset(), pending_notifications: pendingNotifications.slice(0, 5), timestamp: new Date().toISOString() }); });
+app.get("/live-signals", (req, res) => { res.json({ active: true, clients: liveRoomClients.size, signals: liveSignalHistory.slice(0, 20), scoreboard: liveScoreboard, assets: LIVE_ASSETS, focused_asset: getMostFocusedAsset(), pending_notifications: pendingNotifications.slice(0, 5), session: getSessionName(), timestamp: new Date().toISOString() }); });
 
 app.post("/live-signal-result", async (req, res) => {
   const { signal_id, result, profit, close_price, tp_hit } = req.body;
@@ -518,7 +694,6 @@ app.post("/slave-trade-closed", async (req, res) => {
       if (resultStr === "win") { liveScoreboard.wins++; liveScoreboard.profit += profitVal; }
       else { liveScoreboard.losses++; liveScoreboard.profit += profitVal; }
       broadcastToLiveRoom({ type: "signal_result", signal_id: recentSignal.id, result: resultStr, profit: profitVal, scoreboard: liveScoreboard, timestamp: new Date().toISOString() });
-      // Libera o ativo para novos sinais
       if (activeSignals.get(symbol) === direction?.toUpperCase()) activeSignals.delete(symbol);
     }
   }
@@ -551,6 +726,7 @@ wss.on("connection", (ws) => {
   ws.send(JSON.stringify({ type: "mt5_status", connected: isMt5Online() }));
   ws.send(JSON.stringify({ type: "symbols_available", symbols: Array.from(allPrices.keys()) }));
   ws.send(JSON.stringify({ type: "strategies_available", strategies: STRATEGIES }));
+  ws.send(JSON.stringify({ type: "session_info", session: getSessionName(), timestamp: new Date().toISOString() }));
   if (pendingNotifications.length > 0) ws.send(JSON.stringify({ type: "pending_notifications", notifications: pendingNotifications, timestamp: new Date().toISOString() }));
 
   ws.on("message", async (raw) => {
@@ -567,7 +743,7 @@ wss.on("connection", (ws) => {
         } catch (err) { ws.send(JSON.stringify({ type: "error", message: err.message })); }
       }
       if (msg.type === "get_price") { const symbol = msg.symbol?.toUpperCase(); const pd = symbol ? allPrices.get(symbol) : null; if (pd && isPriceFresh(pd)) ws.send(JSON.stringify({ type: "price", ...pd })); else ws.send(JSON.stringify({ type: "price_unavailable", symbol })); }
-      if (msg.type === "join_live_room") { liveRoomClients.add(ws); clientFocusAsset.set(ws, null); clientStrategies.set(ws, { ...DEFAULT_STRATEGIES }); clientModes.set(ws, msg.mode || "express"); ws.send(JSON.stringify({ type: "live_room_joined", history: liveSignalHistory.slice(0, 10), scoreboard: liveScoreboard, assets: LIVE_ASSETS, strategies: DEFAULT_STRATEGIES, strategies_info: STRATEGIES, message: "Bem-vindo! A IA monitora 24h.", timestamp: new Date().toISOString() })); broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size }); }
+      if (msg.type === "join_live_room") { liveRoomClients.add(ws); clientFocusAsset.set(ws, null); clientStrategies.set(ws, { ...DEFAULT_STRATEGIES }); clientModes.set(ws, msg.mode || "express"); ws.send(JSON.stringify({ type: "live_room_joined", history: liveSignalHistory.slice(0, 10), scoreboard: liveScoreboard, assets: LIVE_ASSETS, strategies: DEFAULT_STRATEGIES, strategies_info: STRATEGIES, session: getSessionName(), message: "Bem-vindo! A IA monitora 24h.", timestamp: new Date().toISOString() })); broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size }); }
       if (msg.type === "leave_live_room") { liveRoomClients.delete(ws); clientFocusAsset.delete(ws); clientStrategies.delete(ws); clientModes.delete(ws); broadcastToLiveRoom({ type: "live_viewers", count: liveRoomClients.size }); }
       if (msg.type === "set_mode") { clientModes.set(ws, msg.mode === "complete" ? "complete" : "express"); ws.send(JSON.stringify({ type: "mode_updated", mode: msg.mode, timestamp: new Date().toISOString() })); }
       if (msg.type === "focus_asset") { const symbol = msg.asset?.toUpperCase(); if (symbol) { clientFocusAsset.set(ws, symbol); const pd = allPrices.get(symbol); if (pd && isPriceFresh(pd)) await analyzeLiveAsset(symbol, true); } }
@@ -583,29 +759,41 @@ setInterval(async () => { try { await fetch(`${RAILWAY_URL}/health`); } catch {}
 app.get("/health", (_, res) => {
   const slaves = []; activeSlaves.forEach((data, userId) => { const ago = Math.round((new Date() - data.lastSeen) / 1000); slaves.push({ user_id: userId, online: ago < SLAVE_TIMEOUT_S, balance: data.balance, plan: data.plan, last_seen_secs: ago }); });
   const prices = []; allPrices.forEach((data, symbol) => prices.push({ symbol, bid: data.bid, fresh: isPriceFresh(data) }));
+  const hour = new Date().getUTCHours();
   res.json({
-    status: "online", version: "v17",
+    status: "online", version: "v18",
     mt5_connected: isMt5Online(), symbols_count: allPrices.size, symbols: prices,
     site_clients: siteClients.size,
     slaves_online: slaves.filter(s => s.online).length, slaves_total: activeSlaves.size, slaves,
     elite_online: slaves.filter(s => s.online && s.plan === "elite").length,
     live_room_active: true, live_room_clients: liveRoomClients.size,
     live_signals_today: liveScoreboard.signals,
+    session: getSessionName(),
+    trading_hours: {
+      current_utc: hour,
+      forex_xau_active: hour >= 8 && hour < 17,
+      crypto_active: true,
+      best_session: hour >= 13 && hour < 17 ? "🇺🇸 Overlap NY+Londres ⭐⭐⭐" : hour >= 8 && hour < 17 ? "🇬🇧 Sessão Londres ⭐" : "🌙 Fora de sessão",
+    },
     active_signals: Object.fromEntries(activeSignals),
     focused_asset: getMostFocusedAsset(), current_mode: getMostUsedMode(),
     learning_cache_size: historicalCache.size,
     analysis_cache_size: analysisCache.size,
     signal_cache_size: signalCache.size,
+    alert_cache_size: alertCache.size,
     processing_count: processingAssets.size,
     live_room_bot: isSlaveOnline(LIVE_ROOM_BOT_ID),
+    htf_config: HTF_MIN_PROB,
+    cooldown_minutes: SIGNAL_COOLDOWN / 60000,
     strategies: Object.keys(STRATEGIES),
     timestamp: new Date().toISOString(),
   });
 });
 
 httpServer.listen(PORT, async () => {
-  console.log(`[Railway] v17 rodando na porta ${PORT}`);
-  console.log(`[Railway] Cooldown: ${SIGNAL_COOLDOWN/60000}min | Mudança mínima preço: ${PRICE_CHANGE_THRESHOLD*100}%`);
-  console.log(`[Railway] /all-trades endpoint ativo`);
+  console.log(`[Railway] v18 rodando na porta ${PORT}`);
+  console.log(`[Railway] Cooldown: ${SIGNAL_COOLDOWN/60000}min`);
+  console.log(`[Railway] Filtro HTF: com=${HTF_MIN_PROB.WITH}% | neutro=${HTF_MIN_PROB.NEUTRAL}% | contra=${HTF_MIN_PROB.AGAINST}%`);
+  console.log(`[Railway] Sessões: Forex/XAU 08h-17h UTC | Crypto 24h`);
   startLiveRoom24h();
 });
