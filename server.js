@@ -132,72 +132,67 @@ const institutionalData = {
   economicCalendar: [], // Próximos eventos
 };
 
-// Binance WebSocket para Whale Alerts
-let binanceWS = null;
-const binanceSymbols = ["btcusdt", "ethusdt", "bnbusdt", "solusdt", "xrpusdt"];
+// Binance HTTP Polling para Whale Alerts
+// Railway não suporta WebSocket de saída — usamos REST API
+let lastBinanceTradeId = {};
+const binanceSymbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
+const symbolMap = { BTCUSDT:"BTCUSD", ETHUSDT:"ETHUSD", BNBUSDT:"BNBUSD", SOLUSDT:"SOLUSD", XRPUSDT:"XRPUSD" };
+
+async function pollBinanceTrades(binanceSymbol) {
+  try {
+    const lastId = lastBinanceTradeId[binanceSymbol] || 0;
+    const url = `https://api.binance.com/api/v3/aggTrades?symbol=${binanceSymbol}&limit=20`;
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const trades = await res.json();
+    if (!Array.isArray(trades)) return;
+
+    for (const trade of trades) {
+      if (trade.a <= lastId) continue; // já processado
+      const price    = parseFloat(trade.p);
+      const qty      = parseFloat(trade.q);
+      const usdValue = price * qty;
+      if (usdValue < WHALE_THRESHOLD_USD) continue;
+
+      const symbol = symbolMap[binanceSymbol] || binanceSymbol;
+      const isBuy  = !trade.m; // m=true = market sell
+
+      const alert = {
+        type:      "WHALE_ALERT",
+        symbol,
+        direction: isBuy ? "BUY" : "SELL",
+        usdValue:  Math.round(usdValue),
+        price, qty,
+        timestamp: new Date().toISOString(),
+        hora:      new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+        levels:    calcWhaleSignalLevels(symbol, isBuy ? "BUY" : "SELL", price),
+        strength:  usdValue >= 1000000 ? "🐳 MEGA WHALE" : usdValue >= 500000 ? "🐋 WHALE" : "🐬 SHARK",
+        message:   `${usdValue >= 1000000 ? "🐳" : "🐋"} ${isBuy?"COMPRA":"VENDA"} INSTITUCIONAL: ${formatUSD(usdValue)} em ${symbol} @ ${price}`,
+      };
+
+      institutionalData.whaleAlerts.unshift(alert);
+      if (institutionalData.whaleAlerts.length > 20) institutionalData.whaleAlerts.pop();
+      broadcastToLiveRoom({ type: "whale_alert", ...alert });
+      broadcastToSite({ type: "whale_alert", ...alert });
+      updateSmartMoneyScore(symbol, isBuy ? "BUY" : "SELL", usdValue);
+      console.log(`[Whale] ${alert.strength} ${isBuy?"BUY":"SELL"} ${symbol} ${formatUSD(usdValue)}`);
+    }
+    if (trades.length > 0) lastBinanceTradeId[binanceSymbol] = trades[trades.length-1].a;
+  } catch {}
+}
+
+async function pollAllWhales() {
+  for (const sym of binanceSymbols) {
+    await pollBinanceTrades(sym);
+    await new Promise(r => setTimeout(r, 200)); // evita rate limit
+  }
+}
 
 function connectBinanceWhaleWatcher() {
-  const streams = binanceSymbols.map(s => `${s}@aggTrade`).join("/");
-  const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
-  try {
-    binanceWS = new WebSocket(wsUrl);
-    binanceWS.on("message", (raw) => {
-      try {
-        const msg = JSON.parse(raw.toString());
-        const data = msg.data || msg;
-        if (!data || !data.p || !data.q) return;
-        const price = parseFloat(data.p);
-        const qty   = parseFloat(data.q);
-        const usdValue = price * qty;
-        if (usdValue < WHALE_THRESHOLD_USD) return;
-
-        // Mapeamento Binance → site
-        const symbolMap = { BTCUSDT:"BTCUSD", ETHUSDT:"ETHUSD", BNBUSDT:"BNBUSD", SOLUSDT:"SOLUSD", XRPUSDT:"XRPUSD" };
-        const symbol = symbolMap[data.s] || data.s;
-        const isBuy  = data.m === false; // m=true = market sell, m=false = market buy
-
-        const alert = {
-          type:      "WHALE_ALERT",
-          symbol,
-          direction: isBuy ? "BUY" : "SELL",
-          usdValue:  Math.round(usdValue),
-          price,
-          qty,
-          timestamp: new Date().toISOString(),
-          hora:      new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-          // Calcula TP/SL baseado na movimentação da whale
-          levels: calcWhaleSignalLevels(symbol, isBuy ? "BUY" : "SELL", price),
-          strength: usdValue >= 1000000 ? "🐳 MEGA WHALE" : usdValue >= 500000 ? "🐋 WHALE" : "🐬 SHARK",
-          message: `${usdValue >= 1000000 ? "🐳" : "🐋"} ${isBuy?"COMPRA":"VENDA"} INSTITUCIONAL: $${formatUSD(usdValue)} em ${symbol} @ ${price}`,
-        };
-
-        // Salva e broadcast
-        institutionalData.whaleAlerts.unshift(alert);
-        if (institutionalData.whaleAlerts.length > 20) institutionalData.whaleAlerts.pop();
-
-        broadcastToLiveRoom({ type: "whale_alert", ...alert });
-        broadcastToSite({ type: "whale_alert", ...alert });
-
-        console.log(`[Whale] ${alert.strength} ${isBuy?"BUY":"SELL"} ${symbol} $${formatUSD(usdValue)}`);
-
-        // Atualiza Smart Money Score
-        updateSmartMoneyScore(symbol, isBuy ? "BUY" : "SELL", usdValue);
-      } catch {}
-    });
-    binanceWS.on("close", () => {
-      console.log("[Binance WS] Desconectado — reconectando em 10s...");
-      setTimeout(connectBinanceWhaleWatcher, 10000);
-    });
-    binanceWS.on("error", () => {
-      setTimeout(connectBinanceWhaleWatcher, 15000);
-    });
-    binanceWS.on("open", () => {
-      console.log("[Binance WS] Conectado — monitorando whales em", binanceSymbols.join(", "));
-    });
-  } catch (err) {
-    console.error("[Binance WS] Erro:", err.message);
-    setTimeout(connectBinanceWhaleWatcher, 15000);
-  }
+  // Polling a cada 30 segundos (Railway não suporta WS de saída)
+  console.log("[Whale Watcher] Iniciado via HTTP polling (30s interval)");
+  pollAllWhales();
+  setInterval(pollAllWhales, 30000);
 }
 
 function calcWhaleSignalLevels(symbol, direction, price) {
@@ -1133,7 +1128,7 @@ app.get("/health",(_, res)=>{
       fear_greed_label:institutionalData.fearGreed?.label||null,
       whale_alerts_today:institutionalData.whaleAlerts.length,
       liquidations_today:institutionalData.liquidations.length,
-      binance_ws_connected:binanceWS?.readyState===WebSocket.OPEN,
+      whale_polling_active:true,
     },
     timestamp:new Date().toISOString(),
   });
