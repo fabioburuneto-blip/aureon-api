@@ -888,21 +888,24 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
         if(liveRoomClients.size>0)broadcastToLiveRoom({type:"no_signal",asset:symbol,strategy,strategy_label:"AUREON AI",mode,reason:`Filtro HTF: ${result.direction} exige ${minProb}% (atual: ${result.probability}%)`,timestamp:new Date().toISOString()});
         return;
       }
-      const signalKey=`${symbol}-${result.direction}`;
+      // Cooldown por SÍMBOLO (não por direção) — evita múltiplos sinais do mesmo ativo
+      const signalKey=`${symbol}`;
+      const signalKeyDir=`${symbol}-${result.direction}`;
       const lastSignal=signalCache.get(signalKey)||{timestamp:0,price:0};
       const timePassed=Date.now()-lastSignal.timestamp;
       const priceChg=lastSignal.price>0?Math.abs(currentPrice-lastSignal.price)/lastSignal.price:1;
       if(timePassed<SIGNAL_COOLDOWN&&priceChg<PRICE_CHANGE_THRESHOLD){
         const remaining=Math.round((SIGNAL_COOLDOWN-timePassed)/1000);
-        if(liveRoomClients.size>0)broadcastToLiveRoom({type:"no_signal",asset:symbol,strategy,strategy_label:"AUREON AI",mode,reason:`Cooldown: ${remaining}s restantes`,timestamp:new Date().toISOString()});
+        if(liveRoomClients.size>0)broadcastToLiveRoom({type:"no_signal",asset:symbol,strategy,strategy_label:"AUREON AI",mode,reason:`Cooldown ${symbol}: ${Math.round(remaining/60)}min ${remaining%60}s restantes`,timestamp:new Date().toISOString()});
         return;
       }
       const currentDir=activeSignals.get(symbol);
       if(currentDir&&currentDir!==result.direction){
-        const oppKey=`${symbol}-${currentDir}`, opp=signalCache.get(oppKey)||{timestamp:0};
+        const opp=signalCache.get(`${symbol}-${currentDir}`)||{timestamp:0};
         if(Date.now()-opp.timestamp<SIGNAL_COOLDOWN){console.log(`[LiveRoom] Conflito: ${symbol} tem ${currentDir} ativo`);return;}
       }
       signalCache.set(signalKey,{timestamp:Date.now(),price:currentPrice});
+      signalCache.set(signalKeyDir,{timestamp:Date.now(),price:currentPrice});
       activeSignals.set(symbol,result.direction);
       setTimeout(()=>{if(activeSignals.get(symbol)===result.direction)activeSignals.delete(symbol);},SIGNAL_COOLDOWN);
 
