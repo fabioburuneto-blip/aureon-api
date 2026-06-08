@@ -739,10 +739,43 @@ async function callEaSignalV3(strategy, symbol, historicalData=null, mode="expre
     for(let i=59;i>=3;i--){const f=1+(Math.random()-.5)*.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*.999).toFixed(5)));opens.push(parseFloat((bid*f*.9998).toFixed(5)));}
     closes.push(bid);highs.push(bid*1.001);lows.push(bid*.999);opens.push(bid*.9998);
   }
-  const body={strategy,symbol,mode,closes,highs,lows,opens,historical_win_rate:historicalData?.win_rate??-1,historical_sample_size:historicalData?.sample_size??0,hour_win_rate:historicalData?.hour_win_rate??-1,hour_sample_size:historicalData?.hour_sample_size??0};
+
+  // Monta body com multi-timeframe se disponível
+  const body={
+    strategy, symbol, mode, closes, highs, lows, opens,
+    historical_win_rate:historicalData?.win_rate??-1,
+    historical_sample_size:historicalData?.sample_size??0,
+    hour_win_rate:historicalData?.hour_win_rate??-1,
+    hour_sample_size:historicalData?.hour_sample_size??0,
+  };
+
+  // Adiciona TFs superiores se disponíveis (EA Master v5.1)
+  if(priceData.closes_m15&&Array.isArray(priceData.closes_m15)&&priceData.closes_m15.length>=10){
+    body.closes_m15=priceData.closes_m15;body.highs_m15=priceData.highs_m15;
+    body.lows_m15=priceData.lows_m15;body.opens_m15=priceData.opens_m15;
+  }
+  if(priceData.closes_h1&&Array.isArray(priceData.closes_h1)&&priceData.closes_h1.length>=10){
+    body.closes_h1=priceData.closes_h1;body.highs_h1=priceData.highs_h1;
+    body.lows_h1=priceData.lows_h1;body.opens_h1=priceData.opens_h1;
+  }
+  if(priceData.closes_h4&&Array.isArray(priceData.closes_h4)&&priceData.closes_h4.length>=10){
+    body.closes_h4=priceData.closes_h4;body.highs_h4=priceData.highs_h4;
+    body.lows_h4=priceData.lows_h4;body.opens_h4=priceData.opens_h4;
+  }
+  if(priceData.closes_d1&&Array.isArray(priceData.closes_d1)&&priceData.closes_d1.length>=5){
+    body.closes_d1=priceData.closes_d1;body.highs_d1=priceData.highs_d1;
+    body.lows_d1=priceData.lows_d1;body.opens_d1=priceData.opens_d1;
+  }
+
+  const hasMTF=!!(body.closes_h4&&body.closes_d1);
+  if(hasMTF) console.log(`[eaSignal v10] ${symbol} com MTF completo: M5+M15+H1+H4+D1`);
+
   const response=await fetch(EA_SIGNAL_V3_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${EA_SIGNAL_KEY}`},body:JSON.stringify(body)});
   if(!response.ok) throw new Error(`eaSignal_v3 retornou ${response.status}`);
-  const result=await response.json(); result.live_price=priceData.bid; return result;
+  const result=await response.json();
+  result.live_price=priceData.bid;
+  result.has_mtf=hasMTF;
+  return result;
 }
 
 // ─────────────────────────────────────────────
@@ -906,9 +939,23 @@ app.post("/webhook/hotmart", async (req,res)=>{
 app.post("/price",(req,res)=>{
   const data=req.body;if(!data||!data.symbol)return res.status(400).json({error:"Dados inválidos"});
   mt5LastSeen=new Date();
-  const priceData={symbol:data.symbol,bid:data.bid,ask:data.ask,spread:data.spread,rsi:data.rsi,ema20:data.ema20,ema50:data.ema50,close1:data.close1,high1:data.high1,low1:data.low1,closes:data.closes||null,highs:data.highs||null,lows:data.lows||null,opens:data.opens||null,strategy:"AI",receivedAt:new Date().toISOString()};
-  allPrices.set(data.symbol,priceData);broadcastToSite({type:"price",...priceData});broadcastToSite({type:"mt5_status",connected:true});
-  res.json({status:"ok",symbols_tracked:allPrices.size});
+  const priceData={
+    symbol:data.symbol,bid:data.bid,ask:data.ask,spread:data.spread,rsi:data.rsi,
+    // M5 — principal
+    closes:data.closes||null,highs:data.highs||null,lows:data.lows||null,opens:data.opens||null,
+    candles_count:data.candles_count||0,
+    // Multi-timeframe v10
+    closes_m15:data.closes_m15||null,highs_m15:data.highs_m15||null,lows_m15:data.lows_m15||null,opens_m15:data.opens_m15||null,
+    closes_h1:data.closes_h1||null,highs_h1:data.highs_h1||null,lows_h1:data.lows_h1||null,opens_h1:data.opens_h1||null,
+    closes_h4:data.closes_h4||null,highs_h4:data.highs_h4||null,lows_h4:data.lows_h4||null,opens_h4:data.opens_h4||null,
+    closes_d1:data.closes_d1||null,highs_d1:data.highs_d1||null,lows_d1:data.lows_d1||null,opens_d1:data.opens_d1||null,
+    has_mtf:!!(data.closes_h4&&data.closes_d1),
+    strategy:"AI",receivedAt:new Date().toISOString()
+  };
+  allPrices.set(data.symbol,priceData);
+  broadcastToSite({type:"price",symbol:data.symbol,bid:data.bid,ask:data.ask,spread:data.spread,rsi:data.rsi,has_mtf:priceData.has_mtf});
+  broadcastToSite({type:"mt5_status",connected:true});
+  res.json({status:"ok",symbols_tracked:allPrices.size,has_mtf:priceData.has_mtf});
 });
 
 app.get("/prices",(req,res)=>{
@@ -1106,7 +1153,7 @@ app.get("/health",(_, res)=>{
   const prices=[];allPrices.forEach((data,symbol)=>prices.push({symbol,bid:data.bid,fresh:isPriceFresh(data)}));
   const hour=new Date().getUTCHours();
   res.json({
-    status:"online", version:"v19",
+    status:"online", version:"v19-MTF",
     mt5_connected:isMt5Online(), symbols_count:allPrices.size, symbols:prices,
     site_clients:siteClients.size,
     slaves_online:slaves.filter(s=>s.online).length, slaves_total:activeSlaves.size, slaves,
