@@ -265,6 +265,8 @@ function calcSmartMoneyScoreFromData() {
     };
   }
 }
+
+function updateSmartMoneyScore(symbol, direction, usdValue) {
   if (!institutionalData.smartMoneyScore[symbol]) {
     institutionalData.smartMoneyScore[symbol] = { buyVolume: 0, sellVolume: 0, score: 50, updated: new Date().toISOString() };
   }
@@ -421,7 +423,7 @@ async function fetchFundingRates() {
       if (res.ok) {
         const json = await res.json();
         if (json?.data?.length > 0) {
-          const item = json.data.find((d:any) => d.exchangeName === "Binance") || json.data[0];
+          const item = json.data.find((d) => d.exchangeName === "Binance") || json.data[0];
           rate = parseFloat(item.fundingRate || 0) * 100;
         }
       }
