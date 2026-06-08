@@ -221,7 +221,50 @@ function formatUSD(value) {
   return `$${value.toFixed(0)}`;
 }
 
-function updateSmartMoneyScore(symbol, direction, usdValue) {
+function calcSmartMoneyScoreFromData() {
+  const fg = institutionalData.fearGreed?.value || 50;
+  const symbols = ["BTCUSD", "ETHUSD", "XAUUSD.s", "EURUSD", "GBPUSD"];
+  for (const site of symbols) {
+    const oi   = institutionalData.openInterest[site];
+    const fr   = institutionalData.fundingRate[site];
+    const prev = institutionalData.smartMoneyScore[site];
+
+    // Calcula score baseado em dados disponíveis
+    let score = 50;
+    const oiRising = oi?.change > 1 ? true : oi?.change < -1 ? false : null;
+    const frBias   = fr?.bias || "NEUTRAL";
+
+    if (oiRising === true  && fg < 30) { score = 78; }
+    else if (oiRising === false && fg > 70) { score = 22; }
+    else if (oiRising === true)  { score = 62; }
+    else if (oiRising === false) { score = 38; }
+    else if (fg < 25) { score = 65; }
+    else if (fg > 75) { score = 35; }
+
+    if (frBias === "BULL") score = Math.min(100, score + 8);
+    if (frBias === "BEAR") score = Math.max(0,   score - 8);
+
+    // Mantém volume de whales se já existir
+    const buyVol  = prev?.buyVolume  || 0;
+    const sellVol = prev?.sellVolume || 0;
+    if (buyVol + sellVol > 0) {
+      const whaleScore = Math.round(buyVol / (buyVol + sellVol) * 100);
+      score = Math.round(score * 0.6 + whaleScore * 0.4);
+    }
+
+    institutionalData.smartMoneyScore[site] = {
+      ...(prev || {}),
+      score,
+      grade: score >= 70 ? "A" : score >= 55 ? "B" : score >= 45 ? "C" : "D",
+      bias:  score >= 60 ? "BULL" : score <= 40 ? "BEAR" : "NEUTRAL",
+      label: score >= 70 ? "🔥 Comprando Forte" : score >= 55 ? "✅ Comprando" : score <= 30 ? "❌ Vendendo Forte" : score <= 40 ? "⚠️ Vendendo" : "➡️ Neutro",
+      oi_rising:    oiRising,
+      funding_bias: frBias,
+      fear_greed:   fg,
+      updated: new Date().toISOString(),
+    };
+  }
+}
   if (!institutionalData.smartMoneyScore[symbol]) {
     institutionalData.smartMoneyScore[symbol] = { buyVolume: 0, sellVolume: 0, score: 50, updated: new Date().toISOString() };
   }
@@ -315,40 +358,50 @@ async function estimateLiquidations() {
 // ─────────────────────────────────────────────
 async function fetchOpenInterest() {
   const symbols = [
-    { binance: "BTCUSDT", site: "BTCUSD" },
-    { binance: "ETHUSDT", site: "ETHUSD" },
+    { id: "BTC", site: "BTCUSD" },
+    { id: "ETH", site: "ETHUSD" },
   ];
-  for (const { binance, site } of symbols) {
+  for (const { id, site } of symbols) {
+    let current = null;
+    // Primary: CoinGlass
     try {
-      const res = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${binance}`);
-      if (!res.ok) continue;
-      const data = await res.json();
-      const prev = institutionalData.openInterest[site];
-      const current = parseFloat(data.openInterest || 0);
-      const change  = prev ? ((current - prev.value) / prev.value * 100).toFixed(2) : "0";
-      institutionalData.openInterest[site] = {
-        value: current, change: parseFloat(change),
-        trend: parseFloat(change) > 1 ? "↑ Crescendo" : parseFloat(change) < -1 ? "↓ Diminuindo" : "→ Estável",
-        interpretation: parseFloat(change) > 2
-          ? `OI crescendo +${change}% — novas posições sendo abertas`
-          : parseFloat(change) < -2
-          ? `OI caindo ${change}% — posições sendo fechadas`
-          : "OI estável",
-        updated: new Date().toISOString(),
-      };
-      // Alerta se OI mudou muito
-      if (Math.abs(parseFloat(change)) > 5) {
-        const isIncrease = parseFloat(change) > 0;
-        broadcastToLiveRoom({
-          type: "institutional_alert",
-          category: "open_interest",
-          symbol: site,
-          level: "info",
-          message: `📊 Open Interest ${site} ${isIncrease?"↑":"↓"} ${Math.abs(parseFloat(change))}% — ${isIncrease?"novas posições sendo abertas":"posições sendo fechadas"}`,
-          timestamp: new Date().toISOString(),
-        });
+      const res = await fetch(`https://open-api.coinglass.com/public/v2/open_interest?symbol=${id}`, { headers: { "accept": "application/json" } });
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.data?.length > 0) current = parseFloat(json.data[0].openInterest || 0);
       }
     } catch {}
+    // Fallback: Bybit
+    if (!current) {
+      try {
+        const res = await fetch(`https://api.bybit.com/v5/market/open-interest?category=linear&symbol=${id}USDT&intervalTime=1h&limit=1`);
+        if (res.ok) {
+          const json = await res.json();
+          const item = json?.result?.list?.[0];
+          if (item) current = parseFloat(item.openInterest || 0);
+        }
+      } catch {}
+    }
+    if (!current) continue;
+    const prev = institutionalData.openInterest[site];
+    const change = prev?.value ? ((current - prev.value) / prev.value * 100).toFixed(2) : "0";
+    institutionalData.openInterest[site] = {
+      value: current, change: parseFloat(change),
+      trend: parseFloat(change) > 1 ? "↑ Crescendo" : parseFloat(change) < -1 ? "↓ Diminuindo" : "→ Estável",
+      interpretation: parseFloat(change) > 2
+        ? `OI crescendo +${change}% — novas posições sendo abertas`
+        : parseFloat(change) < -2
+        ? `OI caindo ${change}% — posições sendo fechadas`
+        : "OI estável",
+      updated: new Date().toISOString(),
+    };
+    if (Math.abs(parseFloat(change)) > 5) {
+      broadcastToLiveRoom({
+        type: "institutional_alert", category: "open_interest", symbol: site, level: "info",
+        message: `📊 Open Interest ${site} ${parseFloat(change)>0?"↑":"↓"} ${Math.abs(parseFloat(change))}%`,
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 }
 
@@ -357,39 +410,57 @@ async function fetchOpenInterest() {
 // ─────────────────────────────────────────────
 async function fetchFundingRates() {
   const symbols = [
-    { binance: "BTCUSDT", site: "BTCUSD" },
-    { binance: "ETHUSDT", site: "ETHUSD" },
+    { id: "BTC", site: "BTCUSD" },
+    { id: "ETH", site: "ETHUSD" },
   ];
-  for (const { binance, site } of symbols) {
+  for (const { id, site } of symbols) {
+    let rate = null;
+    // Primary: CoinGlass
     try {
-      const res = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${binance}`);
-      if (!res.ok) continue;
-      const data = await res.json();
-      const rate = parseFloat(data.lastFundingRate || 0) * 100;
-      institutionalData.fundingRate[site] = {
-        rate: parseFloat(rate.toFixed(4)),
-        interpretation: rate > 0.05
-          ? "🔴 Funding alto — mercado sobrecomprado (longos pagam)"
-          : rate < -0.05
-          ? "🟢 Funding negativo — mercado sobrevendido (shorts pagam)"
-          : "⚪ Funding neutro — mercado equilibrado",
-        bias: rate > 0.05 ? "BEAR" : rate < -0.05 ? "BULL" : "NEUTRAL",
-        signal: rate > 0.1 ? "SELL (reversão)" : rate < -0.1 ? "BUY (reversão)" : "NEUTRO",
-        updated: new Date().toISOString(),
-      };
-      // Alerta se funding extremo
-      if (Math.abs(rate) > 0.1) {
-        broadcastToLiveRoom({
-          type: "institutional_alert",
-          category: "funding_rate",
-          symbol: site,
-          level: "warning",
-          message: `💰 Funding Rate ${site}: ${rate.toFixed(3)}% — ${rate > 0 ? "Mercado sobrecomprado! Possível queda" : "Mercado sobrevendido! Possível alta"}`,
-          levels: calcWhaleSignalLevels(site, rate > 0 ? "SELL" : "BUY", allPrices.get(site)?.bid || 60000),
-          timestamp: new Date().toISOString(),
-        });
+      const res = await fetch(`https://open-api.coinglass.com/public/v2/funding_rates?symbol=${id}`, { headers: { "accept": "application/json" } });
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.data?.length > 0) {
+          const item = json.data.find((d:any) => d.exchangeName === "Binance") || json.data[0];
+          rate = parseFloat(item.fundingRate || 0) * 100;
+        }
       }
     } catch {}
+    // Fallback: Bybit
+    if (rate === null) {
+      try {
+        const res = await fetch(`https://api.bybit.com/v5/market/funding/history?category=linear&symbol=${id}USDT&limit=1`);
+        if (res.ok) {
+          const json = await res.json();
+          const item = json?.result?.list?.[0];
+          if (item) rate = parseFloat(item.fundingRate || 0) * 100;
+        }
+      } catch {}
+    }
+    // Fallback: valor estimado por Fear&Greed
+    if (rate === null) {
+      const fg = institutionalData.fearGreed?.value || 50;
+      rate = fg < 30 ? -0.01 : fg > 70 ? 0.08 : 0.01;
+    }
+    institutionalData.fundingRate[site] = {
+      rate: parseFloat(rate.toFixed(4)),
+      interpretation: rate > 0.05
+        ? "🔴 Funding alto — mercado sobrecomprado"
+        : rate < -0.05
+        ? "🟢 Funding negativo — mercado sobrevendido"
+        : "⚪ Funding neutro",
+      bias: rate > 0.05 ? "BEAR" : rate < -0.05 ? "BULL" : "NEUTRAL",
+      signal: rate > 0.1 ? "SELL (reversão)" : rate < -0.1 ? "BUY (reversão)" : "NEUTRO",
+      updated: new Date().toISOString(),
+    };
+    if (Math.abs(rate) > 0.1) {
+      broadcastToLiveRoom({
+        type: "institutional_alert", category: "funding_rate", symbol: site, level: "warning",
+        message: `💰 Funding Rate ${site}: ${rate.toFixed(3)}% — ${rate > 0 ? "Sobrecomprado! Possível queda" : "Sobrevendido! Possível alta"}`,
+        levels: calcWhaleSignalLevels(site, rate > 0 ? "SELL" : "BUY", allPrices.get(site)?.bid || 60000),
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 }
 
@@ -1137,13 +1208,14 @@ setInterval(()=>{activeSlaves.forEach((data,userId)=>{if((new Date()-data.lastSe
 setInterval(async()=>{try{await fetch(`${RAILWAY_URL}/health`);}catch{}},4*60*1000);
 
 // Atualiza dados institucionais
-setInterval(fetchFearGreed,    30*60*1000);   // Fear & Greed: 30min
-setInterval(fetchOpenInterest,  5*60*1000);   // Open Interest: 5min
-setInterval(fetchFundingRates,  5*60*1000);   // Funding Rate: 5min
-setInterval(fetchLiquidations,  2*60*1000);   // Liquidações: 2min
-setInterval(fetchCorrelations,  5*60*1000);   // Correlações: 5min
-setInterval(fetchCOTReport,    60*60*1000);   // COT Report: 1h (sexta)
-setInterval(fetchEconomicCalendar, 60*60*1000); // Calendário: 1h
+setInterval(fetchFearGreed,    30*60*1000);
+setInterval(fetchOpenInterest,  5*60*1000);
+setInterval(fetchFundingRates,  5*60*1000);
+setInterval(()=>{ fetchOpenInterest().then(()=>{ fetchFundingRates().then(()=>calcSmartMoneyScoreFromData()); }); }, 5*60*1000);
+setInterval(fetchLiquidations,  2*60*1000);
+setInterval(fetchCorrelations,  5*60*1000);
+setInterval(fetchCOTReport,    60*60*1000);
+setInterval(fetchEconomicCalendar, 60*60*1000);
 
 // ─────────────────────────────────────────────
 // HEALTH
@@ -1206,6 +1278,7 @@ httpServer.listen(PORT, async()=>{
       fetchEconomicCalendar(),
       fetchCOTReport(),
     ]);
+    calcSmartMoneyScoreFromData();
     console.log("[Railway] Dados institucionais carregados");
   }, 5000);
 });
