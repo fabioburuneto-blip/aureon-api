@@ -33,8 +33,8 @@ const EA_SIGNAL_KEY    = "abc123forte";
 const CHECK_SLAVE_URL  = "https://traderaureonia.base44.app/api/functions/checkSlaveAccess";
 const RAILWAY_URL      = "https://aureon-api-production-3d61.up.railway.app";
 const MT5_TIMEOUT_MS   = 15000;
-const SLAVE_TIMEOUT_S  = 30;
-const SLAVE_REMOVE_S   = 60;
+const SLAVE_TIMEOUT_S  = 120;  // 2min — tolerância para lentidão de rede
+const SLAVE_REMOVE_S   = 300;  // 5min — só remove se ficar 5min sem resposta
 const PRICE_EXPIRE_S   = 30;
 
 const SUPABASE_URL = "https://vxxdkxlvkrxkfbrvxdal.supabase.co";
