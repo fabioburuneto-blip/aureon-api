@@ -745,9 +745,13 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       console.log(`[LiveRoom v19] ${result.direction} ${symbol} | ${result.probability}% | HTF: ${htfBias} | SL:${result.sl} TP1:${result.tp1}`);
 
       // ✅ FIX: Usa enqueueOrder com cooldown e validação de TP/SL
+      // ✅ FIX: só enfileira para slaves REAIS — nunca para MASTER-BOT ou bots internos
       let targetSlaveId=null;
       if(isSlaveOnline(LIVE_ROOM_BOT_ID))targetSlaveId=LIVE_ROOM_BOT_ID;
-      else if(activeSlaves.size>0)activeSlaves.forEach((data,userId)=>{if(!targetSlaveId&&(new Date()-data.lastSeen)/1000<SLAVE_TIMEOUT_S)targetSlaveId=userId;});
+      else if(activeSlaves.size>0)activeSlaves.forEach((data,userId)=>{
+        if(!targetSlaveId&&!INTERNAL_BOT_IDS.includes(userId)&&(new Date()-data.lastSeen)/1000<SLAVE_TIMEOUT_S)
+          targetSlaveId=userId;
+      });
       if(targetSlaveId){
         const tpToSend = result.tp1 || result.tp;
         const slToSend = result.sl;
@@ -892,10 +896,21 @@ app.get("/all-trades",async(req,res)=>{
   }catch(err){res.status(500).json({error:err.message});}
 });
 
+// IDs reservados para robôs internos — NUNCA entram no activeSlaves como slaves reais
+const INTERNAL_BOT_IDS = ["MASTER-BOT", "LIVE-ROOM-BOT", "PAPER-BOT"];
+
 app.post("/slave-register",async(req,res)=>{
   const{user_id,account,symbol,balance,status}=req.body;
   if(!user_id)return res.status(400).json({error:"user_id obrigatório"});
   if(status==="disconnected"){activeSlaves.delete(user_id);broadcastToSite({type:"slave_status",user_id,connected:false});return res.json({status:"ok"});}
+
+  // ✅ FIX: MASTER-BOT e bots internos NÃO entram no activeSlaves
+  // Isso impede o Live Room de enfileirar ordens duplicadas para o EA Master
+  if(INTERNAL_BOT_IDS.includes(user_id)){
+    console.log(`[SlaveRegister] Bot interno ignorado: ${user_id}`);
+    return res.json({status:"ok",user_id,plan:"elite",limits:getPlanLimits("elite")});
+  }
+
   const planCheck=await checkProPlan(user_id);if(!planCheck.allowed)return res.status(403).json({status:"blocked"});
   const limits=getPlanLimits(planCheck.plan||"basic");
   activeSlaves.set(user_id,{account:account||"unknown",symbol:symbol||"BTCUSD",balance:balance||0,plan:planCheck.plan||"basic",limits,lastSeen:new Date()});
