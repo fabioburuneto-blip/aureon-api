@@ -321,64 +321,85 @@ async function estimateLiquidations() {
 }
 
 async function fetchOpenInterest() {
-  const symbols = [{ id: "BTC", site: "BTCUSD" }, { id: "ETH", site: "ETHUSD" }];
-  for (const { id, site } of symbols) {
-    let current = null;
+  // Binance Futures — API gratuita e confiável
+  const symbols = [
+    { binance: "BTCUSDT", site: "BTCUSD"  },
+    { binance: "ETHUSDT", site: "ETHUSD"  },
+  ];
+  for (const { binance, site } of symbols) {
     try {
-      const res = await fetch(`https://open-api.coinglass.com/public/v2/open_interest?symbol=${id}`, { headers: { "accept": "application/json" } });
-      if (res.ok) { const json = await res.json(); if (json?.data?.length > 0) current = parseFloat(json.data[0].openInterest || 0); }
-    } catch {}
-    if (!current) {
-      try {
-        const res = await fetch(`https://api.bybit.com/v5/market/open-interest?category=linear&symbol=${id}USDT&intervalTime=1h&limit=1`);
-        if (res.ok) { const json = await res.json(); const item = json?.result?.list?.[0]; if (item) current = parseFloat(item.openInterest || 0); }
-      } catch {}
-    }
-    if (!current) continue;
-    const prev = institutionalData.openInterest[site];
-    const change = prev?.value ? ((current - prev.value) / prev.value * 100).toFixed(2) : "0";
-    institutionalData.openInterest[site] = {
-      value: current, change: parseFloat(change),
-      trend: parseFloat(change) > 1 ? "↑ Crescendo" : parseFloat(change) < -1 ? "↓ Diminuindo" : "→ Estável",
-      interpretation: parseFloat(change) > 2 ? `OI crescendo +${change}%` : parseFloat(change) < -2 ? `OI caindo ${change}%` : "OI estável",
-      updated: new Date().toISOString(),
-    };
-    if (Math.abs(parseFloat(change)) > 5) {
-      broadcastToLiveRoom({ type: "institutional_alert", category: "open_interest", symbol: site, level: "info",
-        message: `📊 Open Interest ${site} ${parseFloat(change)>0?"↑":"↓"} ${Math.abs(parseFloat(change))}%`,
-        timestamp: new Date().toISOString() });
-    }
+      const res = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${binance}`);
+      if (!res.ok) { console.log(`[OI] ${binance} HTTP ${res.status}`); continue; }
+      const json = await res.json();
+      const current = parseFloat(json.openInterest || 0);
+      if (!current) continue;
+
+      const prev   = institutionalData.openInterest[site];
+      const change = prev?.value ? ((current - prev.value) / prev.value * 100).toFixed(2) : "0";
+      const bid    = allPrices.get(site)?.bid || 0;
+      const usd    = bid > 0 ? (current * bid / 1e9).toFixed(2) + "B USD" : current.toFixed(0) + " contratos";
+
+      institutionalData.openInterest[site] = {
+        value: current, change: parseFloat(change), usd,
+        trend: parseFloat(change) > 1 ? "↑ Crescendo" : parseFloat(change) < -1 ? "↓ Diminuindo" : "→ Estável",
+        interpretation: parseFloat(change) > 2
+          ? `OI crescendo +${change}% (${usd}) — novas posições abrindo`
+          : parseFloat(change) < -2
+          ? `OI caindo ${change}% (${usd}) — posições sendo fechadas`
+          : `OI estável (${usd})`,
+        updated: new Date().toISOString(),
+      };
+
+      console.log(`[OI] ${site}: ${usd} | Δ${change}%`);
+
+      if (Math.abs(parseFloat(change)) > 5) {
+        broadcastToLiveRoom({ type: "institutional_alert", category: "open_interest", symbol: site, level: "info",
+          message: `📊 Open Interest ${site} ${parseFloat(change)>0?"↑":"↓"} ${Math.abs(parseFloat(change))}% — ${usd}`,
+          timestamp: new Date().toISOString() });
+      }
+    } catch (err) { console.error(`[OI] Erro ${site}:`, err.message); }
   }
 }
 
 async function fetchFundingRates() {
-  const symbols = [{ id: "BTC", site: "BTCUSD" }, { id: "ETH", site: "ETHUSD" }];
-  for (const { id, site } of symbols) {
-    let rate = null;
+  // Binance Futures — API gratuita, retorna funding rate atual + próximo
+  const symbols = [
+    { binance: "BTCUSDT", site: "BTCUSD"  },
+    { binance: "ETHUSDT", site: "ETHUSD"  },
+  ];
+  for (const { binance, site } of symbols) {
     try {
-      const res = await fetch(`https://open-api.coinglass.com/public/v2/funding_rates?symbol=${id}`, { headers: { "accept": "application/json" } });
-      if (res.ok) { const json = await res.json(); if (json?.data?.length > 0) { const item = json.data.find((d) => d.exchangeName === "Binance") || json.data[0]; rate = parseFloat(item.fundingRate || 0) * 100; } }
-    } catch {}
-    if (rate === null) {
-      try {
-        const res = await fetch(`https://api.bybit.com/v5/market/funding/history?category=linear&symbol=${id}USDT&limit=1`);
-        if (res.ok) { const json = await res.json(); const item = json?.result?.list?.[0]; if (item) rate = parseFloat(item.fundingRate || 0) * 100; }
-      } catch {}
-    }
-    if (rate === null) { const fg = institutionalData.fearGreed?.value || 50; rate = fg < 30 ? -0.01 : fg > 70 ? 0.08 : 0.01; }
-    institutionalData.fundingRate[site] = {
-      rate: parseFloat(rate.toFixed(4)),
-      interpretation: rate > 0.05 ? "🔴 Funding alto — mercado sobrecomprado" : rate < -0.05 ? "🟢 Funding negativo — mercado sobrevendido" : "⚪ Funding neutro",
-      bias: rate > 0.05 ? "BEAR" : rate < -0.05 ? "BULL" : "NEUTRAL",
-      signal: rate > 0.1 ? "SELL (reversão)" : rate < -0.1 ? "BUY (reversão)" : "NEUTRO",
-      updated: new Date().toISOString(),
-    };
-    if (Math.abs(rate) > 0.1) {
-      broadcastToLiveRoom({ type: "institutional_alert", category: "funding_rate", symbol: site, level: "warning",
-        message: `💰 Funding Rate ${site}: ${rate.toFixed(3)}% — ${rate > 0 ? "Sobrecomprado!" : "Sobrevendido!"}`,
-        levels: calcWhaleSignalLevels(site, rate > 0 ? "SELL" : "BUY", allPrices.get(site)?.bid || 60000),
-        timestamp: new Date().toISOString() });
-    }
+      // premiumIndex traz fundingRate atual e nextFundingTime
+      const res = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${binance}`);
+      if (!res.ok) { console.log(`[Funding] ${binance} HTTP ${res.status}`); continue; }
+      const json = await res.json();
+      const rate     = parseFloat(json.lastFundingRate || 0) * 100; // converte para %
+      const nextTime = json.nextFundingTime
+        ? new Date(json.nextFundingTime).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+        : "N/A";
+
+      institutionalData.fundingRate[site] = {
+        rate:           parseFloat(rate.toFixed(4)),
+        next_funding:   nextTime,
+        interpretation: rate > 0.05
+          ? "🔴 Funding alto — longs pagando shorts (sobrecomprado)"
+          : rate < -0.05
+          ? "🟢 Funding negativo — shorts pagando longs (sobrevendido)"
+          : "⚪ Funding neutro",
+        bias:   rate > 0.05 ? "BEAR" : rate < -0.05 ? "BULL" : "NEUTRAL",
+        signal: rate > 0.1  ? "SELL (reversão)" : rate < -0.1 ? "BUY (reversão)" : "NEUTRO",
+        updated: new Date().toISOString(),
+      };
+
+      console.log(`[Funding] ${site}: ${rate.toFixed(4)}% | próximo: ${nextTime}`);
+
+      if (Math.abs(rate) > 0.1) {
+        broadcastToLiveRoom({ type: "institutional_alert", category: "funding_rate", symbol: site, level: "warning",
+          message: `💰 Funding Rate ${site}: ${rate.toFixed(3)}% — ${rate > 0 ? "Sobrecomprado! Possível queda" : "Sobrevendido! Possível alta"} | Próximo: ${nextTime}`,
+          levels: calcWhaleSignalLevels(site, rate > 0 ? "SELL" : "BUY", allPrices.get(site)?.bid || 60000),
+          timestamp: new Date().toISOString() });
+      }
+    } catch (err) { console.error(`[Funding] Erro ${site}:`, err.message); }
   }
 }
 
@@ -627,12 +648,18 @@ async function callEaSignalV3(strategy, symbol, historicalData=null, mode="expre
     for(let i=59;i>=3;i--){const f=1+(Math.random()-.5)*.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*.999).toFixed(5)));opens.push(parseFloat((bid*f*.9998).toFixed(5)));}
     closes.push(bid);highs.push(bid*1.001);lows.push(bid*.999);opens.push(bid*.9998);
   }
+  // ✅ v11: Passa contexto institucional para o eaSignal (Claude vai usar)
   const body={
     strategy, symbol, mode, closes, highs, lows, opens,
     historical_win_rate:historicalData?.win_rate??-1,
     historical_sample_size:historicalData?.sample_size??0,
     hour_win_rate:historicalData?.hour_win_rate??-1,
     hour_sample_size:historicalData?.hour_sample_size??0,
+    // Contexto institucional para Claude analisar
+    fear_greed:  institutionalData.fearGreed?.value || 50,
+    funding_rate: institutionalData.fundingRate[symbol]?.rate || 0,
+    open_interest: institutionalData.openInterest[symbol] || null,
+    session: getSessionName(),
   };
   if(priceData.closes_m15&&Array.isArray(priceData.closes_m15)&&priceData.closes_m15.length>=10){body.closes_m15=priceData.closes_m15;body.highs_m15=priceData.highs_m15;body.lows_m15=priceData.lows_m15;body.opens_m15=priceData.opens_m15;}
   if(priceData.closes_h1&&Array.isArray(priceData.closes_h1)&&priceData.closes_h1.length>=10){body.closes_h1=priceData.closes_h1;body.highs_h1=priceData.highs_h1;body.lows_h1=priceData.lows_h1;body.opens_h1=priceData.opens_h1;}
@@ -1057,7 +1084,7 @@ app.get("/health",(_, res)=>{
   const orderCooldowns = {};
   lastOrderSent.forEach((ts, symbol) => { const rem = Math.max(0, SIGNAL_COOLDOWN - (now - ts)); orderCooldowns[symbol] = { blocked: rem > 0, remaining_seconds: Math.round(rem/1000) }; });
   res.json({
-    status:"online", version:"v19-MTF-fix",
+    status:"online", version:"v19-MTF-fix-institutional",
     mt5_connected:isMt5Online(), symbols_count:allPrices.size, symbols:prices,
     site_clients:siteClients.size,
     slaves_online:slaves.filter(s=>s.online).length, slaves_total:activeSlaves.size, slaves,
