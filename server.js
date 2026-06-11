@@ -744,6 +744,66 @@ async function callEaSignalV3(strategy, symbol, historicalData=null, mode="expre
 // ─────────────────────────────────────────────
 // LIVE ROOM — Análise
 // ─────────────────────────────────────────────
+// ✅ Gera narrativa do sinal para mostrar no card (modo express sem Claude)
+function buildSignalNarrative(symbol, result, htfBias) {
+  const dir     = result.direction || "";
+  const prob    = result.probability || 0;
+  const htf     = htfBias || result.htf_bias || "NEUTRAL";
+  const ind     = result.indicators || {};
+  const rsi     = ind.rsi     ? parseFloat(ind.rsi).toFixed(1)     : null;
+  const adx     = ind.adx?.adx ? parseFloat(ind.adx.adx).toFixed(0) : null;
+  const atr     = ind.atr     ? parseFloat(ind.atr).toFixed(ind.atr > 100 ? 0 : 5) : null;
+  const stoch   = ind.stoch?.k ? parseFloat(ind.stoch.k).toFixed(0) : null;
+  const analysis = result.analysis || {};
+  const votes   = analysis.votes || [];
+  const sms     = analysis.smart_money_score;
+  const trend   = analysis.market_structure?.trend || "RANGING";
+  const fg      = 12; // Fear&Greed atual (baixo = medo = bullish contrário)
+
+  const isBuy  = dir === "BUY";
+  const dirLabel = isBuy ? "alta" : "baixa";
+  const emoji  = isBuy ? "🟢" : "🔴";
+
+  // Conta estratégias que confirmam
+  const confirming = votes.filter(v => v.direction === dir).length;
+  const total      = votes.length || 6;
+
+  let parts = [];
+
+  // Contexto de tendência
+  if (trend === "BULLISH") parts.push("tendência de alta no M5");
+  else if (trend === "BEARISH") parts.push("tendência de baixa no M5");
+  else parts.push("mercado em range");
+
+  // HTF
+  if (htf === "BULL") parts.push("HTF bullish confirma");
+  else if (htf === "BEAR") parts.push("HTF bearish — setup contra-tendência");
+
+  // Indicadores chave
+  if (rsi) {
+    if (parseFloat(rsi) < 35)      parts.push(`RSI sobrevendido (${rsi})`);
+    else if (parseFloat(rsi) > 65) parts.push(`RSI sobrecomprado (${rsi})`);
+    else                           parts.push(`RSI neutro (${rsi})`);
+  }
+  if (stoch && parseFloat(stoch) < 25) parts.push(`Stoch sobrevendido (${stoch})`);
+  if (stoch && parseFloat(stoch) > 75) parts.push(`Stoch sobrecomprado (${stoch})`);
+  if (adx && parseFloat(adx) > 25)     parts.push(`tendência forte ADX ${adx}`);
+
+  // Fear&Greed
+  if (fg <= 15 && isBuy)  parts.push("medo extremo favorece reversão de alta");
+  if (fg >= 80 && !isBuy) parts.push("ganância extrema favorece reversão de baixa");
+
+  // Smart money score
+  if (sms?.grade === "A") parts.push(`Smart Money muito forte (Score ${sms.score})`);
+  else if (sms?.grade === "B") parts.push(`Smart Money forte (Score ${sms.score})`);
+
+  // Confluência de estratégias
+  parts.push(`${confirming}/${total} estratégias confirmam ${dirLabel}`);
+
+  const narrative = `${emoji} ${parts.slice(0, 4).join(" | ")}. Setup de ${dirLabel} com ${prob}% de probabilidade.`;
+  return narrative;
+}
+
 // ✅ Gera "o que observar" baseado nos dados técnicos
 function buildWatchFor(symbol, result, claudeCtx) {
   const dir = result.direction || "";
@@ -824,6 +884,7 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       if(result.probability<minProb){
         if(liveRoomClients.size>0){
           const claudeCtx2 = result.claude_context || null;
+          const htfBiasLabel = htfBias || result.htf_bias || "NEUTRAL";
           const htfPayload = {
             type:"no_signal", asset:symbol, strategy, strategy_label:"AUREON AI", mode,
             reason:`Filtro HTF: ${result.direction} exige ${minProb}% (atual: ${result.probability}%)`,
@@ -831,14 +892,20 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
           };
           if(claudeCtx2 && (claudeCtx2.narrative || claudeCtx2.key_levels)) {
             htfPayload.claude_context = {
-              regime: claudeCtx2.regime || "RANGE", bias: claudeCtx2.bias || "NEUTRAL",
-              narrative: claudeCtx2.narrative || `${symbol} com probabilidade de ${result.probability}% — abaixo do mínimo para ${result.direction} com HTF ${result.htf_bias}.`,
+              regime: claudeCtx2.regime || "RANGE",
+              bias: claudeCtx2.bias || "NEUTRAL",
+              narrative: claudeCtx2.narrative || `${symbol} com probabilidade ${result.probability}% — abaixo do mínimo ${minProb}% para ${result.direction}. HTF ${htfBiasLabel}.`,
               key_levels: claudeCtx2.key_levels || null,
-              watch_for: `Aguardar probabilidade ≥ ${minProb}% para entrar ${result.direction}`,
-              opportunity: claudeCtx2.opportunity || null, warning: claudeCtx2.warning || null,
+              watch_for: `Aguardar prob ≥ ${minProb}% para entrar ${result.direction} | HTF: ${htfBiasLabel}`,
+              opportunity: claudeCtx2.opportunity || null,
+              warning: claudeCtx2.warning || null,
             };
           } else {
-            htfPayload.claude_context = buildBasicContext(symbol, result);
+            // Gera contexto com HTF correto
+            const ctx2 = buildBasicContext(symbol, result);
+            ctx2.narrative = `${symbol} setup ${result.direction} com ${result.probability}% — abaixo do mínimo ${minProb}% exigido com HTF ${htfBiasLabel}. Aguardar confirmação.`;
+            ctx2.watch_for = `Aguardar probabilidade ≥ ${minProb}% para entrar ${result.direction}`;
+            htfPayload.claude_context = ctx2;
           }
           broadcastToLiveRoom(htfPayload);
         }
@@ -870,6 +937,11 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       const confluenceScore=result.analysis?.smart_money_score?.score||50;
       liveScoreboard.signals++;
       const isBestSession=getSessionName().includes("⭐⭐⭐");
+      // ✅ Narrativa do sinal — Claude (modo complete) ou gerada automaticamente (express)
+      const claudeCtxSignal  = result.claude_context || null;
+      const signalNarrative  = claudeCtxSignal?.narrative   || buildSignalNarrative(symbol, result, htfBias);
+      const signalWarning    = claudeCtxSignal?.warning      || null;
+      const signalOpportunity= claudeCtxSignal?.opportunity  || null;
       const signal={
         type:"signal", asset:symbol, strategy, strategy_label:"AUREON AI v9", mode,
         direction:result.direction, entry:result.entry, sl:result.sl, tp:result.tp,
@@ -879,6 +951,9 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
         confirmations:result.confirmations, indicators:result.indicators,
         trend_strength:result.trend_strength, is_range:result.is_range,
         htf_bias:htfBias, vwap:result.vwap,
+        claude_narrative:   signalNarrative,
+        claude_warning:     signalWarning,
+        claude_opportunity: signalOpportunity,
         analysis:result.analysis, probability_adjustment:result.probability_adjustment,
         historical:stats.sample_size>0?{win_rate:stats.win_rate,sample_size:stats.sample_size}:null,
         institutional:{
