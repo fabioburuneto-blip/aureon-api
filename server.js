@@ -744,6 +744,53 @@ async function callEaSignalV3(strategy, symbol, historicalData=null, mode="expre
 // ─────────────────────────────────────────────
 // LIVE ROOM — Análise
 // ─────────────────────────────────────────────
+// ✅ Gera "o que observar" baseado nos dados técnicos
+function buildWatchFor(symbol, result, claudeCtx) {
+  const dir = result.direction || "";
+  const htf = result.htf_bias || "NEUTRAL";
+  if (dir === "BUY")  return `Aguardar ${symbol} confirmar suporte — BUY válido com HTF ${htf}`;
+  if (dir === "SELL") return `Aguardar ${symbol} confirmar resistência — SELL válido com HTF ${htf}`;
+  return `${symbol} em range — aguardar definição de direção`;
+}
+
+// ✅ Gera contexto básico quando Claude não retornou análise
+function buildBasicContext(symbol, result) {
+  const ind      = result.indicators || {};
+  const rsi      = ind.rsi  ? parseFloat(ind.rsi).toFixed(1)  : null;
+  const vwap     = ind.vwap || result.vwap || null;
+  const htf      = result.htf_bias || "NEUTRAL";
+  const dir      = result.direction || "";
+  const analysis = result.analysis  || {};
+  const trend    = analysis.market_structure?.trend || result.trend || "RANGING";
+  const swingH   = analysis.market_structure?.swingHigh || analysis.order_blocks?.bullish?.[0]?.top    || null;
+  const swingL   = analysis.market_structure?.swingLow  || analysis.order_blocks?.bearish?.[0]?.bottom || null;
+  const nearBull = analysis.order_blocks?.nearestBullish;
+  const nearBear = analysis.order_blocks?.nearestBearish;
+
+  let narrative = `${symbol} em ${trend === "RANGING" ? "range" : trend === "BULLISH" ? "tendência de alta" : "tendência de baixa"}`;
+  if (rsi)  narrative += ` | RSI ${rsi}${parseFloat(rsi) < 30 ? " (sobrevendido)" : parseFloat(rsi) > 70 ? " (sobrecomprado)" : ""}`;
+  if (htf !== "NEUTRAL") narrative += ` | HTF ${htf === "BULL" ? "bullish" : "bearish"}`;
+  narrative += ". Aguardando confluência para gerar sinal.";
+
+  const keyLevels = {};
+  if (swingL) keyLevels.support    = [swingL];
+  if (swingH) keyLevels.resistance = [swingH];
+  if (vwap)   keyLevels.vwap       = [parseFloat(vwap)];
+
+  const bias     = htf === "BULL" ? "BUY" : htf === "BEAR" ? "SELL" : "NEUTRAL";
+  let watchFor   = `Monitorando ${symbol}`;
+  if      (dir === "BUY"  && swingL) watchFor = `Aguardar toque em ${swingL} (suporte) para BUY`;
+  else if (dir === "SELL" && swingH) watchFor = `Aguardar toque em ${swingH} (resistência) para SELL`;
+  else if (trend === "RANGING")      watchFor = `Range ativo — aguardar rompimento para definir direção`;
+
+  let opportunity = null;
+  if      (nearBull) opportunity = `Order Block bullish em ${nearBull.bottom}–${nearBull.top} — zona de demanda potencial`;
+  else if (nearBear) opportunity = `Order Block bearish em ${nearBear.bottom}–${nearBear.top} — zona de oferta potencial`;
+
+  const regime = trend === "RANGING" ? "RANGE" : trend === "BULLISH" ? "TREND_BULL" : "TREND_BEAR";
+  return { regime, bias, narrative, key_levels: Object.keys(keyLevels).length > 0 ? keyLevels : null, watch_for: watchFor, opportunity, warning: null };
+}
+
 async function analyzeLiveAsset(symbol, isPriority=false) {
   const priceData=allPrices.get(symbol);
   if(!priceData||!isPriceFresh(priceData)) return;
@@ -775,7 +822,26 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       const htfBias=result.htf_bias||"NEUTRAL";
       const minProb=getMinProbByHTF(result.direction,htfBias);
       if(result.probability<minProb){
-        if(liveRoomClients.size>0)broadcastToLiveRoom({type:"no_signal",asset:symbol,strategy,strategy_label:"AUREON AI",mode,reason:`Filtro HTF: ${result.direction} exige ${minProb}% (atual: ${result.probability}%)`,timestamp:new Date().toISOString()});
+        if(liveRoomClients.size>0){
+          const claudeCtx2 = result.claude_context || null;
+          const htfPayload = {
+            type:"no_signal", asset:symbol, strategy, strategy_label:"AUREON AI", mode,
+            reason:`Filtro HTF: ${result.direction} exige ${minProb}% (atual: ${result.probability}%)`,
+            timestamp: new Date().toISOString(),
+          };
+          if(claudeCtx2 && (claudeCtx2.narrative || claudeCtx2.key_levels)) {
+            htfPayload.claude_context = {
+              regime: claudeCtx2.regime || "RANGE", bias: claudeCtx2.bias || "NEUTRAL",
+              narrative: claudeCtx2.narrative || `${symbol} com probabilidade de ${result.probability}% — abaixo do mínimo para ${result.direction} com HTF ${result.htf_bias}.`,
+              key_levels: claudeCtx2.key_levels || null,
+              watch_for: `Aguardar probabilidade ≥ ${minProb}% para entrar ${result.direction}`,
+              opportunity: claudeCtx2.opportunity || null, warning: claudeCtx2.warning || null,
+            };
+          } else {
+            htfPayload.claude_context = buildBasicContext(symbol, result);
+          }
+          broadcastToLiveRoom(htfPayload);
+        }
         return;
       }
       const signalKey=`${symbol}`;
@@ -856,7 +922,36 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
         );
       }
     } else {
-      if(liveRoomClients.size>0)broadcastToLiveRoom({type:"no_signal",asset:symbol,strategy,strategy_label:"AUREON AI v9",mode:getMostUsedMode(),reason:result.reason||"Aguardando setup ideal",is_range:result.is_range||false,indicators:result.indicators,htf_bias:result.htf_bias,timestamp:new Date().toISOString()});
+      if(liveRoomClients.size>0){
+        // ✅ Manda contexto do Claude junto com o no_signal
+        const claudeCtx = result.claude_context || null;
+        const noSigPayload = {
+          type:"no_signal", asset:symbol, strategy,
+          strategy_label:"AUREON AI v9", mode:getMostUsedMode(),
+          reason: result.reason || "Aguardando setup ideal",
+          is_range: result.is_range||false,
+          indicators: result.indicators,
+          htf_bias: result.htf_bias,
+          timestamp: new Date().toISOString(),
+        };
+        // Adiciona contexto rico quando Claude analisou
+        if(claudeCtx && (claudeCtx.narrative || claudeCtx.key_levels)) {
+          noSigPayload.claude_context = {
+            regime:      claudeCtx.regime      || "RANGE",
+            bias:        claudeCtx.bias        || "NEUTRAL",
+            narrative:   claudeCtx.narrative   || null,
+            key_levels:  claudeCtx.key_levels  || null,
+            watch_for:   claudeCtx.watch_for   || buildWatchFor(symbol, result, claudeCtx),
+            opportunity: claudeCtx.opportunity || null,
+            warning:     claudeCtx.warning     || null,
+            risk_factors: claudeCtx.risk_factors || [],
+          };
+        } else {
+          // Sem Claude — gera contexto básico com os dados técnicos disponíveis
+          noSigPayload.claude_context = buildBasicContext(symbol, result);
+        }
+        broadcastToLiveRoom(noSigPayload);
+      }
     }
   } catch(err){console.error(`[LiveRoom] Erro ${symbol}:`,err.message);}
   finally{processingAssets.delete(lockKey);}
