@@ -867,7 +867,18 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
     const minInterval=isPriority?ANALYSIS_INTERVAL_PRIORITY:ANALYSIS_INTERVAL_NORMAL;
     if(Date.now()-lastAnalysis<minInterval) return;
     analysisCache.set(lockKey,Date.now());
-    const mode=getMostUsedMode(), hour=new Date().getUTCHours();
+    // ✅ Modo completo (Claude API) só para planos PRO e ELITE
+    // Express: narrativa automática sem Claude (todos os planos)
+    // Completo: Claude analisa contexto antes das estratégias (PRO+)
+    const clientMode = getMostUsedMode();
+    const hasPROClient = [...activeSlaves.entries()].some(([uid, d]) =>
+      !INTERNAL_BOT_IDS.includes(uid) &&
+      (new Date() - d.lastSeen) / 1000 < SLAVE_TIMEOUT_S &&
+      (d.plan === "pro" || d.plan === "elite")
+    );
+    // Modo completo ativo se: cliente solicitou "complete" E tem cliente PRO/Elite online
+    const mode = (clientMode === "complete" && hasPROClient) ? "complete" : "express";
+    const hour=new Date().getUTCHours();
     const stats=await fetchHistoricalStats(symbol,strategy);
     const hourStats=stats.hour_stats?.[hour]||{};
     const histData={win_rate:stats.win_rate,sample_size:stats.sample_size,hour_win_rate:hourStats.win_rate??-1,hour_sample_size:hourStats.count??0};
@@ -1287,7 +1298,27 @@ wss.on("connection",(ws)=>{
       if(msg.type==="get_institutional"){ws.send(JSON.stringify({type:"institutional_data",...institutionalData,session:getSessionName(),timestamp:new Date().toISOString()}));}
       if(msg.type==="join_live_room"){liveRoomClients.add(ws);clientFocusAsset.set(ws,null);clientStrategies.set(ws,{...DEFAULT_STRATEGIES});clientModes.set(ws,msg.mode||"express");ws.send(JSON.stringify({type:"live_room_joined",history:liveSignalHistory.slice(0,10),scoreboard:liveScoreboard,assets:LIVE_ASSETS,session:getSessionName(),institutional:institutionalData,message:"Bem-vindo! AUREON AI v9 monitora 24h com dados institucionais.",timestamp:new Date().toISOString()}));broadcastToLiveRoom({type:"live_viewers",count:liveRoomClients.size});}
       if(msg.type==="leave_live_room"){liveRoomClients.delete(ws);clientFocusAsset.delete(ws);clientStrategies.delete(ws);clientModes.delete(ws);broadcastToLiveRoom({type:"live_viewers",count:liveRoomClients.size});}
-      if(msg.type==="set_mode"){clientModes.set(ws,msg.mode==="complete"?"complete":"express");ws.send(JSON.stringify({type:"mode_updated",mode:msg.mode,timestamp:new Date().toISOString()}));}
+      if(msg.type==="set_mode"){
+        const reqMode = msg.mode === "complete" ? "complete" : "express";
+        // ✅ Modo completo (Claude API) — apenas PRO e ELITE
+        if (reqMode === "complete") {
+          // Verifica se tem slave PRO/Elite online no momento
+          let userPlan = "basic";
+          activeSlaves.forEach((d, uid) => {
+            if (!INTERNAL_BOT_IDS.includes(uid) && (new Date() - d.lastSeen) / 1000 < SLAVE_TIMEOUT_S) {
+              if (d.plan === "pro" || d.plan === "elite") userPlan = d.plan;
+            }
+          });
+          if (userPlan !== "pro" && userPlan !== "elite") {
+            ws.send(JSON.stringify({ type: "mode_denied", reason: "Modo Completo disponível apenas no plano PRO ou Elite.", requested: reqMode, timestamp: new Date().toISOString() }));
+            console.log("[LiveRoom] Modo completo negado — upgrade necessário");
+            return;
+          }
+        }
+        clientModes.set(ws, reqMode);
+        ws.send(JSON.stringify({ type: "mode_updated", mode: reqMode, timestamp: new Date().toISOString() }));
+        console.log("[LiveRoom] set_mode:", reqMode);
+      }
       if(msg.type==="focus_asset"){const symbol=msg.asset?.toUpperCase();if(symbol){clientFocusAsset.set(ws,symbol);const pd=allPrices.get(symbol);if(pd&&isPriceFresh(pd))await analyzeLiveAsset(symbol,true);}}
     }catch(e){console.error("[WS] Erro:",e);}
   });
