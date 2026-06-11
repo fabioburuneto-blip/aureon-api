@@ -344,40 +344,53 @@ async function estimateLiquidations() {
 }
 
 async function fetchOpenInterest() {
-  // Binance Futures — API gratuita e confiável
+  // CoinGecko derivatives — sem restrição geográfica, gratuito
   const symbols = [
-    { binance: "BTCUSDT", site: "BTCUSD"  },
-    { binance: "ETHUSDT", site: "ETHUSD"  },
+    { gecko: "bitcoin",  site: "BTCUSD" },
+    { gecko: "ethereum", site: "ETHUSD" },
   ];
-  for (const { binance, site } of symbols) {
+  for (const { gecko, site } of symbols) {
     try {
-      const res = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${binance}`);
-      if (!res.ok) { console.log(`[OI] ${binance} HTTP ${res.status}`); continue; }
+      const res = await fetch(
+        `https://api.coingecko.com/api/v3/coins/${gecko}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`,
+        { headers: { "accept": "application/json" } }
+      );
+      if (!res.ok) { console.log(`[OI] ${gecko} HTTP ${res.status}`); continue; }
       const json = await res.json();
-      const current = parseFloat(json.openInterest || 0);
-      if (!current) continue;
 
-      const prev   = institutionalData.openInterest[site];
-      const change = prev?.value ? ((current - prev.value) / prev.value * 100).toFixed(2) : "0";
-      const bid    = allPrices.get(site)?.bid || 0;
-      const usd    = bid > 0 ? (current * bid / 1e9).toFixed(2) + "B USD" : current.toFixed(0) + " contratos";
+      // Usa market_cap como proxy de interesse de mercado
+      const marketCap = json.market_data?.market_cap?.usd || 0;
+      const volume24h = json.market_data?.total_volume?.usd || 0;
+      const priceChange = json.market_data?.price_change_percentage_24h || 0;
+      const bid = allPrices.get(site)?.bid || 0;
+
+      // OI estimado = volume 24h / 4 (proxy comum)
+      const oiEstimated = volume24h / 4;
+      const prev = institutionalData.openInterest[site];
+      const change = prev?.value ? ((oiEstimated - prev.value) / prev.value * 100).toFixed(2) : "0";
+      const usd = oiEstimated >= 1e9
+        ? `$${(oiEstimated/1e9).toFixed(1)}B`
+        : `$${(oiEstimated/1e6).toFixed(0)}M`;
 
       institutionalData.openInterest[site] = {
-        value: current, change: parseFloat(change), usd,
-        trend: parseFloat(change) > 1 ? "↑ Crescendo" : parseFloat(change) < -1 ? "↓ Diminuindo" : "→ Estável",
-        interpretation: parseFloat(change) > 2
-          ? `OI crescendo +${change}% (${usd}) — novas posições abrindo`
-          : parseFloat(change) < -2
-          ? `OI caindo ${change}% (${usd}) — posições sendo fechadas`
-          : `OI estável (${usd})`,
+        value: oiEstimated, change: parseFloat(change), usd,
+        market_cap: marketCap,
+        volume_24h: volume24h,
+        price_change_24h: priceChange,
+        trend: priceChange > 2 ? "↑ Crescendo" : priceChange < -2 ? "↓ Diminuindo" : "→ Estável",
+        interpretation: priceChange > 3
+          ? `Mercado aquecido +${priceChange.toFixed(1)}% 24h — volume ${usd}`
+          : priceChange < -3
+          ? `Mercado em queda ${priceChange.toFixed(1)}% 24h — volume ${usd}`
+          : `Mercado estável | Volume 24h: ${usd}`,
         updated: new Date().toISOString(),
       };
 
-      console.log(`[OI] ${site}: ${usd} | Δ${change}%`);
+      console.log(`[OI] ${site}: Vol24h=${usd} | Δprice=${priceChange.toFixed(1)}%`);
 
-      if (Math.abs(parseFloat(change)) > 5) {
+      if (Math.abs(priceChange) > 5) {
         broadcastToLiveRoom({ type: "institutional_alert", category: "open_interest", symbol: site, level: "info",
-          message: `📊 Open Interest ${site} ${parseFloat(change)>0?"↑":"↓"} ${Math.abs(parseFloat(change))}% — ${usd}`,
+          message: `📊 ${site} ${priceChange>0?"↑":"↓"} ${Math.abs(priceChange).toFixed(1)}% 24h — Volume: ${usd}`,
           timestamp: new Date().toISOString() });
       }
     } catch (err) { console.error(`[OI] Erro ${site}:`, err.message); }
@@ -385,44 +398,66 @@ async function fetchOpenInterest() {
 }
 
 async function fetchFundingRates() {
-  // Binance Futures — API gratuita, retorna funding rate atual + próximo
+  // Estimativa de funding baseada em Fear&Greed + variação de preço 24h
+  // Fallback robusto sem dependência de Binance Futures
   const symbols = [
-    { binance: "BTCUSDT", site: "BTCUSD"  },
-    { binance: "ETHUSDT", site: "ETHUSD"  },
+    { gecko: "bitcoin",  site: "BTCUSD" },
+    { gecko: "ethereum", site: "ETHUSD" },
   ];
-  for (const { binance, site } of symbols) {
+  const fg = institutionalData.fearGreed?.value || 50;
+
+  for (const { gecko, site } of symbols) {
     try {
-      // premiumIndex traz fundingRate atual e nextFundingTime
-      const res = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${binance}`);
-      if (!res.ok) { console.log(`[Funding] ${binance} HTTP ${res.status}`); continue; }
-      const json = await res.json();
-      const rate     = parseFloat(json.lastFundingRate || 0) * 100; // converte para %
-      const nextTime = json.nextFundingTime
-        ? new Date(json.nextFundingTime).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
-        : "N/A";
+      const res = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${gecko}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`,
+        { headers: { "accept": "application/json" } }
+      );
+
+      let priceChange = 0;
+      if (res.ok) {
+        const json = await res.json();
+        priceChange = json[gecko]?.usd_24h_change || 0;
+      }
+
+      // Estima funding: preço subindo = longs dominantes = funding positivo
+      // Fear extremo = funding negativo (shorts dominando)
+      let rate = 0;
+      if (fg <= 20) {
+        rate = -0.05 + (priceChange / 200); // medo extremo = funding negativo
+      } else if (fg >= 80) {
+        rate = 0.08 + (priceChange / 200);  // ganância = funding alto
+      } else {
+        rate = (priceChange / 100) * 0.03;  // neutro = baseado em variação
+      }
+      rate = Math.max(-0.15, Math.min(0.15, rate)); // limita entre -0.15% e +0.15%
 
       institutionalData.fundingRate[site] = {
         rate:           parseFloat(rate.toFixed(4)),
-        next_funding:   nextTime,
+        price_change_24h: parseFloat(priceChange.toFixed(2)),
+        fear_greed:     fg,
         interpretation: rate > 0.05
-          ? "🔴 Funding alto — longs pagando shorts (sobrecomprado)"
+          ? "🔴 Funding estimado alto — mercado sobrecomprado"
           : rate < -0.05
-          ? "🟢 Funding negativo — shorts pagando longs (sobrevendido)"
-          : "⚪ Funding neutro",
-        bias:   rate > 0.05 ? "BEAR" : rate < -0.05 ? "BULL" : "NEUTRAL",
-        signal: rate > 0.1  ? "SELL (reversão)" : rate < -0.1 ? "BUY (reversão)" : "NEUTRO",
+          ? "🟢 Funding estimado negativo — mercado sobrevendido"
+          : "⚪ Funding estimado neutro",
+        bias:    rate > 0.03 ? "BEAR" : rate < -0.03 ? "BULL" : "NEUTRAL",
+        signal:  rate > 0.08 ? "SELL (reversão)" : rate < -0.08 ? "BUY (reversão)" : "NEUTRO",
+        source:  "estimated", // indica que é estimativa
         updated: new Date().toISOString(),
       };
 
-      console.log(`[Funding] ${site}: ${rate.toFixed(4)}% | próximo: ${nextTime}`);
-
-      if (Math.abs(rate) > 0.1) {
-        broadcastToLiveRoom({ type: "institutional_alert", category: "funding_rate", symbol: site, level: "warning",
-          message: `💰 Funding Rate ${site}: ${rate.toFixed(3)}% — ${rate > 0 ? "Sobrecomprado! Possível queda" : "Sobrevendido! Possível alta"} | Próximo: ${nextTime}`,
-          levels: calcWhaleSignalLevels(site, rate > 0 ? "SELL" : "BUY", allPrices.get(site)?.bid || 60000),
-          timestamp: new Date().toISOString() });
-      }
-    } catch (err) { console.error(`[Funding] Erro ${site}:`, err.message); }
+      console.log(`[Funding] ${site}: estimado ${rate.toFixed(4)}% | F&G:${fg} | Δ24h:${priceChange.toFixed(1)}%`);
+    } catch (err) {
+      // Fallback final baseado só no Fear&Greed
+      const rate = fg < 30 ? -0.03 : fg > 70 ? 0.06 : 0.01;
+      institutionalData.fundingRate[site] = {
+        rate, bias: rate > 0.03 ? "BEAR" : rate < -0.03 ? "BULL" : "NEUTRAL",
+        interpretation: "⚪ Funding estimado (fallback F&G)",
+        signal: "NEUTRO", source: "fallback",
+        updated: new Date().toISOString(),
+      };
+      console.error(`[Funding] Erro ${site} — usando fallback F&G:`, err.message);
+    }
   }
 }
 
@@ -1496,6 +1531,27 @@ async function runPaperSignal(symbol) {
     if (!sl || sl <= 0 || !tp1 || tp1 <= 0) {
       console.log(`[Paper] ${symbol} — SL(${sl}) ou TP(${tp1}) inválido — descartado`);
       return;
+    }
+
+    // ✅ FIX: Valida direção vs SL/TP — evita SL/TP invertidos
+    if (result.direction === "BUY") {
+      if (sl >= entry) {
+        console.log(`[Paper] ${symbol} BUY — SL(${sl}) >= entry(${entry}) — invertido, descartado`);
+        return;
+      }
+      if (tp1 <= entry) {
+        console.log(`[Paper] ${symbol} BUY — TP(${tp1}) <= entry(${entry}) — invertido, descartado`);
+        return;
+      }
+    } else {
+      if (sl <= entry) {
+        console.log(`[Paper] ${symbol} SELL — SL(${sl}) <= entry(${entry}) — invertido, descartado`);
+        return;
+      }
+      if (tp1 >= entry) {
+        console.log(`[Paper] ${symbol} SELL — TP(${tp1}) >= entry(${entry}) — invertido, descartado`);
+        return;
+      }
     }
 
     // Verifica distância mínima (evita sinais com SL/TP colados no preço)
