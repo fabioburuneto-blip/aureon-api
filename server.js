@@ -49,14 +49,18 @@ const LIQUIDATION_THRESHOLD  = 500000;
 const HTF_MIN_PROB = { WITH: 65, NEUTRAL: 70, AGAINST: 78 };
 
 const SESSION_HOURS = {
-  FOREX: { start: 8, end: 17 },
-  XAU:   { start: 8, end: 17 },
-  CRYPTO: null,
+  FOREX:     { start: 7,  end: 20 }, // 07h-20h UTC (Londres + NY)
+  XAU:       { start: 7,  end: 20 }, // Ouro segue Forex
+  COMMODITY: { start: 13, end: 20 }, // WTI/GAS: sessão NY
+  INDEX:     { start: 8,  end: 20 }, // Índices: Londres + NY
+  CRYPTO:    null,                   // 24h
 };
 
-const FOREX_ASSETS  = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"];
-const XAU_ASSETS    = ["XAUUSD.s"];
-const CRYPTO_ASSETS = ["BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD"];
+const FOREX_ASSETS  = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "GBPJPY", "EURJPY"];
+const XAU_ASSETS    = ["XAUUSD.s", "XAGUSD.s"];
+const COMMODITY_ASSETS = ["WTIUSD", "NATGAS"];
+const INDEX_ASSETS  = ["NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225.s"];
+const CRYPTO_ASSETS = ["BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD", "ADAUSD", "DOTUSD", "LNKUSD"];
 
 const STRATEGIES = {
   SMC_PRO:   { label: "SMC Pro",        plan: "basic" },
@@ -102,9 +106,28 @@ const lastOrderSent = new Map(); // symbol -> timestamp do último slavePendingO
 const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
-const LIVE_ASSETS = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
+const LIVE_ASSETS = [
+  // Crypto 24h
+  "BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD", "ADAUSD", "DOTUSD", "LNKUSD",
+  // Forex (08h-17h UTC)
+  "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "GBPJPY", "EURJPY",
+  // Commodities (08h-17h UTC)
+  "XAUUSD.s", "XAGUSD.s", "WTIUSD", "NATGAS",
+  // Índices (08h-17h UTC)
+  "NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225.s",
+];
 const DEFAULT_STRATEGIES = {
-  BTCUSD: "AI", "XAUUSD.s": "AI", EURUSD: "AI", GBPUSD: "AI", ETHUSD: "AI"
+  // Crypto
+  BTCUSD: "AI", ETHUSD: "AI", BNBUSD: "AI", SOLUSD: "AI", XRPUSD: "AI",
+  ADAUSD: "AI", DOTUSD: "AI", LNKUSD: "AI",
+  // Forex
+  EURUSD: "AI", GBPUSD: "AI", USDJPY: "AI", AUDUSD: "AI", USDCAD: "AI",
+  NZDUSD: "AI", EURGBP: "AI", GBPJPY: "AI", EURJPY: "AI",
+  // Commodities
+  "XAUUSD.s": "AI", "XAGUSD.s": "AI", WTIUSD: "AI", NATGAS: "AI",
+  // Índices
+  "NAS100.s": "AI", "SP500.s": "AI", "US30.s": "AI",
+  "GER40.s": "AI", "UK100.s": "AI", "JPN225.s": "AI",
 };
 
 const liveScoreboard = { signals: 0, wins: 0, losses: 0, profit: 0, date: new Date().toDateString() };
@@ -494,7 +517,15 @@ function isPriceFresh(priceData) { if (!priceData) return false; return (new Dat
 function getStrategyForAsset(symbol) { return "AI"; }
 function getMostFocusedAsset() { const votes = {}; clientFocusAsset.forEach(s => { if (s) votes[s] = (votes[s] || 0) + 1; }); if (!Object.keys(votes).length) return null; return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0]; }
 function getMostUsedMode() { let e=0,c=0; clientModes.forEach(m => m==="complete"?c++:e++); return c > e ? "complete" : "express"; }
-function isGoodTradingHour(symbol) { const hour = new Date().getUTCHours(); if (CRYPTO_ASSETS.includes(symbol)) return true; if (XAU_ASSETS.includes(symbol)) return hour >= SESSION_HOURS.XAU.start && hour < SESSION_HOURS.XAU.end; if (FOREX_ASSETS.includes(symbol)) return hour >= SESSION_HOURS.FOREX.start && hour < SESSION_HOURS.FOREX.end; return true; }
+function isGoodTradingHour(symbol) {
+  const hour = new Date().getUTCHours();
+  if (CRYPTO_ASSETS.includes(symbol)) return true; // 24h
+  if (FOREX_ASSETS.includes(symbol))  return hour >= 7  && hour < 20; // Forex: 07h-20h UTC (ampliado)
+  if (XAU_ASSETS.includes(symbol))    return hour >= 7  && hour < 20; // Ouro/Prata: 07h-20h UTC
+  if (COMMODITY_ASSETS.includes(symbol)) return hour >= 13 && hour < 20; // WTI/GAS: sessão NY
+  if (INDEX_ASSETS.includes(symbol))  return hour >= 8  && hour < 20; // Índices: 08h-20h UTC
+  return true;
+}
 function getSessionName() { const h = new Date().getUTCHours(); if (h >= 8 && h < 12) return "🇬🇧 Sessão Londres"; if (h >= 13 && h < 17) return "🇺🇸 Overlap NY+Londres ⭐⭐⭐"; if (h >= 17 && h < 21) return "🇺🇸 Sessão NY"; return "🌙 Fora de sessão"; }
 function getMinProbByHTF(direction, htfBias) { if (!htfBias || htfBias === "NEUTRAL") return HTF_MIN_PROB.NEUTRAL; const isWith = (direction==="BUY"&&htfBias==="BULL") || (direction==="SELL"&&htfBias==="BEAR"); return isWith ? HTF_MIN_PROB.WITH : HTF_MIN_PROB.AGAINST; }
 
