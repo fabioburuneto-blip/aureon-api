@@ -1514,9 +1514,14 @@ wss.on("connection",(ws)=>{
 setInterval(()=>{activeSlaves.forEach((data,userId)=>{if((new Date()-data.lastSeen)/1000>SLAVE_REMOVE_S){activeSlaves.delete(userId);broadcastToSite({type:"slave_status",user_id:userId,connected:false});}});if(mt5LastSeen&&(new Date()-mt5LastSeen)>MT5_TIMEOUT_MS)broadcastToSite({type:"mt5_status",connected:false});},5000);
 setInterval(async()=>{try{await fetch(`${RAILWAY_URL}/health`);}catch{}},4*60*1000);
 setInterval(fetchFearGreed,    30*60*1000);
-setInterval(fetchOpenInterest,  5*60*1000);
-setInterval(fetchFundingRates,  5*60*1000);
-setInterval(()=>{ fetchOpenInterest().then(()=>{ fetchFundingRates().then(()=>calcSmartMoneyScoreFromData()); }); }, 5*60*1000);
+// ✅ v22: consolidado em UM único interval de 5min — antes havia 3 intervals
+// separados que cada um chamava fetchOpenInterest/fetchFundingRates, gerando
+// 4x chamadas redundantes ao Bybit/OKX por ciclo (2x cada função)
+setInterval(async()=>{
+  await fetchOpenInterest();
+  await fetchFundingRates();
+  calcSmartMoneyScoreFromData();
+}, 5*60*1000);
 // ✅ v20: sentimento rápido recalculado a cada 1min — não depende de API externa,
 // só usa os preços/RSI já em memória, então reage muito mais rápido que o F&G diário
 setInterval(()=>{
@@ -1975,45 +1980,40 @@ async function runPaperSignal(symbol) {
 
     const bid      = parseFloat(priceData.bid);
     const ask      = parseFloat(priceData.ask || priceData.bid);
-    const entry    = result.direction === "BUY" ? ask : bid;
-    const sl       = parseFloat(result.sl);
-    const tp1      = parseFloat(result.tp1 || result.tp);
+    const entry    = result.direction === "BUY" ? ask : bid;       // preço LIVE — usado pra abrir a posição paper
+    const resultEntry = parseFloat(result.entry);                   // preço que o eaSignal usou pro cálculo (M5 close)
+    const resultSL    = parseFloat(result.sl);
+    const resultTP1   = parseFloat(result.tp1 || result.tp);
     const atr      = result.indicators?.atr || 0;
     const fearGreed = institutionalData.fearGreed?.value || 50;
     const mtfScore  = result.analysis?.mtf_alignment?.score || 0;
 
-    // Valida níveis
-    if (!sl || sl <= 0 || !tp1 || tp1 <= 0) {
-      console.log(`[Paper] ${symbol} — SL(${sl}) ou TP(${tp1}) inválido — descartado`);
+    // Valida níveis brutos do eaSignal
+    if (!resultEntry || resultEntry<=0 || !resultSL || resultSL<=0 || !resultTP1 || resultTP1<=0) {
+      console.log(`[Paper] ${symbol} — entry/SL/TP inválido no resultado do eaSignal — descartado`);
       return;
     }
 
-    // ✅ FIX: Valida direção vs SL/TP — evita SL/TP invertidos
-    if (result.direction === "BUY") {
-      if (sl >= entry) {
-        console.log(`[Paper] ${symbol} BUY — SL(${sl}) >= entry(${entry}) — invertido, descartado`);
-        return;
-      }
-      if (tp1 <= entry) {
-        console.log(`[Paper] ${symbol} BUY — TP(${tp1}) <= entry(${entry}) — invertido, descartado`);
-        return;
-      }
-    } else {
-      if (sl <= entry) {
-        console.log(`[Paper] ${symbol} SELL — SL(${sl}) <= entry(${entry}) — invertido, descartado`);
-        return;
-      }
-      if (tp1 >= entry) {
-        console.log(`[Paper] ${symbol} SELL — TP(${tp1}) >= entry(${entry}) — invertido, descartado`);
-        return;
-      }
+    // ✅ FIX: o `result.entry` do eaSignal vem do último candle M5 e pode estar
+    // defasado em relação ao bid/ask LIVE (até 5min de diferença). Em vez de
+    // comparar result.sl/result.tp1 (absolutos) contra o preço live — o que
+    // gerava falsos "SL invertido" quando os preços divergiam — extraímos as
+    // DISTÂNCIAS (que carregam o RR correto) e reaplicamos no preço live.
+    // Isso garante SL/TP sempre no lado certo da entrada, por construção.
+    const slDist  = Math.abs(resultEntry - resultSL);
+    const tp1Dist = Math.abs(resultEntry - resultTP1);
+    const priceDrift = Math.abs(entry - resultEntry);
+    const driftPct   = (priceDrift / resultEntry) * 100;
+    if (driftPct > 0.5) {
+      console.log(`[Paper] ${symbol} — atenção: result.entry(${resultEntry}) vs live(${entry}) — drift ${driftPct.toFixed(2)}%`);
     }
 
+    const sl  = roundPaperPrice(symbol, result.direction === "BUY" ? entry - slDist  : entry + slDist);
+    const tp1 = roundPaperPrice(symbol, result.direction === "BUY" ? entry + tp1Dist : entry - tp1Dist);
+
     // Verifica distância mínima (evita sinais com SL/TP colados no preço)
-    const slDist = Math.abs(entry - sl);
-    const tpDist = Math.abs(entry - tp1);
     const minDist = entry * 0.001; // 0.1% mínimo
-    if (slDist < minDist || tpDist < minDist) {
+    if (slDist < minDist || tp1Dist < minDist) {
       console.log(`[Paper] ${symbol} — distância SL/TP muito pequena — descartado`);
       return;
     }
