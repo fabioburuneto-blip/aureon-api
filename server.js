@@ -137,6 +137,7 @@ const liveScoreboard = { signals: 0, wins: 0, losses: 0, profit: 0, date: new Da
 // ─────────────────────────────────────────────
 const institutionalData = {
   fearGreed:    { value: 50, label: "Neutro", updated: null },
+  fastSentiment: { value: 50, label: "Neutro", updated: null }, // ✅ v20: sentimento rápido (RSI médio)
   whaleAlerts:  [],
   liquidations: [],
   openInterest: {},
@@ -282,6 +283,46 @@ function updateSmartMoneyScore(symbol, direction, usdValue) {
   sms.updated = new Date().toISOString();
 }
 
+// ✅ v20: Sentimento RÁPIDO — complementa o Fear&Greed (que só atualiza 1x/dia)
+// Calcula a média do RSI de todos os ativos monitorados que estão com preço
+// fresco. RSI médio alto = mercado "comprado" (ganância), baixo = "vendido"
+// (medo). Atualiza a cada ciclo de preço, então reage em minutos — não em dias.
+function calcFastSentiment() {
+  let sumRsi = 0, count = 0, overbought = 0, oversold = 0;
+  for (const sym of LIVE_ASSETS) {
+    const pd = allPrices.get(sym);
+    if (!pd || !isPriceFresh(pd)) continue;
+    const rsi = parseFloat(pd.rsi);
+    if (isNaN(rsi) || rsi <= 0) continue;
+    sumRsi += rsi; count++;
+    if (rsi >= 70) overbought++;
+    if (rsi <= 30) oversold++;
+  }
+  if (count === 0) return null;
+  const avgRsi = sumRsi / count;
+  const score  = Math.round(avgRsi);
+
+  let label, emoji;
+  if (score <= 25)      { label = "Medo Extremo";    emoji = "😱"; }
+  else if (score <= 40) { label = "Medo";            emoji = "😨"; }
+  else if (score <= 60) { label = "Neutro";          emoji = "😐"; }
+  else if (score <= 75) { label = "Ganância";        emoji = "😊"; }
+  else                   { label = "Ganância Extrema"; emoji = "🤑"; }
+
+  return {
+    value: score,
+    label, emoji,
+    avg_rsi: parseFloat(avgRsi.toFixed(1)),
+    assets_overbought: overbought,
+    assets_oversold:   oversold,
+    assets_analyzed:   count,
+    // RSI baixo (mercado vendido) tende a favorecer reversão de COMPRA, e vice-versa
+    bias: score <= 35 ? "BULL" : score >= 65 ? "BEAR" : "NEUTRAL",
+    timeframe: "M5 (tempo real)",
+    updated: new Date().toISOString(),
+  };
+}
+
 async function fetchLiquidations() {
   try {
     const res = await fetch("https://open-api.coinglass.com/public/v2/liquidation_ex?symbol=BTC&interval=1h", {
@@ -343,6 +384,65 @@ async function estimateLiquidations() {
   } catch {}
 }
 
+// ✅ v20: dados REAIS de derivativos via Bybit (1ª opção) e OKX (2ª opção)
+// Binance Futures (fapi.binance.com) retorna 451 no Railway — Bybit/OKX
+// geralmente não bloqueiam por região. Se ambos falharem, retorna null
+// e quem chamou cai no fallback estimado (CoinGecko/Fear&Greed).
+const DERIV_SYMBOL_MAP = {
+  BTCUSD: { bybit: "BTCUSDT", okx: "BTC-USDT-SWAP" },
+  ETHUSD: { bybit: "ETHUSDT", okx: "ETH-USDT-SWAP" },
+};
+
+async function fetchRealDerivatives(site) {
+  const map = DERIV_SYMBOL_MAP[site];
+  if (!map) return null;
+
+  // 1) Bybit — um único endpoint traz funding + OI + variação 24h
+  try {
+    const res = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${map.bybit}`);
+    if (res.ok) {
+      const json = await res.json();
+      const t = json?.result?.list?.[0];
+      if (t && t.fundingRate !== undefined) {
+        return {
+          source: "bybit",
+          fundingRatePct: parseFloat(t.fundingRate) * 100,
+          openInterest: parseFloat(t.openInterest || 0),
+          openInterestUsd: parseFloat(t.openInterestValue || 0),
+          priceChange24hPct: parseFloat(t.price24hPcnt || 0) * 100,
+        };
+      }
+    } else {
+      console.log(`[Derivatives] Bybit HTTP ${res.status} para ${site}`);
+    }
+  } catch (err) { console.log(`[Derivatives] Bybit erro ${site}:`, err.message); }
+
+  // 2) OKX — fallback se Bybit falhar
+  try {
+    const [frRes, oiRes] = await Promise.all([
+      fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${map.okx}`),
+      fetch(`https://www.okx.com/api/v5/public/open-interest?instId=${map.okx}`),
+    ]);
+    if (frRes.ok && oiRes.ok) {
+      const fr = await frRes.json(), oi = await oiRes.json();
+      const frData = fr?.data?.[0], oiData = oi?.data?.[0];
+      if (frData?.fundingRate !== undefined) {
+        return {
+          source: "okx",
+          fundingRatePct: parseFloat(frData.fundingRate) * 100,
+          openInterest: parseFloat(oiData?.oi || 0),
+          openInterestUsd: parseFloat(oiData?.oiUsd || 0),
+          priceChange24hPct: null,
+        };
+      }
+    } else {
+      console.log(`[Derivatives] OKX HTTP fr:${frRes.status} oi:${oiRes.status} para ${site}`);
+    }
+  } catch (err) { console.log(`[Derivatives] OKX erro ${site}:`, err.message); }
+
+  return null; // ambos falharam — quem chamou usa estimativa
+}
+
 async function fetchOpenInterest() {
   // CoinGecko derivatives — sem restrição geográfica, gratuito
   const symbols = [
@@ -351,6 +451,40 @@ async function fetchOpenInterest() {
   ];
   for (const { gecko, site } of symbols) {
     try {
+      // ✅ v20: tenta OI real via Bybit/OKX primeiro
+      const real = await fetchRealDerivatives(site);
+      if (real && real.openInterestUsd > 0) {
+        const oiUsd = real.openInterestUsd;
+        const prev = institutionalData.openInterest[site];
+        const change = prev?.value ? ((oiUsd - prev.value) / prev.value * 100).toFixed(2) : "0";
+        const priceChange = real.priceChange24hPct ?? 0;
+        const usd = oiUsd >= 1e9 ? `$${(oiUsd/1e9).toFixed(1)}B` : `$${(oiUsd/1e6).toFixed(0)}M`;
+
+        institutionalData.openInterest[site] = {
+          value: oiUsd, change: parseFloat(change), usd,
+          open_interest_contracts: real.openInterest,
+          price_change_24h: priceChange,
+          trend: priceChange > 2 ? "↑ Crescendo" : priceChange < -2 ? "↓ Diminuindo" : "→ Estável",
+          interpretation: priceChange > 3
+            ? `Mercado aquecido +${priceChange.toFixed(1)}% 24h — OI ${usd}`
+            : priceChange < -3
+            ? `Mercado em queda ${priceChange.toFixed(1)}% 24h — OI ${usd}`
+            : `Mercado estável | OI: ${usd}`,
+          source: real.source, // "bybit" ou "okx" — dado REAL
+          updated: new Date().toISOString(),
+        };
+
+        console.log(`[OI] ${site}: REAL(${real.source}) OI=${usd} | Δprice=${priceChange.toFixed(1)}%`);
+
+        if (Math.abs(priceChange) > 5) {
+          broadcastToLiveRoom({ type: "institutional_alert", category: "open_interest", symbol: site, level: "info",
+            message: `📊 ${site} ${priceChange>0?"↑":"↓"} ${Math.abs(priceChange).toFixed(1)}% 24h — OI: ${usd}`,
+            timestamp: new Date().toISOString() });
+        }
+        continue; // não precisa do fallback CoinGecko
+      }
+
+      // Fallback — CoinGecko (estimativa via volume/market cap)
       const res = await fetch(
         `https://api.coingecko.com/api/v3/coins/${gecko}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`,
         { headers: { "accept": "application/json" } }
@@ -383,10 +517,11 @@ async function fetchOpenInterest() {
           : priceChange < -3
           ? `Mercado em queda ${priceChange.toFixed(1)}% 24h — volume ${usd}`
           : `Mercado estável | Volume 24h: ${usd}`,
+        source: "estimated", // ⚠️ proxy via volume — Bybit/OKX indisponíveis
         updated: new Date().toISOString(),
       };
 
-      console.log(`[OI] ${site}: Vol24h=${usd} | Δprice=${priceChange.toFixed(1)}%`);
+      console.log(`[OI] ${site}: estimado Vol24h=${usd} | Δprice=${priceChange.toFixed(1)}%`);
 
       if (Math.abs(priceChange) > 5) {
         broadcastToLiveRoom({ type: "institutional_alert", category: "open_interest", symbol: site, level: "info",
@@ -408,6 +543,30 @@ async function fetchFundingRates() {
 
   for (const { gecko, site } of symbols) {
     try {
+      // ✅ v20: tenta funding rate REAL via Bybit/OKX primeiro
+      const real = await fetchRealDerivatives(site);
+      if (real) {
+        const rate = real.fundingRatePct; // já em %
+        const priceChange = real.priceChange24hPct ?? 0;
+        institutionalData.fundingRate[site] = {
+          rate:             parseFloat(rate.toFixed(4)),
+          price_change_24h: parseFloat(priceChange.toFixed(2)),
+          fear_greed:       fg,
+          interpretation: rate > 0.05
+            ? "🔴 Funding alto — mercado sobrecomprado (longs pagando shorts)"
+            : rate < -0.05
+            ? "🟢 Funding negativo — mercado sobrevendido (shorts pagando longs)"
+            : "⚪ Funding neutro",
+          bias:    rate > 0.03 ? "BEAR" : rate < -0.03 ? "BULL" : "NEUTRAL",
+          signal:  rate > 0.08 ? "SELL (reversão)" : rate < -0.08 ? "BUY (reversão)" : "NEUTRO",
+          source:  real.source, // "bybit" ou "okx" — dado REAL
+          updated: new Date().toISOString(),
+        };
+        console.log(`[Funding] ${site}: REAL(${real.source}) ${rate.toFixed(4)}% | Δ24h:${priceChange.toFixed(1)}%`);
+        continue; // não precisa do fallback estimado
+      }
+
+      // Fallback — estimativa baseada em Fear&Greed + variação de preço 24h
       const res = await fetch(
         `https://api.coingecko.com/api/v3/simple/price?ids=${gecko}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`,
         { headers: { "accept": "application/json" } }
@@ -442,7 +601,7 @@ async function fetchFundingRates() {
           : "⚪ Funding estimado neutro",
         bias:    rate > 0.03 ? "BEAR" : rate < -0.03 ? "BULL" : "NEUTRAL",
         signal:  rate > 0.08 ? "SELL (reversão)" : rate < -0.08 ? "BUY (reversão)" : "NEUTRO",
-        source:  "estimated", // indica que é estimativa
+        source:  "estimated", // ⚠️ Bybit/OKX indisponíveis — proxy via F&G+preço
         updated: new Date().toISOString(),
       };
 
@@ -1117,7 +1276,7 @@ app.get("/live-signals",(req,res)=>{
 });
 
 app.get("/institutional",(req,res)=>{
-  res.json({fear_greed:institutionalData.fearGreed,whale_alerts:institutionalData.whaleAlerts.slice(0,10),liquidations:institutionalData.liquidations.slice(0,10),open_interest:institutionalData.openInterest,funding_rate:institutionalData.fundingRate,cot_report:institutionalData.cotReport,correlations:institutionalData.correlations,smart_money_score:institutionalData.smartMoneyScore,economic_calendar:institutionalData.economicCalendar,session:getSessionName(),timestamp:new Date().toISOString()});
+  res.json({fear_greed:institutionalData.fearGreed,fast_sentiment:institutionalData.fastSentiment,whale_alerts:institutionalData.whaleAlerts.slice(0,10),liquidations:institutionalData.liquidations.slice(0,10),open_interest:institutionalData.openInterest,funding_rate:institutionalData.fundingRate,cot_report:institutionalData.cotReport,correlations:institutionalData.correlations,smart_money_score:institutionalData.smartMoneyScore,economic_calendar:institutionalData.economicCalendar,session:getSessionName(),timestamp:new Date().toISOString()});
 });
 
 app.get("/whale-alerts",(req,res)=>{
@@ -1158,15 +1317,35 @@ app.post("/live-signal-result",async(req,res)=>{
   res.json({status:"ok"});
 });
 
+// ✅ v20: helper para calcular wins/losses/profit/win_rate de uma lista de trades
+function computeTradeStats(trades) {
+  const valid = trades.filter(t=>t.result==="win"||t.result==="loss");
+  const wins = valid.filter(t=>t.result==="win").length;
+  const losses = valid.filter(t=>t.result==="loss").length;
+  const totalProfit = valid.reduce((s,t)=>s+(parseFloat(t.profit)||0),0);
+  const winRate = valid.length>0 ? ((wins/valid.length)*100).toFixed(1) : "0";
+  return { total:valid.length, wins, losses, win_rate:parseFloat(winRate), win_rate_pct:`${winRate}%`, total_profit:parseFloat(totalProfit.toFixed(2)), total_profit_formatted:`$${totalProfit.toFixed(2)}` };
+}
+
 app.get("/all-trades",async(req,res)=>{
   try{
-    const trades=await supabaseGet(`trades?order=created_at.desc&limit=${req.query.limit||500}`);
-    if(!trades||!trades.length)return res.json({total:0,trades:[],stats:{total:0,wins:0,losses:0,win_rate:0,total_profit:0}});
-    const valid=trades.filter(t=>t.result==="win"||t.result==="loss");
-    const wins=valid.filter(t=>t.result==="win").length,losses=valid.filter(t=>t.result==="loss").length;
-    const totalProfit=valid.reduce((s,t)=>s+(parseFloat(t.profit)||0),0);
-    const winRate=valid.length>0?((wins/valid.length)*100).toFixed(1):0;
-    res.json({total:trades.length,trades,stats:{total:valid.length,wins,losses,win_rate:parseFloat(winRate),win_rate_pct:`${winRate}%`,total_profit:parseFloat(totalProfit.toFixed(2)),total_profit_formatted:`$${totalProfit.toFixed(2)}`},timestamp:new Date().toISOString()});
+    let query=`trades?order=created_at.desc&limit=${req.query.limit||500}`;
+    // ✅ v20: filtro opcional por data — útil pra excluir dados antigos
+    // (ex: pré-fix v5.5) e ver só os trades a partir de um momento específico
+    if(req.query.since) query+=`&created_at=gte.${encodeURIComponent(req.query.since)}`;
+    const trades=await supabaseGet(query);
+    if(!trades||!trades.length)return res.json({total:0,trades:[],stats:{total:0,wins:0,losses:0,win_rate:0,total_profit:0},stats_last_24h:null,since:req.query.since||null});
+
+    // ✅ v20: stats das últimas 24h calculadas separadamente (sempre, independente de `since`/`limit`)
+    // — assim dá pra comparar "tudo" vs "recente" sem fazer duas chamadas manuais
+    let stats24h=null;
+    try{
+      const since24h=new Date(Date.now()-24*60*60*1000).toISOString();
+      const recent=await supabaseGet(`trades?order=created_at.desc&limit=1000&created_at=gte.${encodeURIComponent(since24h)}`);
+      if(recent&&recent.length) stats24h=computeTradeStats(recent);
+    }catch{}
+
+    res.json({total:trades.length,trades,stats:computeTradeStats(trades),stats_last_24h:stats24h,since:req.query.since||null,timestamp:new Date().toISOString()});
   }catch(err){res.status(500).json({error:err.message});}
 });
 
@@ -1263,13 +1442,17 @@ app.get("/user-trades",async(req,res)=>{
 
 app.get("/live-learning",async(req,res)=>{
   try{
-    const data=await supabaseGet("live_signals?result=neq.open&select=asset,strategy,result,profit,hour_of_day&order=created_at.desc&limit=500");
-    if(!data||!data.length)return res.json({status:"no_data",assets:{}});
+    let query="live_signals?result=neq.open&select=asset,strategy,result,profit,hour_of_day,created_at&order=created_at.desc&limit=500";
+    // ✅ v20: mesmo filtro since do /all-trades — ex: ?since=2026-06-15T00:00:00Z
+    // pra olhar só sinais a partir de uma data (excluindo histórico pré-fix)
+    if(req.query.since) query+=`&created_at=gte.${encodeURIComponent(req.query.since)}`;
+    const data=await supabaseGet(query);
+    if(!data||!data.length)return res.json({status:"no_data",assets:{},since:req.query.since||null});
     const groups={};
     data.forEach(d=>{const key=`${d.asset}-${d.strategy}`;if(!groups[key])groups[key]={asset:d.asset,strategy:d.strategy,wins:0,losses:0,total:0,profit:0};const g=groups[key];g.total++;g.profit+=d.profit||0;if(d.result==="win")g.wins++;else g.losses++;});
     const assets={};
     Object.values(groups).forEach(g=>{if(!assets[g.asset])assets[g.asset]={};assets[g.asset][g.strategy]={total_signals:g.total,wins:g.wins,losses:g.losses,win_rate:parseFloat((g.wins/g.total).toFixed(3)),win_rate_pct:`${(g.wins/g.total*100).toFixed(1)}%`,total_profit:parseFloat(g.profit.toFixed(2))};});
-    res.json({status:"ok",total_signals_analyzed:data.length,assets,last_updated:new Date().toISOString()});
+    res.json({status:"ok",total_signals_analyzed:data.length,assets,since:req.query.since||null,last_updated:new Date().toISOString()});
   }catch(err){res.status(500).json({error:err.message});}
 });
 
@@ -1334,6 +1517,23 @@ setInterval(fetchFearGreed,    30*60*1000);
 setInterval(fetchOpenInterest,  5*60*1000);
 setInterval(fetchFundingRates,  5*60*1000);
 setInterval(()=>{ fetchOpenInterest().then(()=>{ fetchFundingRates().then(()=>calcSmartMoneyScoreFromData()); }); }, 5*60*1000);
+// ✅ v20: sentimento rápido recalculado a cada 1min — não depende de API externa,
+// só usa os preços/RSI já em memória, então reage muito mais rápido que o F&G diário
+setInterval(()=>{
+  const fs = calcFastSentiment();
+  if (fs) {
+    const prevValue = institutionalData.fastSentiment?.value;
+    institutionalData.fastSentiment = fs;
+    broadcastToSite({ type: "fast_sentiment_update", ...fs });
+    // alerta se houver mudança brusca (>=15 pontos) entre ciclos — captura
+    // exatamente o tipo de movimento rápido que o F&G diário não pega
+    if (typeof prevValue === "number" && Math.abs(fs.value - prevValue) >= 15) {
+      broadcastToLiveRoom({ type: "institutional_alert", category: "fast_sentiment", level: "warning",
+        message: `⚡ Mudança rápida de sentimento: ${prevValue} → ${fs.value} (${fs.emoji} ${fs.label})`,
+        timestamp: new Date().toISOString() });
+    }
+  }
+}, 60*1000);
 setInterval(fetchLiquidations,  2*60*1000);
 setInterval(fetchCorrelations,  5*60*1000);
 setInterval(fetchCOTReport,    60*60*1000);
