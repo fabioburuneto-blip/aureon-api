@@ -1595,13 +1595,27 @@ app.get("/paper-trading",(req,res)=>{
     const unrealized=currentPrice?estimateProfit(pos.symbol,pos.direction,pos.entry,currentPrice,PAPER_LOT):null;
     positions.push({id,...pos,current_price:currentPrice,unrealized_profit:unrealized,open_minutes:Math.round((Date.now()-pos.openedAt)/60000)});
   });
+  // ✅ v21: scoreboard por trilha (BASE/RR2X/RR3X) + total agregado
+  const tracks = {};
+  let agg = {total:0,wins:0,losses:0,pending:0};
+  Object.entries(paperTradeCount).forEach(([track,c])=>{
+    const wl = c.wins+c.losses;
+    tracks[track] = {
+      label: PAPER_RR_TRACKS[track]?.label || track,
+      rr_multiplier: PAPER_RR_TRACKS[track]?.rrMultiplier ?? "tp1",
+      ...c,
+      win_rate: wl>0 ? ((c.wins/wl)*100).toFixed(1)+"%" : "0%",
+    };
+    agg.total+=c.total; agg.wins+=c.wins; agg.losses+=c.losses; agg.pending+=c.pending;
+  });
   res.json({
     active:true,
     interval_min:PAPER_INTERVAL_MS/60000,
+    tracks,
     scoreboard:{
-      ...paperTradeCount,
-      win_rate:paperTradeCount.wins+paperTradeCount.losses>0
-        ?((paperTradeCount.wins/(paperTradeCount.wins+paperTradeCount.losses))*100).toFixed(1)+"%"
+      ...agg,
+      win_rate:(agg.wins+agg.losses)>0
+        ?((agg.wins/(agg.wins+agg.losses))*100).toFixed(1)+"%"
         :"0%",
     },
     open_positions:positions,
@@ -1634,9 +1648,21 @@ const PAPER_INTERVAL_MS     = 30 * 60 * 1000; // Gera novos sinais a cada 30min
 const PAPER_MONITOR_MS      = 30 * 1000;       // Verifica preços a cada 30s
 const PAPER_TIMEOUT_MS      = 4 * 60 * 60 * 1000; // Fecha posição após 4h
 const PAPER_LOT             = 0.01;            // Lote fixo para estimativa de lucro
-const PAPER_MAX_OPEN        = 3;               // Máximo de posições paper abertas por ativo
+const PAPER_MAX_OPEN        = 1;               // Máximo de posições paper abertas por (ativo, trilha)
 const PAPER_MIN_PROBABILITY = 65.0;            // Probabilidade mínima para abrir paper trade
 const PAPER_ASSETS          = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
+
+// ✅ v21: TRILHAS de RR — mesmo sinal/SL (mesmo risco), TP diferente por trilha.
+// BASE  = usa o tp1 que o eaSignal já calcula (≈1.39x pra metais/crypto, ≈1.33x forex)
+// RR2X  = TP a 2.0x a distância do SL (mesmo risco, alvo maior)
+// RR3X  = TP a 3.0x a distância do SL
+// Isso permite comparar ao longo do tempo qual RR dá mais profit total,
+// já que entry/SL/direção são idênticos entre as 3 — só o TP muda.
+const PAPER_RR_TRACKS = {
+  BASE: { label: "Padrão (eaSignal tp1)", rrMultiplier: null },
+  RR2X: { label: "2x Risco",              rrMultiplier: 2.0  },
+  RR3X: { label: "3x Risco",              rrMultiplier: 3.0  },
+};
 
 // Tick values aproximados por ativo (USD por pip/point no lote 0.01)
 const PAPER_TICK_VALUES = {
@@ -1653,9 +1679,14 @@ const PAPER_TICK_VALUES = {
 // ─────────────────────────────────────────────
 // ESTADO PAPER TRADING
 // ─────────────────────────────────────────────
-const paperPositions   = new Map(); // id -> posição aberta
+const paperPositions   = new Map(); // id -> posição aberta (campo `track` indica a trilha)
 const paperCooldown    = new Map(); // symbol -> timestamp último sinal paper
-let   paperTradeCount  = { total: 0, wins: 0, losses: 0, pending: 0 };
+// ✅ v21: contadores por trilha
+const paperTradeCount  = {
+  BASE: { total: 0, wins: 0, losses: 0, pending: 0 },
+  RR2X: { total: 0, wins: 0, losses: 0, pending: 0 },
+  RR3X: { total: 0, wins: 0, losses: 0, pending: 0 },
+};
 
 // ─────────────────────────────────────────────
 // ESTIMA LUCRO/PERDA
@@ -1691,8 +1722,11 @@ function estimateProfit(symbol, direction, entryPrice, closePrice, lot) {
 // ─────────────────────────────────────────────
 async function savePaperTrade(tradeData) {
   try {
+    // ✅ v21: user_code e source identificam a trilha de RR — permite
+    // filtrar /all-trades por user_code para comparar BASE vs RR2X vs RR3X
+    const track = tradeData.track || "BASE";
     const body = {
-      user_code:       "PAPER-BOT",
+      user_code:       `PAPER-BOT-${track}`,
       symbol:          tradeData.symbol,
       direction:       tradeData.direction.toLowerCase(),
       entry_price:     tradeData.entry,
@@ -1708,7 +1742,7 @@ async function savePaperTrade(tradeData) {
       strategy:        "AI",
       confirmations:   tradeData.confirmations || 0,
       trend_strength:  tradeData.trend_strength || 0,
-      source:          "PAPER",
+      source:          `PAPER-${track}`,
       // metadados extras para aprendizado
       htf_bias:        tradeData.htf_bias || "NEUTRAL",
       fear_greed:      tradeData.fear_greed || 50,
@@ -1737,7 +1771,7 @@ async function savePaperTrade(tradeData) {
 // ─────────────────────────────────────────────
 // ATUALIZA RESULTADO NO SUPABASE
 // ─────────────────────────────────────────────
-async function updatePaperResult(supabaseId, result, profit, closePrice, closedBy) {
+async function updatePaperResult(supabaseId, result, profit, closePrice, closedBy, track) {
   if (!supabaseId) return;
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/trades?id=eq.${supabaseId}`, {
@@ -1753,7 +1787,8 @@ async function updatePaperResult(supabaseId, result, profit, closePrice, closedB
         profit:      parseFloat(profit) || 0,
         close_price: closePrice,
         closed_at:   new Date().toISOString(),
-        source:      `PAPER-${closedBy}`, // PAPER-TP, PAPER-SL, PAPER-TIMEOUT
+        // ✅ v21: mantém a trilha visível no source ao fechar (ex: PAPER-RR2X-TP)
+        source:      `PAPER-${track || "BASE"}-${closedBy}`, // PAPER-BASE-TP, PAPER-RR2X-SL, PAPER-RR3X-TIMEOUT
       }),
     });
   } catch (err) {
@@ -1825,45 +1860,52 @@ async function monitorPaperPositions() {
     if (closed) {
       const profit = estimateProfit(pos.symbol, pos.direction, pos.entry, closePrice, PAPER_LOT);
       const durationMin = Math.round(elapsed / 60000);
+      const track = pos.track || "BASE";
+      const counter = paperTradeCount[track] || paperTradeCount.BASE;
 
       // Atualiza Supabase
-      await updatePaperResult(pos.supabaseId, result, profit, closePrice, closedBy);
+      await updatePaperResult(pos.supabaseId, result, profit, closePrice, closedBy, track);
 
-      // Atualiza scoreboard
-      paperTradeCount.pending = Math.max(0, paperTradeCount.pending - 1);
-      if (result === "win")  { paperTradeCount.wins++;   }
-      else                   { paperTradeCount.losses++; }
+      // Atualiza scoreboard da trilha correspondente
+      counter.pending = Math.max(0, counter.pending - 1);
+      if (result === "win")  { counter.wins++;   }
+      else                   { counter.losses++; }
 
-      // Atualiza live_signals também (para o historical do eaSignal)
-      if (pos.liveSignalId) {
+      // Atualiza live_signals também (para o historical do eaSignal) — só pra trilha BASE,
+      // pra não distorcer o win_rate histórico usado pelo eaSignal com as trilhas RR2X/RR3X
+      if (pos.liveSignalId && track === "BASE") {
         await updateLiveSignalResult(pos.liveSignalId, result, profit, closePrice, closedBy === "TP" ? 1 : 0);
       }
 
       paperPositions.delete(id);
 
       const emoji = result === "win" ? "✅" : "❌";
-      console.log(`[Paper] ${emoji} ${result.toUpperCase()} | ${pos.direction} ${pos.symbol} | ` +
-                  `Entry:${pos.entry} Close:${closePrice} | P/L:$${profit} | ` +
+      console.log(`[Paper-${track}] ${emoji} ${result.toUpperCase()} | ${pos.direction} ${pos.symbol} | ` +
+                  `Entry:${pos.entry} SL:${pos.sl} TP:${pos.tp} Close:${closePrice} | P/L:$${profit} | ` +
                   `Fechado por:${closedBy} | Duração:${durationMin}min`);
 
       // Broadcast para live room
       broadcastToLiveRoom({
         type:       "paper_trade_closed",
+        track,
         symbol:     pos.symbol,
         direction:  pos.direction,
         result,
         profit,
         entry:      pos.entry,
+        sl:         pos.sl,
+        tp:         pos.tp,
         close_price: closePrice,
         closed_by:  closedBy,
         duration_min: durationMin,
         scoreboard: {
-          total:    paperTradeCount.total,
-          wins:     paperTradeCount.wins,
-          losses:   paperTradeCount.losses,
-          pending:  paperTradeCount.pending,
-          win_rate: paperTradeCount.total > 0
-            ? ((paperTradeCount.wins / (paperTradeCount.wins + paperTradeCount.losses)) * 100).toFixed(1)
+          track,
+          total:    counter.total,
+          wins:     counter.wins,
+          losses:   counter.losses,
+          pending:  counter.pending,
+          win_rate: (counter.wins + counter.losses) > 0
+            ? ((counter.wins / (counter.wins + counter.losses)) * 100).toFixed(1)
             : "0.0",
         },
         timestamp: new Date().toISOString(),
@@ -1875,6 +1917,14 @@ async function monitorPaperPositions() {
 // ─────────────────────────────────────────────
 // GERA SINAL PAPER PARA UM ATIVO
 // ─────────────────────────────────────────────
+// Arredonda preço com a mesma precisão usada pelo eaSignal (dig)
+function roundPaperPrice(symbol, value) {
+  const isForexSym = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","EURGBP","GBPJPY","EURJPY"].includes(symbol);
+  const isJPYSym   = symbol.includes("JPY");
+  const dig = isForexSym ? (isJPYSym ? 3 : 5) : 2;
+  return parseFloat(value.toFixed(dig));
+}
+
 async function runPaperSignal(symbol) {
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) {
@@ -1882,10 +1932,14 @@ async function runPaperSignal(symbol) {
     return;
   }
 
-  // Cooldown: não gera novo sinal se já tem posição aberta neste ativo
+  // ✅ v21: cooldown agora é por (símbolo, trilha) — só pula a geração do sinal
+  // se TODAS as trilhas já tiverem posição aberta pra esse símbolo
   const openForSymbol = [...paperPositions.values()].filter(p => p.symbol === symbol);
-  if (openForSymbol.length >= PAPER_MAX_OPEN) {
-    console.log(`[Paper] ${symbol} já tem ${openForSymbol.length} posição(ões) paper abertas — pulando`);
+  const tracksWithOpen = new Set(openForSymbol.map(p => p.track || "BASE"));
+  const allTracksOpen = Object.keys(PAPER_RR_TRACKS).every(t => tracksWithOpen.has(t)
+    && openForSymbol.filter(p => (p.track || "BASE") === t).length >= PAPER_MAX_OPEN);
+  if (allTracksOpen) {
+    console.log(`[Paper] ${symbol} — todas as trilhas já têm posição aberta — pulando`);
     return;
   }
 
@@ -1964,83 +2018,104 @@ async function runPaperSignal(symbol) {
       return;
     }
 
-    // Monta posição paper
-    const tradeId = `PAPER-${symbol}-${Date.now()}`;
-    const position = {
-      id:           tradeId,
-      symbol,
-      direction:    result.direction,
-      entry,
-      sl,
-      tp:           tp1,
-      probability:  result.probability,
-      confirmations: result.confirmations || 0,
-      trend_strength: result.trend_strength || 0,
-      htf_bias:     result.htf_bias || "NEUTRAL",
-      fear_greed:   fearGreed,
-      session,
-      mtf_score:    mtfScore,
-      atr,
-      hour,
-      dayOfWeek,
-      openedAt:     Date.now(),
-      supabaseId:   null,
-      liveSignalId: null,
-    };
+    // ✅ v21: abre UMA posição por trilha — mesmo entry/SL/direção (mesmo risco),
+    // TP diferente por trilha (BASE = tp1 do eaSignal, RR2X = 2x slDist, RR3X = 3x slDist)
+    for (const [track, cfg] of Object.entries(PAPER_RR_TRACKS)) {
+      // Pula a trilha se já tem posição aberta pra esse símbolo nela
+      const openForTrack = openForSymbol.filter(p => (p.track || "BASE") === track).length;
+      if (openForTrack >= PAPER_MAX_OPEN) {
+        console.log(`[Paper-${track}] ${symbol} já tem posição aberta nessa trilha — pulando`);
+        continue;
+      }
 
-    // Salva no Supabase (trades table)
-    const dbId = await savePaperTrade({
-      ...position,
-      tp1,
-      hour,
-      dayOfWeek,
-    });
-    position.supabaseId = dbId;
+      const tpForTrack = cfg.rrMultiplier === null
+        ? tp1
+        : roundPaperPrice(symbol, result.direction === "BUY" ? entry + slDist*cfg.rrMultiplier : entry - slDist*cfg.rrMultiplier);
 
-    // Salva também no live_signals (para o historical_win_rate do eaSignal)
-    const liveSignal = {
-      asset:         symbol,
-      strategy:      "AI",
-      direction:     result.direction,
-      entry:         entry,
-      sl,
-      tp1,
-      tp2:           result.tp2 || null,
-      tp3:           result.tp3 || null,
-      probability:   result.probability,
-      confirmations: result.confirmations || 0,
-      indicators:    result.indicators,
-      trend_strength: result.trend_strength,
-      is_range:      result.is_range || false,
-    };
-    await saveLiveSignal(liveSignal);
-    position.liveSignalId = liveSignal.supabase_id || null;
+      const tradeId = `PAPER-${track}-${symbol}-${Date.now()}`;
+      const position = {
+        id:           tradeId,
+        track,
+        symbol,
+        direction:    result.direction,
+        entry,
+        sl,
+        tp:           tpForTrack,
+        probability:  result.probability,
+        confirmations: result.confirmations || 0,
+        trend_strength: result.trend_strength || 0,
+        htf_bias:     result.htf_bias || "NEUTRAL",
+        fear_greed:   fearGreed,
+        session,
+        mtf_score:    mtfScore,
+        atr,
+        hour,
+        dayOfWeek,
+        openedAt:     Date.now(),
+        supabaseId:   null,
+        liveSignalId: null,
+      };
 
-    paperPositions.set(tradeId, position);
-    paperTradeCount.total++;
-    paperTradeCount.pending++;
+      // Salva no Supabase (trades table) — user_code/source incluem a trilha
+      const dbId = await savePaperTrade({
+        ...position,
+        tp1: tpForTrack,
+        hour,
+        dayOfWeek,
+        track,
+      });
+      position.supabaseId = dbId;
 
-    console.log(`[Paper] 🟢 ABERTO | ${result.direction} ${symbol} | ` +
-                `Entry:${entry} SL:${sl} TP:${tp1} | ` +
-                `Prob:${result.probability}% HTF:${result.htf_bias} | ` +
-                `Fear&Greed:${fearGreed} Session:${session}`);
+      // Salva também no live_signals — só pra trilha BASE (evita distorcer o
+      // historical_win_rate do eaSignal com as variantes RR2X/RR3X)
+      if (track === "BASE") {
+        const liveSignal = {
+          asset:         symbol,
+          strategy:      "AI",
+          direction:     result.direction,
+          entry:         entry,
+          sl,
+          tp1: tpForTrack,
+          tp2:           result.tp2 || null,
+          tp3:           result.tp3 || null,
+          probability:   result.probability,
+          confirmations: result.confirmations || 0,
+          indicators:    result.indicators,
+          trend_strength: result.trend_strength,
+          is_range:      result.is_range || false,
+        };
+        await saveLiveSignal(liveSignal);
+        position.liveSignalId = liveSignal.supabase_id || null;
+      }
 
-    // Broadcast para live room
-    broadcastToLiveRoom({
-      type:          "paper_trade_opened",
-      symbol,
-      direction:     result.direction,
-      entry,
-      sl,
-      tp1,
-      probability:   result.probability,
-      htf_bias:      result.htf_bias,
-      fear_greed:    fearGreed,
-      session,
-      mtf_score:     mtfScore,
-      trade_id:      tradeId,
-      timestamp:     new Date().toISOString(),
-    });
+      paperPositions.set(tradeId, position);
+      paperTradeCount[track].total++;
+      paperTradeCount[track].pending++;
+
+      console.log(`[Paper-${track}] 🟢 ABERTO | ${result.direction} ${symbol} | ` +
+                  `Entry:${entry} SL:${sl} TP:${tpForTrack} (RR≈${cfg.rrMultiplier ?? "tp1"}) | ` +
+                  `Prob:${result.probability}% HTF:${result.htf_bias} | ` +
+                  `Fear&Greed:${fearGreed} Session:${session}`);
+
+      // Broadcast para live room
+      broadcastToLiveRoom({
+        type:          "paper_trade_opened",
+        track,
+        track_label:   cfg.label,
+        symbol,
+        direction:     result.direction,
+        entry,
+        sl,
+        tp1:           tpForTrack,
+        probability:   result.probability,
+        htf_bias:      result.htf_bias,
+        fear_greed:    fearGreed,
+        session,
+        mtf_score:     mtfScore,
+        trade_id:      tradeId,
+        timestamp:     new Date().toISOString(),
+      });
+    }
 
   } catch (err) {
     console.error(`[Paper] Erro em ${symbol}:`, err.message);
@@ -2051,9 +2126,12 @@ async function runPaperSignal(symbol) {
 // LOOP PRINCIPAL — gera sinais para todos os ativos
 // ─────────────────────────────────────────────
 async function runPaperTradingCycle() {
+  // ✅ v21: resumo por trilha no log do ciclo
+  const trackSummary = Object.entries(paperTradeCount)
+    .map(([t,c]) => `${t}(T:${c.total} W:${c.wins} L:${c.losses})`)
+    .join(" | ");
   console.log(`[Paper] ═══ Ciclo iniciado | ${new Date().toLocaleTimeString("pt-BR")} | ` +
-              `Posições abertas: ${paperPositions.size} | ` +
-              `Total: ${paperTradeCount.total} W:${paperTradeCount.wins} L:${paperTradeCount.losses} ═══`);
+              `Posições abertas: ${paperPositions.size} | ${trackSummary} ═══`);
 
   for (const symbol of PAPER_ASSETS) {
     await runPaperSignal(symbol);
