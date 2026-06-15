@@ -1349,6 +1349,54 @@ app.get("/all-trades",async(req,res)=>{
   }catch(err){res.status(500).json({error:err.message});}
 });
 
+// ─────────────────────────────────────────────
+// ✅ v22: RESUMO GERAL — paper trading (3 trilhas) + robô (MASTER-BOT) +
+// conta real (slaves) + total agregado, tudo em um único endpoint.
+// Agrupa por user_code da tabela `trades`.
+// Use ?since=2026-06-15T00:00:00Z para filtrar por data.
+// ─────────────────────────────────────────────
+app.get("/dashboard-summary",async(req,res)=>{
+  try{
+    let query=`trades?order=created_at.desc&limit=${req.query.limit||2000}&select=user_code,result,profit,created_at`;
+    if(req.query.since) query+=`&created_at=gte.${encodeURIComponent(req.query.since)}`;
+    const trades=await supabaseGet(query);
+    if(!trades||!Array.isArray(trades)) return res.status(500).json({error:"Erro ao consultar Supabase"});
+
+    // Agrupa por user_code
+    const groups={};
+    for(const t of trades){
+      const code=t.user_code||"UNKNOWN";
+      if(!groups[code]) groups[code]=[];
+      groups[code].push(t);
+    }
+
+    const byUserCode={};
+    for(const [code,list] of Object.entries(groups)){
+      byUserCode[code]=computeTradeStats(list);
+    }
+
+    // Agrega trilhas de paper trading num bloco "paper_total"
+    const paperCodes=Object.keys(byUserCode).filter(c=>c.startsWith("PAPER-BOT"));
+    const paperAll=paperCodes.flatMap(c=>groups[c]);
+    const paperTotal=paperAll.length?computeTradeStats(paperAll):null;
+
+    // Agrega tudo que NÃO é paper (robô + conta real) num bloco "robot_total"
+    const robotCodes=Object.keys(byUserCode).filter(c=>!c.startsWith("PAPER-BOT"));
+    const robotAll=robotCodes.flatMap(c=>groups[c]);
+    const robotTotal=robotAll.length?computeTradeStats(robotAll):null;
+
+    res.json({
+      since:req.query.since||null,
+      total_trades:trades.length,
+      overall:computeTradeStats(trades),
+      robot_total:robotTotal,      // MASTER-BOT + USER-FABIOBUR (tudo que não é paper)
+      paper_total:paperTotal,       // BASE + RR2X + RR3X somados
+      by_user_code:byUserCode,       // detalhe individual de cada user_code
+      timestamp:new Date().toISOString(),
+    });
+  }catch(err){res.status(500).json({error:err.message});}
+});
+
 // IDs reservados para robôs internos — NUNCA entram no activeSlaves como slaves reais
 const INTERNAL_BOT_IDS = ["MASTER-BOT", "LIVE-ROOM-BOT", "PAPER-BOT"];
 
