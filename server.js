@@ -107,142 +107,18 @@ const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
 
-// ─────────────────────────────────────────────
-// PREÇOS EXTERNOS — Yahoo Finance (gratuito, sem API key)
-// Cobre ativos que o MT5 não envia: Índices, Commodities, Crypto extra, Forex extra
-// ─────────────────────────────────────────────
-const EXTERNAL_PRICE_SYMBOLS = {
-  // Índices
-  "NAS100.s":  "^NDX",
-  "SP500.s":   "^GSPC",
-  "US30.s":    "^DJI",
-  "GER40.s":   "^GDAXI",
-  "UK100.s":   "^FTSE",
-  "JPN225ft.s":  "^N225",
-  // Crypto extra (não cobertas pelo MT5)
-  "ADAUSD":  "ADA-USD",
-  "DOTUSD":  "DOT-USD",
-  // Forex extra
-  "NZDUSD.s":  "NZDUSD=X",
-  "EURGBP.s":  "EURGBP=X",
-  "GBPJPY.s":  "GBPJPY=X",
-  "EURJPY.s":  "EURJPY=X",
-  // Commodities
-  "WTIUSD":  "CL=F",
-  "NATGAS":  "NG=F",
-};
-
-// Converte um preço de fechamento em candles sintéticos (bid/ask + array closes)
-// suficiente para o eaSignal gerar análise sem MTF real
-function buildSyntheticPriceData(symbol, price, previousCloses) {
-  const spread = price * 0.0002; // spread sintético de 0.02%
-  // Gera array de closes sintético com variação de ±0.1% em torno do preço atual
-  // se não tiver histórico real
-  const closes = previousCloses && previousCloses.length >= 20
-    ? previousCloses
-    : Array.from({length: 50}, (_, i) => {
-        const noise = (Math.random() - 0.5) * price * 0.002;
-        return parseFloat((price + noise).toFixed(5));
-      });
-  closes[closes.length - 1] = price; // garante último candle = preço atual
-
-  return {
-    symbol,
-    bid:    parseFloat((price - spread/2).toFixed(5)),
-    ask:    parseFloat((price + spread/2).toFixed(5)),
-    spread: parseFloat(spread.toFixed(5)),
-    rsi:    null,
-    closes,
-    highs:  closes.map(c => parseFloat((c * 1.001).toFixed(5))),
-    lows:   closes.map(c => parseFloat((c * 0.999).toFixed(5))),
-    opens:  closes.map((c, i) => i > 0 ? closes[i-1] : c),
-    candles_count: closes.length,
-    // MTF sintético — repete os mesmos closes em todos os timeframes
-    // (qualidade menor que MT5, mas suficiente para análise de tendência)
-    closes_m15: closes.slice(-30),
-    closes_h1:  closes.slice(-20),
-    closes_h4:  closes.slice(-15),
-    closes_d1:  closes.slice(-10),
-    has_mtf: true,
-    source:  "external",
-    receivedAt: new Date().toISOString(),
-  };
-}
-
-// Histórico de closes externos para alimentar os candles sintéticos
-const externalPriceHistory = new Map(); // symbol -> array de closes recentes
-
-async function fetchExternalPrices() {
-  const symbols = Object.keys(EXTERNAL_PRICE_SYMBOLS);
-  const tickers = Object.values(EXTERNAL_PRICE_SYMBOLS).join(",");
-
-  try {
-    // Yahoo Finance v7 — sem autenticação, retorna JSON
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(tickers)}&fields=regularMarketPrice,bid,ask,regularMarketPreviousClose`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-
-    if (!res.ok) {
-      console.log(`[External] Yahoo Finance HTTP ${res.status} — pulando ciclo`);
-      return;
-    }
-
-    const data = await res.json();
-    const quotes = data?.quoteResponse?.result || [];
-    let updated = 0;
-
-    for (const quote of quotes) {
-      // Encontra o símbolo interno correspondente ao ticker Yahoo
-      const internalSymbol = Object.entries(EXTERNAL_PRICE_SYMBOLS)
-        .find(([, ticker]) => ticker === quote.symbol)?.[0];
-      if (!internalSymbol) continue;
-
-      const price = quote.regularMarketPrice || quote.bid || 0;
-      if (!price || price <= 0) continue;
-
-      // Atualiza histórico de closes (mantém últimos 50)
-      const history = externalPriceHistory.get(internalSymbol) || [];
-      history.push(price);
-      if (history.length > 50) history.shift();
-      externalPriceHistory.set(internalSymbol, history);
-
-      // Só atualiza allPrices se o MT5 NÃO estiver enviando esse símbolo
-      // (MT5 tem prioridade — dados reais sempre prevalecem sobre externos)
-      const existing = allPrices.get(internalSymbol);
-      const mt5HasIt = existing && existing.source !== "external" && isPriceFresh(existing);
-      if (!mt5HasIt) {
-        const priceData = buildSyntheticPriceData(internalSymbol, price, [...history]);
-        allPrices.set(internalSymbol, priceData);
-        broadcastToSite({type:"price", symbol:internalSymbol, bid:priceData.bid, ask:priceData.ask, spread:priceData.spread, source:"external"});
-        updated++;
-      }
-    }
-
-    if (updated > 0) console.log(`[External] ✅ ${updated} ativos atualizados via Yahoo Finance`);
-
-  } catch (err) {
-    console.log(`[External] Erro ao buscar preços: ${err.message}`);
-  }
-}
-
-// Atualiza preços externos a cada 60s (Yahoo Finance não precisa de mais frequência
-// e tem rate limit implícito — evitar chamadas muito frequentes)
-setInterval(fetchExternalPrices, 60 * 1000);
-// Primeira busca com delay de 5s após o servidor iniciar
-setTimeout(fetchExternalPrices, 5000);
 const LIVE_ASSETS = [
-  // Crypto — MT5 + externos
+  // Crypto
   "BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD",
   "ADAUSD", "DOTUSD",
-  // Forex — MT5 + externos (nomes PU Prime com sufixo .s)
+  // Forex (nomes PU Prime com sufixo .s)
   "EURUSD.s", "GBPUSD.s", "USDJPY.s", "AUDUSD.s", "USDCAD.s", "USDCHF.s",
   "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s",
   // Metais — MT5
   "XAUUSD.s", "XAGUSD.s",
-  // Commodities — externos
+  // Commodities
   "WTIUSD", "NATGAS",
-  // Índices — externos (nomes PU Prime)
+  // Índices (nomes PU Prime)
   "NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225ft.s",
 ];
 const DEFAULT_STRATEGIES = {
@@ -1524,8 +1400,84 @@ app.get("/dashboard-summary",async(req,res)=>{
   }catch(err){res.status(500).json({error:err.message});}
 });
 
-// IDs reservados para robôs internos — NUNCA entram no activeSlaves como slaves reais
-const INTERNAL_BOT_IDS = ["MASTER-BOT", "LIVE-ROOM-BOT", "PAPER-BOT"];
+// ─────────────────────────────────────────────
+// ✅ v23: COMPARAÇÃO DAS 3 TRILHAS DE RR (BASE vs RR2X vs RR3X)
+// Mostra só os números que importam para decidir qual RR aplicar em produção.
+// Considera apenas trades FECHADOS (win/loss) das trilhas novas (PAPER-BOT-{track}).
+// Use ?since=2026-06-16T00:00:00Z para filtrar a partir do deploy das trilhas.
+// ─────────────────────────────────────────────
+app.get("/tracks-comparison",async(req,res)=>{
+  try{
+    // Por padrão, só considera trades a partir de quando as trilhas começaram
+    // (evita misturar com os 65 trades antigos do PAPER-BOT sem sufixo)
+    const since = req.query.since || "2026-06-16T00:00:00Z";
+    let query=`trades?order=created_at.desc&limit=5000&select=user_code,result,profit,symbol,created_at&created_at=gte.${encodeURIComponent(since)}`;
+    const trades=await supabaseGet(query);
+    if(!trades||!Array.isArray(trades)) return res.status(500).json({error:"Erro ao consultar Supabase"});
+
+    const TRACKS = {
+      "PAPER-BOT-BASE": { label: "BASE (RR padrão do eaSignal)", rr: "~1.3" },
+      "PAPER-BOT-RR2X": { label: "RR2X (2x risco)",              rr: "2.0" },
+      "PAPER-BOT-RR3X": { label: "RR3X (3x risco)",              rr: "3.0" },
+    };
+
+    const result = {};
+    let best = { track: null, profit: -Infinity };
+
+    for(const [code, meta] of Object.entries(TRACKS)){
+      const all = trades.filter(t => t.user_code === code);
+      const closed = all.filter(t => t.result === "win" || t.result === "loss");
+      const wins = closed.filter(t => t.result === "win").length;
+      const losses = closed.filter(t => t.result === "loss").length;
+      const pending = all.length - closed.length;
+      const profit = parseFloat(all.reduce((s,t) => s + (parseFloat(t.profit)||0), 0).toFixed(2));
+      const winRate = closed.length > 0 ? parseFloat(((wins/closed.length)*100).toFixed(1)) : 0;
+
+      // Profit factor = soma dos ganhos / soma das perdas (em valor absoluto)
+      const grossWin = all.filter(t=>parseFloat(t.profit)>0).reduce((s,t)=>s+parseFloat(t.profit),0);
+      const grossLoss = Math.abs(all.filter(t=>parseFloat(t.profit)<0).reduce((s,t)=>s+parseFloat(t.profit),0));
+      const profitFactor = grossLoss > 0 ? parseFloat((grossWin/grossLoss).toFixed(2)) : (grossWin>0?999:0);
+
+      result[code] = {
+        label: meta.label,
+        rr_alvo: meta.rr,
+        total: all.length,
+        closed: closed.length,
+        pending,
+        wins,
+        losses,
+        win_rate: winRate + "%",
+        profit_factor: profitFactor,
+        total_profit: profit,
+        total_profit_formatted: (profit>=0?"$":"-$") + Math.abs(profit).toFixed(2),
+      };
+
+      if(closed.length >= 5 && profit > best.profit){
+        best = { track: code, profit, label: meta.label };
+      }
+    }
+
+    // Recomendação: só sugere vencedora se houver amostra mínima
+    const minSampleReached = Object.values(result).every(t => t.closed >= 30);
+    let recomendacao;
+    if(best.track && minSampleReached){
+      recomendacao = `✅ Amostra suficiente. Melhor desempenho: ${best.label} (${best.profit>=0?"+":""}$${best.profit.toFixed(2)})`;
+    } else if(best.track){
+      const minClosed = Math.min(...Object.values(result).map(t=>t.closed));
+      recomendacao = `⏳ Líder atual: ${best.label}, mas ainda sem amostra suficiente (mínimo 30 trades fechados por trilha — atual mínimo: ${minClosed}). Aguarde mais dados antes de decidir.`;
+    } else {
+      recomendacao = "⏳ Poucos trades fechados ainda. Aguarde as trilhas acumularem resultados.";
+    }
+
+    res.json({
+      since,
+      tracks: result,
+      lider_atual: best.track,
+      recomendacao,
+      timestamp: new Date().toISOString(),
+    });
+  }catch(err){res.status(500).json({error:err.message});}
+});
 
 app.post("/slave-register",async(req,res)=>{
   const{user_id,account,symbol,balance,status}=req.body;
@@ -1799,7 +1751,7 @@ app.get("/health",(_, res)=>{
   const orderCooldowns = {};
   lastOrderSent.forEach((ts, symbol) => { const rem = Math.max(0, SIGNAL_COOLDOWN - (now - ts)); orderCooldowns[symbol] = { blocked: rem > 0, remaining_seconds: Math.round(rem/1000) }; });
   res.json({
-    status:"online", version:"v19-MTF-fix-institutional",
+    status:"online", version:"v23-27assets-tracks-tradepage",
     mt5_connected:isMt5Online(), symbols_count:allPrices.size, symbols:prices,
     site_clients:siteClients.size,
     slaves_online:slaves.filter(s=>s.online).length, slaves_total:activeSlaves.size, slaves,
