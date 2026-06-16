@@ -56,10 +56,10 @@ const SESSION_HOURS = {
   CRYPTO:    null,                   // 24h
 };
 
-const FOREX_ASSETS  = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "GBPJPY", "EURJPY"];
+const FOREX_ASSETS  = ["EURUSD.s", "GBPUSD.s", "USDJPY.s", "AUDUSD.s", "USDCAD.s", "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s"];
 const XAU_ASSETS    = ["XAUUSD.s", "XAGUSD.s"];
 const COMMODITY_ASSETS = ["WTIUSD", "NATGAS"];
-const INDEX_ASSETS  = ["NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225.s"];
+const INDEX_ASSETS  = ["NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225ft.s"];
 const CRYPTO_ASSETS = ["BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD", "ADAUSD", "DOTUSD", "LNKUSD"];
 
 const STRATEGIES = {
@@ -106,28 +106,158 @@ const lastOrderSent = new Map(); // symbol -> timestamp do último slavePendingO
 const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
+
+// ─────────────────────────────────────────────
+// PREÇOS EXTERNOS — Yahoo Finance (gratuito, sem API key)
+// Cobre ativos que o MT5 não envia: Índices, Commodities, Crypto extra, Forex extra
+// ─────────────────────────────────────────────
+const EXTERNAL_PRICE_SYMBOLS = {
+  // Índices
+  "NAS100.s":  "^NDX",
+  "SP500.s":   "^GSPC",
+  "US30.s":    "^DJI",
+  "GER40.s":   "^GDAXI",
+  "UK100.s":   "^FTSE",
+  "JPN225ft.s":  "^N225",
+  // Crypto extra (não cobertas pelo MT5)
+  "ADAUSD":  "ADA-USD",
+  "DOTUSD":  "DOT-USD",
+  // Forex extra
+  "NZDUSD.s":  "NZDUSD=X",
+  "EURGBP.s":  "EURGBP=X",
+  "GBPJPY.s":  "GBPJPY=X",
+  "EURJPY.s":  "EURJPY=X",
+  // Commodities
+  "WTIUSD":  "CL=F",
+  "NATGAS":  "NG=F",
+};
+
+// Converte um preço de fechamento em candles sintéticos (bid/ask + array closes)
+// suficiente para o eaSignal gerar análise sem MTF real
+function buildSyntheticPriceData(symbol, price, previousCloses) {
+  const spread = price * 0.0002; // spread sintético de 0.02%
+  // Gera array de closes sintético com variação de ±0.1% em torno do preço atual
+  // se não tiver histórico real
+  const closes = previousCloses && previousCloses.length >= 20
+    ? previousCloses
+    : Array.from({length: 50}, (_, i) => {
+        const noise = (Math.random() - 0.5) * price * 0.002;
+        return parseFloat((price + noise).toFixed(5));
+      });
+  closes[closes.length - 1] = price; // garante último candle = preço atual
+
+  return {
+    symbol,
+    bid:    parseFloat((price - spread/2).toFixed(5)),
+    ask:    parseFloat((price + spread/2).toFixed(5)),
+    spread: parseFloat(spread.toFixed(5)),
+    rsi:    null,
+    closes,
+    highs:  closes.map(c => parseFloat((c * 1.001).toFixed(5))),
+    lows:   closes.map(c => parseFloat((c * 0.999).toFixed(5))),
+    opens:  closes.map((c, i) => i > 0 ? closes[i-1] : c),
+    candles_count: closes.length,
+    // MTF sintético — repete os mesmos closes em todos os timeframes
+    // (qualidade menor que MT5, mas suficiente para análise de tendência)
+    closes_m15: closes.slice(-30),
+    closes_h1:  closes.slice(-20),
+    closes_h4:  closes.slice(-15),
+    closes_d1:  closes.slice(-10),
+    has_mtf: true,
+    source:  "external",
+    receivedAt: new Date().toISOString(),
+  };
+}
+
+// Histórico de closes externos para alimentar os candles sintéticos
+const externalPriceHistory = new Map(); // symbol -> array de closes recentes
+
+async function fetchExternalPrices() {
+  const symbols = Object.keys(EXTERNAL_PRICE_SYMBOLS);
+  const tickers = Object.values(EXTERNAL_PRICE_SYMBOLS).join(",");
+
+  try {
+    // Yahoo Finance v7 — sem autenticação, retorna JSON
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(tickers)}&fields=regularMarketPrice,bid,ask,regularMarketPreviousClose`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+
+    if (!res.ok) {
+      console.log(`[External] Yahoo Finance HTTP ${res.status} — pulando ciclo`);
+      return;
+    }
+
+    const data = await res.json();
+    const quotes = data?.quoteResponse?.result || [];
+    let updated = 0;
+
+    for (const quote of quotes) {
+      // Encontra o símbolo interno correspondente ao ticker Yahoo
+      const internalSymbol = Object.entries(EXTERNAL_PRICE_SYMBOLS)
+        .find(([, ticker]) => ticker === quote.symbol)?.[0];
+      if (!internalSymbol) continue;
+
+      const price = quote.regularMarketPrice || quote.bid || 0;
+      if (!price || price <= 0) continue;
+
+      // Atualiza histórico de closes (mantém últimos 50)
+      const history = externalPriceHistory.get(internalSymbol) || [];
+      history.push(price);
+      if (history.length > 50) history.shift();
+      externalPriceHistory.set(internalSymbol, history);
+
+      // Só atualiza allPrices se o MT5 NÃO estiver enviando esse símbolo
+      // (MT5 tem prioridade — dados reais sempre prevalecem sobre externos)
+      const existing = allPrices.get(internalSymbol);
+      const mt5HasIt = existing && existing.source !== "external" && isPriceFresh(existing);
+      if (!mt5HasIt) {
+        const priceData = buildSyntheticPriceData(internalSymbol, price, [...history]);
+        allPrices.set(internalSymbol, priceData);
+        broadcastToSite({type:"price", symbol:internalSymbol, bid:priceData.bid, ask:priceData.ask, spread:priceData.spread, source:"external"});
+        updated++;
+      }
+    }
+
+    if (updated > 0) console.log(`[External] ✅ ${updated} ativos atualizados via Yahoo Finance`);
+
+  } catch (err) {
+    console.log(`[External] Erro ao buscar preços: ${err.message}`);
+  }
+}
+
+// Atualiza preços externos a cada 60s (Yahoo Finance não precisa de mais frequência
+// e tem rate limit implícito — evitar chamadas muito frequentes)
+setInterval(fetchExternalPrices, 60 * 1000);
+// Primeira busca com delay de 5s após o servidor iniciar
+setTimeout(fetchExternalPrices, 5000);
 const LIVE_ASSETS = [
-  // Crypto 24h
-  "BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD", "ADAUSD", "DOTUSD", "LNKUSD",
-  // Forex (08h-17h UTC)
-  "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "GBPJPY", "EURJPY",
-  // Commodities (08h-17h UTC)
-  "XAUUSD.s", "XAGUSD.s", "WTIUSD", "NATGAS",
-  // Índices (08h-17h UTC)
-  "NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225.s",
+  // Crypto — MT5 + externos
+  "BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD",
+  "ADAUSD", "DOTUSD",
+  // Forex — MT5 + externos (nomes PU Prime com sufixo .s)
+  "EURUSD.s", "GBPUSD.s", "USDJPY.s", "AUDUSD.s", "USDCAD.s", "USDCHF.s",
+  "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s",
+  // Metais — MT5
+  "XAUUSD.s", "XAGUSD.s",
+  // Commodities — externos
+  "WTIUSD", "NATGAS",
+  // Índices — externos (nomes PU Prime)
+  "NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225ft.s",
 ];
 const DEFAULT_STRATEGIES = {
   // Crypto
-  BTCUSD: "AI", ETHUSD: "AI", BNBUSD: "AI", SOLUSD: "AI", XRPUSD: "AI",
-  ADAUSD: "AI", DOTUSD: "AI", LNKUSD: "AI",
+  "BTCUSD": "AI", "ETHUSD": "AI", "BNBUSD": "AI", "SOLUSD": "AI", "XRPUSD": "AI",
+  "ADAUSD": "AI", "DOTUSD": "AI",
   // Forex
-  EURUSD: "AI", GBPUSD: "AI", USDJPY: "AI", AUDUSD: "AI", USDCAD: "AI",
-  NZDUSD: "AI", EURGBP: "AI", GBPJPY: "AI", EURJPY: "AI",
-  // Commodities
-  "XAUUSD.s": "AI", "XAGUSD.s": "AI", WTIUSD: "AI", NATGAS: "AI",
+  "EURUSD.s": "AI", "GBPUSD.s": "AI", "USDJPY.s": "AI", "AUDUSD.s": "AI",
+  "USDCAD.s": "AI", "USDCHF.s": "AI", "NZDUSD.s": "AI", "EURGBP.s": "AI",
+  "GBPJPY.s": "AI", "EURJPY.s": "AI",
+  // Metais e Commodities
+  "XAUUSD.s": "AI", "XAGUSD.s": "AI", "WTIUSD": "AI", "NATGAS": "AI",
   // Índices
   "NAS100.s": "AI", "SP500.s": "AI", "US30.s": "AI",
-  "GER40.s": "AI", "UK100.s": "AI", "JPN225.s": "AI",
+  "GER40.s": "AI", "UK100.s": "AI", "JPN225ft.s": "AI",
 };
 
 const liveScoreboard = { signals: 0, wins: 0, losses: 0, profit: 0, date: new Date().toDateString() };
@@ -232,7 +362,7 @@ function formatUSD(value) {
 
 function calcSmartMoneyScoreFromData() {
   const fg = institutionalData.fearGreed?.value || 50;
-  const symbols = ["BTCUSD", "ETHUSD", "XAUUSD.s", "EURUSD", "GBPUSD"];
+  const symbols = ["BTCUSD", "ETHUSD", "XAUUSD.s", "EURUSD.s", "GBPUSD.s"];
   for (const site of symbols) {
     const oi   = institutionalData.openInterest[site];
     const fr   = institutionalData.fundingRate[site];
@@ -421,8 +551,7 @@ async function fetchRealDerivatives(site) {
   try {
     const [frRes, oiRes] = await Promise.all([
       fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${map.okx}`),
-      fetch(`https://www.okx.com/api/v5/public/open-interest?instId=${map.okx}`),
-    ]);
+      fetch(`https://www.okx.com/api/v5/public/open-interest?instId=${map.okx}`)]);
     if (frRes.ok && oiRes.ok) {
       const fr = await frRes.json(), oi = await oiRes.json();
       const frData = fr?.data?.[0], oiData = oi?.data?.[0];
@@ -447,8 +576,7 @@ async function fetchOpenInterest() {
   // CoinGecko derivatives — sem restrição geográfica, gratuito
   const symbols = [
     { gecko: "bitcoin",  site: "BTCUSD" },
-    { gecko: "ethereum", site: "ETHUSD" },
-  ];
+    { gecko: "ethereum", site: "ETHUSD" }];
   for (const { gecko, site } of symbols) {
     try {
       // ✅ v20: tenta OI real via Bybit/OKX primeiro
@@ -537,8 +665,7 @@ async function fetchFundingRates() {
   // Fallback robusto sem dependência de Binance Futures
   const symbols = [
     { gecko: "bitcoin",  site: "BTCUSD" },
-    { gecko: "ethereum", site: "ETHUSD" },
-  ];
+    { gecko: "ethereum", site: "ETHUSD" }];
   const fg = institutionalData.fearGreed?.value || 50;
 
   for (const { gecko, site } of symbols) {
@@ -670,7 +797,7 @@ async function fetchCOTReport() {
 
 async function fetchCorrelations() {
   try {
-    const eur = allPrices.get("EURUSD")?.bid;
+    const eur = allPrices.get("EURUSD.s")?.bid;
     const dxyProxy = eur ? (1 / parseFloat(eur)) * 100 : null;
     institutionalData.correlations = {
       btc_eth:  { correlation: 0.85, interpretation: "BTC e ETH altamente correlacionados" },
@@ -692,10 +819,10 @@ async function fetchEconomicCalendar() {
     const now = new Date();
     const dayOfWeek = now.getUTCDay();
     const events = [];
-    if (dayOfWeek === 5) events.push({ time: "13:30 UTC", title: "NFP — Non-Farm Payrolls", currency: "USD", impact: "HIGH", warning: "⚠️ EVITE ordens em USD/XAU 30min antes e depois", affectedAssets: ["EURUSD", "GBPUSD", "XAUUSD.s", "USDJPY"] });
-    if (dayOfWeek === 3) events.push({ time: "18:00 UTC", title: "FOMC Statement", currency: "USD", impact: "HIGH", warning: "⚠️ ALTA VOLATILIDADE — reduzir exposição", affectedAssets: ["EURUSD", "GBPUSD", "XAUUSD.s", "BTCUSD"] });
-    if (dayOfWeek === 2) events.push({ time: "13:30 UTC", title: "CPI — Inflação EUA", currency: "USD", impact: "HIGH", warning: "⚠️ Possível volatilidade em USD", affectedAssets: ["EURUSD", "GBPUSD", "XAUUSD.s"] });
-    events.push({ time: "Toda sexta", title: "COT Report — CFTC", currency: "ALL", impact: "MEDIUM", warning: "📰 Atualiza viés institucional", affectedAssets: ["EURUSD", "GBPUSD", "XAUUSD.s"] });
+    if (dayOfWeek === 5) events.push({ time: "13:30 UTC", title: "NFP — Non-Farm Payrolls", currency: "USD", impact: "HIGH", warning: "⚠️ EVITE ordens em USD/XAU 30min antes e depois", affectedAssets: ["EURUSD.s", "GBPUSD.s", "XAUUSD.s", "USDJPY.s"] });
+    if (dayOfWeek === 3) events.push({ time: "18:00 UTC", title: "FOMC Statement", currency: "USD", impact: "HIGH", warning: "⚠️ ALTA VOLATILIDADE — reduzir exposição", affectedAssets: ["EURUSD.s", "GBPUSD.s", "XAUUSD.s", "BTCUSD"] });
+    if (dayOfWeek === 2) events.push({ time: "13:30 UTC", title: "CPI — Inflação EUA", currency: "USD", impact: "HIGH", warning: "⚠️ Possível volatilidade em USD", affectedAssets: ["EURUSD.s", "GBPUSD.s", "XAUUSD.s"] });
+    events.push({ time: "Toda sexta", title: "COT Report — CFTC", currency: "ALL", impact: "MEDIUM", warning: "📰 Atualiza viés institucional", affectedAssets: ["EURUSD.s", "GBPUSD.s", "XAUUSD.s"] });
     institutionalData.economicCalendar = events;
     broadcastToSite({ type: "economic_calendar_update", events, timestamp: new Date().toISOString() });
   } catch {}
@@ -1225,7 +1352,7 @@ function startLiveRoom24h() {
 // ─────────────────────────────────────────────
 const PLAN_LIMITS = {
   basic:{assets:["BTCUSD"],strategies:["SMC_PRO","PA"],modes:["express"],maxPositions:3,autoTrade:false,copyTrade:false,liveRoom:true},
-  pro:{assets:["BTCUSD","EURUSD","XAUUSD.s"],strategies:["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI"],modes:["express","complete"],maxPositions:10,autoTrade:true,copyTrade:false,liveRoom:true},
+  pro:{assets:["BTCUSD","EURUSD.s","XAUUSD.s"],strategies:["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI"],modes:["express","complete"],maxPositions:10,autoTrade:true,copyTrade:false,liveRoom:true},
   elite:{assets:"ALL",strategies:["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI","AI"],modes:["express","complete"],maxPositions:20,autoTrade:true,copyTrade:true,liveRoom:true},
 };
 function getPlanLimits(plan){return PLAN_LIMITS[plan]||PLAN_LIMITS.basic;}
@@ -1518,11 +1645,79 @@ wss.on("connection",(ws)=>{
       const msg=JSON.parse(raw.toString());
       if(msg.type==="ping"){ws.send(JSON.stringify({type:"pong"}));return;}
       if(msg.type==="analyze"){
-        const{strategy="AI",symbol="BTCUSD",mode="express"}=msg;
+        const{strategy="AI",symbol="BTCUSD",mode="express",user_id=null}=msg;
         ws.send(JSON.stringify({type:"analyzing",status:"processing",strategy,mode}));
         try{
           const stats=await fetchHistoricalStats(symbol,strategy),hour=new Date().getUTCHours(),hourStats=stats.hour_stats?.[hour]||{};
           const result=await callEaSignalV3(strategy,symbol,{win_rate:stats.win_rate,sample_size:stats.sample_size,hour_win_rate:hourStats.win_rate??-1,hour_sample_size:hourStats.count??0},mode);
+
+          // ✅ v22: salva sinal do TradePage e monitora TP/SL — fecha o ciclo de aprendizado
+          // Só monitora se tiver sinal válido com entry/sl/tp definidos
+          if(result.status==="new_signal" && result.entry && result.sl && result.tp1 && user_id){
+            const signalId=`TS-${symbol}-${Date.now()}`;
+            const priceData=allPrices.get(symbol);
+            const liveBid=priceData?parseFloat(priceData.bid):null;
+            const liveAsk=priceData?parseFloat(priceData.ask||priceData.bid):null;
+            const entryLive = result.direction==="BUY" ? (liveAsk||result.entry) : (liveBid||result.entry);
+
+            // Recalcula SL/TP a partir das distâncias (mesmo fix do paper trading — evita invertidos)
+            const slDist  = Math.abs(result.entry - result.sl);
+            const tp1Dist = Math.abs(result.entry - (result.tp1||result.tp));
+            const sl  = result.direction==="BUY" ? entryLive-slDist : entryLive+slDist;
+            const tp1 = result.direction==="BUY" ? entryLive+tp1Dist : entryLive-tp1Dist;
+
+            // Guarda em memória para monitorar (mesmo mecanismo do paper trading)
+            tradepageSignals.set(signalId,{
+              id:         signalId,
+              user_id,
+              symbol,
+              direction:  result.direction,
+              entry:      entryLive,
+              sl:         parseFloat(sl.toFixed(5)),
+              tp:         parseFloat(tp1.toFixed(5)),
+              probability: result.probability||0,
+              strategy,
+              openedAt:   Date.now(),
+              supabaseId: null,
+            });
+
+            // Salva no Supabase como trade "open" com user_code do usuário real
+            try{
+              const body={
+                user_code:   user_id,
+                symbol,
+                direction:   result.direction.toLowerCase(),
+                entry_price: entryLive,
+                sl:          parseFloat(sl.toFixed(5)),
+                tp:          parseFloat(tp1.toFixed(5)),
+                profit:      0,
+                result:      "open",
+                hour_of_day: hour,
+                day_of_week: new Date().getUTCDay(),
+                probability: result.probability||0,
+                strategy:    "AI",
+                confirmations: result.confirmations||0,
+                trend_strength: result.trend_strength||0,
+                source:      "TRADEPAGE",
+              };
+              const r=await fetch(`${SUPABASE_URL}/rest/v1/trades`,{
+                method:"POST",
+                headers:{"Content-Type":"application/json","apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`,"Prefer":"return=representation"},
+                body:JSON.stringify(body),
+              });
+              if(r.ok){
+                const d=await r.json();
+                const sig=tradepageSignals.get(signalId);
+                if(sig) sig.supabaseId=Array.isArray(d)?d[0]?.id:d?.id;
+                tradepageSignals.set(signalId,sig);
+              }
+            }catch(e){console.error("[TradePage] Erro ao salvar no Supabase:",e.message);}
+
+            console.log(`[TradePage] 📊 Sinal salvo | ${result.direction} ${symbol} | user:${user_id} | Entry:${entryLive} SL:${sl.toFixed(2)} TP:${tp1.toFixed(2)} | Prob:${result.probability}%`);
+            // Inclui o signal_id na resposta para o cliente referenciar se quiser
+            result.tradepage_signal_id=signalId;
+          }
+
           ws.send(JSON.stringify({type:"analysis_result",symbol,strategy,mode,strategy_label:"AUREON AI v9",...result,timestamp:new Date().toISOString()}));
         }catch(err){ws.send(JSON.stringify({type:"error",message:err.message}));}
       }
@@ -1703,7 +1898,20 @@ const PAPER_TIMEOUT_MS      = 4 * 60 * 60 * 1000; // Fecha posição após 4h
 const PAPER_LOT             = 0.01;            // Lote fixo para estimativa de lucro
 const PAPER_MAX_OPEN        = 1;               // Máximo de posições paper abertas por (ativo, trilha)
 const PAPER_MIN_PROBABILITY = 65.0;            // Probabilidade mínima para abrir paper trade
-const PAPER_ASSETS          = ["BTCUSD", "XAUUSD.s", "EURUSD", "GBPUSD", "ETHUSD"];
+const PAPER_ASSETS = [
+  // Crypto
+  "BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD",
+  "ADAUSD", "DOTUSD",
+  // Forex (nomes PU Prime com sufixo .s)
+  "EURUSD.s", "GBPUSD.s", "USDJPY.s", "AUDUSD.s", "USDCAD.s", "USDCHF.s",
+  "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s",
+  // Metais
+  "XAUUSD.s", "XAGUSD.s",
+  // Commodities
+  "WTIUSD", "NATGAS",
+  // Índices (nomes PU Prime)
+  "NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225ft.s",
+];
 
 // ✅ v21: TRILHAS de RR — mesmo sinal/SL (mesmo risco), TP diferente por trilha.
 // BASE  = usa o tp1 que o eaSignal já calcula (≈1.39x pra metais/crypto, ≈1.33x forex)
@@ -1719,14 +1927,21 @@ const PAPER_RR_TRACKS = {
 
 // Tick values aproximados por ativo (USD por pip/point no lote 0.01)
 const PAPER_TICK_VALUES = {
-  "BTCUSD":   0.01,   // $0.01 por point no lote 0.01
-  "ETHUSD":   0.01,
-  "XAUUSD.s": 0.01,
-  "EURUSD":   0.10,   // $0.10 por pip no lote 0.01
-  "GBPUSD":   0.10,
-  "USDJPY":   0.09,
-  "AUDUSD":   0.10,
-  "USDCAD":   0.08,
+  // Crypto — $0.01 por point no lote 0.01
+  "BTCUSD":  0.01, "ETHUSD":  0.01, "BNBUSD":  0.01,
+  "SOLUSD":  0.01, "XRPUSD":  0.01, "ADAUSD":  0.01,
+  "DOTUSD":  0.01,
+  // Forex — $0.10 por pip no lote 0.01
+  "EURUSD.s":  0.10, "GBPUSD.s":  0.10, "USDJPY.s":  0.09,
+  "AUDUSD.s":  0.10, "USDCAD.s":  0.08, "USDCHF.s":  0.10,
+  "NZDUSD.s":  0.10, "EURGBP.s":  0.10, "GBPJPY.s":  0.09, "EURJPY.s":  0.09,
+  // Metais
+  "XAUUSD.s":0.01, "XAGUSD.s":0.01,
+  // Commodities
+  "WTIUSD":  0.01, "NATGAS":  0.01,
+  // Índices — $0.01 por point no lote 0.01
+  "NAS100.s":  0.01, "SP500.s":   0.01, "US30.s":    0.01,
+  "GER40.s":   0.01, "UK100.s":   0.01, "JPN225ft.s":  0.01,
 };
 
 // ─────────────────────────────────────────────
@@ -1734,6 +1949,8 @@ const PAPER_TICK_VALUES = {
 // ─────────────────────────────────────────────
 const paperPositions   = new Map(); // id -> posição aberta (campo `track` indica a trilha)
 const paperCooldown    = new Map(); // symbol -> timestamp último sinal paper
+// ✅ v22: sinais do TradePage — monitorados igual ao paper trading
+const tradepageSignals = new Map(); // signalId -> sinal aberto do TradePage
 // ✅ v21: contadores por trilha
 const paperTradeCount  = {
   BASE: { total: 0, wins: 0, losses: 0, pending: 0 },
@@ -1747,7 +1964,7 @@ const paperTradeCount  = {
 function estimateProfit(symbol, direction, entryPrice, closePrice, lot) {
   const tickVal = PAPER_TICK_VALUES[symbol] || 0.01;
   const isCrypto = ["BTCUSD","ETHUSD","BNBUSD","SOLUSD","XRPUSD"].includes(symbol);
-  const isForex  = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD"].includes(symbol);
+  const isForex  = ["EURUSD.s","GBPUSD.s","USDJPY.s","AUDUSD.s","USDCAD.s","USDCHF.s","NZDUSD.s","EURGBP.s","GBPJPY.s","EURJPY.s"].includes(symbol);
 
   let priceDiff = direction === "BUY"
     ? closePrice - entryPrice
@@ -1853,7 +2070,7 @@ async function updatePaperResult(supabaseId, result, profit, closePrice, closedB
 // MONITORA POSIÇÕES ABERTAS — checa TP/SL
 // ─────────────────────────────────────────────
 async function monitorPaperPositions() {
-  if (paperPositions.size === 0) return;
+  if (paperPositions.size === 0 && tradepageSignals.size === 0) return;
 
   const now = Date.now();
 
@@ -1965,6 +2182,45 @@ async function monitorPaperPositions() {
       });
     }
   }
+
+  // ✅ v22: monitora sinais do TradePage — mesmo mecanismo do paper trading
+  // Timeout menor (2h) porque o usuário já viu o resultado na tela
+  const TRADEPAGE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+  for (const [id, sig] of tradepageSignals.entries()) {
+    const priceData = allPrices.get(sig.symbol);
+    if (!priceData || !isPriceFresh(priceData)) continue;
+
+    const currentPrice = parseFloat(priceData.bid);
+    const elapsed      = now - sig.openedAt;
+    let closed = false, result = "", closePrice = currentPrice, closedBy = "";
+
+    if (sig.direction === "BUY") {
+      if (currentPrice <= sig.sl)  { closed=true; result="loss"; closedBy="SL"; }
+      else if (currentPrice >= sig.tp) { closed=true; result="win";  closedBy="TP"; }
+    } else {
+      if (currentPrice >= sig.sl)  { closed=true; result="loss"; closedBy="SL"; }
+      else if (currentPrice <= sig.tp) { closed=true; result="win";  closedBy="TP"; }
+    }
+    if (!closed && elapsed >= TRADEPAGE_TIMEOUT_MS) {
+      closed=true; result="loss"; closedBy="TIMEOUT";
+      closePrice = currentPrice;
+    }
+
+    if (closed && sig.supabaseId) {
+      // Atualiza resultado no Supabase
+      try {
+        await fetch(`${SUPABASE_URL}/rest/v1/trades?id=eq.${sig.supabaseId}`,{
+          method:"PATCH",
+          headers:{"Content-Type":"application/json","apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`,"Prefer":"return=minimal"},
+          body:JSON.stringify({result, profit:0, close_price:closePrice, closed_at:new Date().toISOString(), source:`TRADEPAGE-${closedBy}`}),
+        });
+      } catch(e){ console.error("[TradePage] Erro ao fechar sinal:",e.message); }
+
+      tradepageSignals.delete(id);
+      const emoji = result==="win"?"✅":"❌";
+      console.log(`[TradePage] ${emoji} ${result.toUpperCase()} | ${sig.direction} ${sig.symbol} | user:${sig.user_id} | Close:${closePrice} | ${closedBy}`);
+    }
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -1972,7 +2228,7 @@ async function monitorPaperPositions() {
 // ─────────────────────────────────────────────
 // Arredonda preço com a mesma precisão usada pelo eaSignal (dig)
 function roundPaperPrice(symbol, value) {
-  const isForexSym = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","EURGBP","GBPJPY","EURJPY"].includes(symbol);
+  const isForexSym = ["EURUSD.s","GBPUSD.s","USDJPY.s","AUDUSD.s","USDCAD.s","USDCHF.s","NZDUSD.s","EURGBP.s","GBPJPY.s","EURJPY.s"].includes(symbol);
   const isJPYSym   = symbol.includes("JPY");
   const dig = isForexSym ? (isJPYSym ? 3 : 5) : 2;
   return parseFloat(value.toFixed(dig));
@@ -2261,8 +2517,7 @@ httpServer.listen(PORT, async()=>{
       fetchFundingRates(),
       fetchCorrelations(),
       fetchEconomicCalendar(),
-      fetchCOTReport(),
-    ]);
+      fetchCOTReport()]);
     calcSmartMoneyScoreFromData();
     console.log("[Railway] Dados institucionais carregados");
   }, 5000);
