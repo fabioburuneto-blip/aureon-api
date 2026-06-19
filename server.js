@@ -106,6 +106,8 @@ const lastOrderSent = new Map(); // symbol -> timestamp do último slavePendingO
 const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
+// Bots internos — nunca recebem ordens roteadas nem contam como slave/cliente real
+const INTERNAL_BOT_IDS = ["MASTER-BOT", "LIVE-ROOM-BOT"];
 
 const LIVE_ASSETS = [
   // Crypto
@@ -871,6 +873,10 @@ async function callEaSignalV3(strategy, symbol, historicalData=null, mode="expre
   if(priceData.closes&&Array.isArray(priceData.closes)&&priceData.closes.length>=20){
     closes=priceData.closes;highs=priceData.highs||[];lows=priceData.lows||[];opens=priceData.opens||[];
   } else {
+    // ⚠️ FIX: sem arrays OHLC reais do MT5 → o eaSignal analisa candles
+    // FABRICADOS (aleatórios em volta do bid). Análise vira ruído. Esse warn
+    // deixa isso visível no log. Confirme em /candle-check quais ativos caem aqui.
+    console.warn(`[callEaSignalV3] ⚠️ ${symbol}: SEM candles M5 reais — fabricando aleatórios (análise não confiável). Verifique o EA MT5.`);
     const bid=parseFloat(priceData.bid);
     closes=[];highs=[];lows=[];opens=[];
     for(let i=59;i>=3;i--){const f=1+(Math.random()-.5)*.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*.999).toFixed(5)));opens.push(parseFloat((bid*f*.9998).toFixed(5)));}
@@ -1309,6 +1315,40 @@ app.get("/order-cooldowns",(req,res)=>{
   res.json({ cooldown_minutes: SIGNAL_COOLDOWN / 60000, symbols: cooldowns, timestamp: new Date().toISOString() });
 });
 
+// ✅ DIAGNÓSTICO: mostra, por ativo, se o servidor recebe candles M5 REAIS do
+// MT5 ou se está fabricando candles aleatórios. Se "fabricando_aleatorio" listar
+// ativos, o EA MT5 desses ativos não está enviando os arrays OHLC e a análise
+// deles NÃO é confiável. Acesse: <RAILWAY_URL>/candle-check
+app.get("/candle-check",(req,res)=>{
+  const out = {};
+  const fabricando = [];
+  for (const symbol of LIVE_ASSETS) {
+    const pd = allPrices.get(symbol);
+    if (!pd) { out[symbol] = { sem_dados: true }; fabricando.push(symbol); continue; }
+    const m5Real = Array.isArray(pd.closes) && pd.closes.length >= 20;
+    if (!m5Real && isPriceFresh(pd)) fabricando.push(symbol);
+    out[symbol] = {
+      preco_fresco:     isPriceFresh(pd),
+      m5_candles_reais: m5Real,
+      m5_count:         Array.isArray(pd.closes) ? pd.closes.length : 0,
+      has_m15: !!(Array.isArray(pd.closes_m15) && pd.closes_m15.length >= 10),
+      has_h1:  !!(Array.isArray(pd.closes_h1)  && pd.closes_h1.length  >= 10),
+      has_h4:  !!(Array.isArray(pd.closes_h4)  && pd.closes_h4.length  >= 10),
+      has_d1:  !!(Array.isArray(pd.closes_d1)  && pd.closes_d1.length  >= 5),
+      has_mtf: !!pd.has_mtf,
+    };
+  }
+  res.json({
+    aviso: fabricando.length > 0
+      ? `⚠️ ${fabricando.length} ativo(s) com preço fresco mas SEM candles M5 reais — análise fabricada (aleatória) para eles.`
+      : "✅ Todos os ativos com preço fresco têm candles M5 reais.",
+    fabricando_aleatorio: fabricando,
+    total_ativos: LIVE_ASSETS.length,
+    detalhe: out,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.post("/live-signal-result",async(req,res)=>{
   const{signal_id,result,profit,close_price,tp_hit}=req.body;
   const signal=liveSignalHistory.find(s=>s.id===signal_id);
@@ -1665,6 +1705,19 @@ wss.on("connection",(ws)=>{
               }
             }catch(e){console.error("[TradePage] Erro ao salvar no Supabase:",e.message);}
 
+            // ✅ FIX: a tela recebia result.entry/sl/tp calculados no candle M5
+            // (defasado até ~5min), diferente do entry LIVE usado pra monitorar.
+            // Reescreve os campos com os valores LIVE (mesmas distâncias, recoladas
+            // no preço atual) antes de enviar — assim UI e monitoramento batem.
+            const tp2Dist = result.tp2 ? Math.abs(result.entry - parseFloat(result.tp2)) : null;
+            const tp3Dist = result.tp3 ? Math.abs(result.entry - parseFloat(result.tp3)) : null;
+            result.entry = roundPaperPrice(symbol, entryLive);
+            result.sl    = roundPaperPrice(symbol, sl);
+            result.tp    = roundPaperPrice(symbol, tp1);
+            result.tp1   = roundPaperPrice(symbol, tp1);
+            if (tp2Dist !== null) result.tp2 = roundPaperPrice(symbol, result.direction==="BUY" ? entryLive+tp2Dist : entryLive-tp2Dist);
+            if (tp3Dist !== null) result.tp3 = roundPaperPrice(symbol, result.direction==="BUY" ? entryLive+tp3Dist : entryLive-tp3Dist);
+
             console.log(`[TradePage] 📊 Sinal salvo | ${result.direction} ${symbol} | user:${user_id} | Entry:${entryLive} SL:${sl.toFixed(2)} TP:${tp1.toFixed(2)} | Prob:${result.probability}%`);
             // Inclui o signal_id na resposta para o cliente referenciar se quiser
             result.tradepage_signal_id=signalId;
@@ -1913,29 +1966,39 @@ const paperTradeCount  = {
 // ─────────────────────────────────────────────
 // ESTIMA LUCRO/PERDA
 // ─────────────────────────────────────────────
-function estimateProfit(symbol, direction, entryPrice, closePrice, lot) {
-  const tickVal = PAPER_TICK_VALUES[symbol] || 0.01;
-  const isCrypto = ["BTCUSD","ETHUSD","BNBUSD","SOLUSD","XRPUSD"].includes(symbol);
-  const isForex  = ["EURUSD.s","GBPUSD.s","USDJPY.s","AUDUSD.s","USDCAD.s","USDCHF.s","NZDUSD.s","EURGBP.s","GBPJPY.s","EURJPY.s"].includes(symbol);
+// ✅ FIX: valor em USD de um movimento de 1.0 no preço, por 1.0 lote.
+//   profit = priceDiff * pointValue * lot
+// Mantém EXATAMENTE o cálculo antigo (correto) para crypto, ouro, índices e
+// forex (não-JPY), e corrige os que antes caíam no `else` genérico e vinham
+// quase zero: PRATA, PETRÓLEO (WTI) e GÁS (NATGAS). Também corrige os pares
+// JPY, que pela conta antiga saíam ~100x maiores que o real.
+// ⚠️ Os tamanhos de contrato (100oz ouro, 5000oz prata, 1000 barris WTI,
+//    10000 MMBtu gás) seguem o padrão de mercado — confira contra a PU Prime
+//    se quiser bater centavo a centavo; não muda a marcação de win/loss.
+const POINT_VALUE_PER_LOT = {
+  // Crypto — $1 de preço = $1 por lote
+  "BTCUSD":1, "ETHUSD":1, "BNBUSD":1, "SOLUSD":1, "XRPUSD":1, "ADAUSD":1, "DOTUSD":1,
+  // Forex não-JPY — $10 por pip por lote (pip 0.0001)
+  "EURUSD.s":100000, "GBPUSD.s":100000, "AUDUSD.s":100000, "USDCAD.s":80000,
+  "USDCHF.s":100000, "NZDUSD.s":100000, "EURGBP.s":100000,
+  // Forex JPY — pip 0.01 (corrige o exagero da conta antiga)
+  "USDJPY.s":900, "GBPJPY.s":900, "EURJPY.s":900,
+  // Metais
+  "XAUUSD.s":100,    // ouro: 100 oz por lote
+  "XAGUSD.s":5000,   // prata: 5000 oz por lote  ← antes vinha ~zero
+  // Commodities
+  "WTIUSD":1000,     // petróleo: 1000 barris por lote  ← antes vinha ~zero
+  "NATGAS":10000,    // gás: 10000 MMBtu por lote  ← antes vinha ~zero
+  // Índices — ~$1 por ponto por lote
+  "NAS100.s":1, "SP500.s":1, "US30.s":1, "GER40.s":1, "UK100.s":1, "JPN225ft.s":1,
+};
 
-  let priceDiff = direction === "BUY"
+function estimateProfit(symbol, direction, entryPrice, closePrice, lot) {
+  const priceDiff = direction === "BUY"
     ? closePrice - entryPrice
     : entryPrice - closePrice;
-
-  let profit = 0;
-  if (isCrypto) {
-    // Crypto: profit em USD direto × lote
-    profit = priceDiff * lot;
-  } else if (symbol === "XAUUSD.s") {
-    // Ouro: 1 pip = $0.01 por lote 0.01 (100oz × $0.01)
-    profit = priceDiff * lot * 100;
-  } else if (isForex) {
-    // Forex: pip = 0.0001, $10 por pip no lote 1.0 → $0.10 no lote 0.01
-    profit = (priceDiff / 0.0001) * tickVal * lot / 0.01;
-  } else {
-    profit = priceDiff * lot;
-  }
-
+  const pointValue = POINT_VALUE_PER_LOT[symbol] ?? 1;
+  const profit = priceDiff * pointValue * lot;
   return parseFloat(profit.toFixed(2));
 }
 
@@ -2072,8 +2135,13 @@ async function monitorPaperPositions() {
 
     // ── Timeout 4h — fecha pelo preço atual ──
     if (!closed && elapsed >= PAPER_TIMEOUT_MS) {
-      const profit = estimateProfit(pos.symbol, pos.direction, pos.entry, checkPrice, PAPER_LOT);
-      result   = profit >= 0 ? "win" : "loss";
+      // ✅ FIX: decide win/loss pelo LADO do preço em relação à entrada, e não
+      // pelo profit arredondado — que zerava em ativos de movimento pequeno e
+      // acabava marcando trade perdedor como "win".
+      const favoravel = pos.direction === "BUY"
+        ? checkPrice > pos.entry
+        : checkPrice < pos.entry;
+      result   = favoravel ? "win" : "loss";
       closePrice = checkPrice;
       closedBy = "TIMEOUT";
       closed   = true;
