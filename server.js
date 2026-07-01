@@ -106,6 +106,7 @@ const lastOrderSent = new Map(); // symbol -> timestamp do último slavePendingO
 const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
+const AUTO_EXEC_ACCOUNT = "USER-FABIOBUR";
 // Bots internos — nunca recebem ordens roteadas nem contam como slave/cliente real
 const INTERNAL_BOT_IDS = ["MASTER-BOT", "LIVE-ROOM-BOT"];
 
@@ -118,12 +119,10 @@ const LIVE_ASSETS = [
   "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s",
   // Metais — MT5
   "XAUUSD.s", "XAGUSD.s",
-  // Commodities
-  "WTIUSD", "NATGAS",
-  // Índices (nomes PU Prime)
-  "NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225ft.s",
+  // Índices (WTIUSD, NATGAS e US30.s removidos — sem candle M5 real)
+  "NAS100.s", "SP500.s", "GER40.s", "UK100.s", "JPN225ft.s",
 ];
-const DEFAULT_STRATEGIES = {
+const DEFAULT_STRATEGIES
   // Crypto
   "BTCUSD": "AI", "ETHUSD": "AI", "BNBUSD": "AI", "SOLUSD": "AI", "XRPUSD": "AI",
   "ADAUSD": "AI", "DOTUSD": "AI",
@@ -715,7 +714,12 @@ function isSlaveOnline(userId) { if (!activeSlaves.has(userId)) return false; re
 function isPriceFresh(priceData) { if (!priceData) return false; return (new Date() - new Date(priceData.receivedAt)) / 1000 < PRICE_EXPIRE_S; }
 function getStrategyForAsset(symbol) { return "AI"; }
 function getMostFocusedAsset() { const votes = {}; clientFocusAsset.forEach(s => { if (s) votes[s] = (votes[s] || 0) + 1; }); if (!Object.keys(votes).length) return null; return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0]; }
-function getMostUsedMode() { let e=0,c=0; clientModes.forEach(m => m==="complete"?c++:e++); return c > e ? "complete" : "express"; }
+function getMostUsedMode() {
+  let e=0,c=0,a=0;
+  clientModes.forEach(m => { if(m==="aureon")a++; else if(m==="complete")c++; else e++; });
+  if (a > 0) return "aureon";
+  return c > e ? "complete" : "express";
+}
 function isGoodTradingHour(symbol) {
   const hour = new Date().getUTCHours();
   if (CRYPTO_ASSETS.includes(symbol)) return true; // 24h
@@ -1044,8 +1048,14 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       (new Date() - d.lastSeen) / 1000 < SLAVE_TIMEOUT_S &&
       (d.plan === "pro" || d.plan === "elite")
     );
-    // Modo completo ativo se: cliente solicitou "complete" E tem cliente PRO/Elite online
-    const mode = (clientMode === "complete" && hasPROClient) ? "complete" : "express";
+    const hasEliteClient = [...activeSlaves.entries()].some(([uid, d]) =>
+      !INTERNAL_BOT_IDS.includes(uid) &&
+      (new Date() - d.lastSeen) / 1000 < SLAVE_TIMEOUT_S &&
+      d.plan === "elite"
+    );
+    let mode = "express";
+    if (clientMode === "aureon" && hasEliteClient) mode = "complete";
+    else if (clientMode === "complete" && hasPROClient) mode = "complete";
     const hour=new Date().getUTCHours();
     const stats=await fetchHistoricalStats(symbol,strategy);
     const hourStats=stats.hour_stats?.[hour]||{};
@@ -1157,19 +1167,13 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       notifyAllClients(signal);
       console.log(`[LiveRoom v19] ${result.direction} ${symbol} | ${result.probability}% | HTF: ${htfBias} | SL:${result.sl} TP1:${result.tp1}`);
 
-      // ✅ FIX: Usa enqueueOrder com cooldown e validação de TP/SL
-      // ✅ FIX: só enfileira para slaves REAIS — nunca para MASTER-BOT ou bots internos
-      let targetSlaveId=null;
-      if(isSlaveOnline(LIVE_ROOM_BOT_ID))targetSlaveId=LIVE_ROOM_BOT_ID;
-      else if(activeSlaves.size>0)activeSlaves.forEach((data,userId)=>{
-        if(!targetSlaveId&&!INTERNAL_BOT_IDS.includes(userId)&&(new Date()-data.lastSeen)/1000<SLAVE_TIMEOUT_S)
-          targetSlaveId=userId;
-      });
-      if(targetSlaveId){
+      // ✅ EXECUÇÃO AUTOMÁTICA: SOMENTE a conta do dono (AUTO_EXEC_ACCOUNT).
+      // Todos os outros clientes confirmam com 1 clique no site.
+      if(isSlaveOnline(AUTO_EXEC_ACCOUNT)){
         const tpToSend = result.tp1 || result.tp;
         const slToSend = result.sl;
         enqueueOrder(
-          targetSlaveId, symbol, result.direction,
+          AUTO_EXEC_ACCOUNT, symbol, result.direction,
           slToSend, tpToSend, 0.01,
           strategy, result.probability, result.confirmations||0, result.trend_strength||0,
           "LIVE-ROOM"
@@ -1729,22 +1733,28 @@ wss.on("connection",(ws)=>{
       if(msg.type==="get_institutional"){ws.send(JSON.stringify({type:"institutional_data",...institutionalData,session:getSessionName(),timestamp:new Date().toISOString()}));}
       if(msg.type==="join_live_room"){liveRoomClients.add(ws);clientFocusAsset.set(ws,null);clientStrategies.set(ws,{...DEFAULT_STRATEGIES});clientModes.set(ws,msg.mode||"express");ws.send(JSON.stringify({type:"live_room_joined",history:liveSignalHistory.slice(0,10),scoreboard:liveScoreboard,assets:LIVE_ASSETS,session:getSessionName(),institutional:institutionalData,message:"Bem-vindo! AUREON AI v9 monitora 24h com dados institucionais.",timestamp:new Date().toISOString()}));broadcastToLiveRoom({type:"live_viewers",count:liveRoomClients.size});}
       if(msg.type==="leave_live_room"){liveRoomClients.delete(ws);clientFocusAsset.delete(ws);clientStrategies.delete(ws);clientModes.delete(ws);broadcastToLiveRoom({type:"live_viewers",count:liveRoomClients.size});}
-      if(msg.type==="set_mode"){
-        const reqMode = msg.mode === "complete" ? "complete" : "express";
-        // ✅ Modo completo (Claude API) — apenas PRO e ELITE
-        if (reqMode === "complete") {
-          // Verifica se tem slave PRO/Elite online no momento
-          let userPlan = "basic";
-          activeSlaves.forEach((d, uid) => {
-            if (!INTERNAL_BOT_IDS.includes(uid) && (new Date() - d.lastSeen) / 1000 < SLAVE_TIMEOUT_S) {
-              if (d.plan === "pro" || d.plan === "elite") userPlan = d.plan;
-            }
-          });
-          if (userPlan !== "pro" && userPlan !== "elite") {
-            ws.send(JSON.stringify({ type: "mode_denied", reason: "Modo Completo disponível apenas no plano PRO ou Elite.", requested: reqMode, timestamp: new Date().toISOString() }));
-            console.log("[LiveRoom] Modo completo negado — upgrade necessário");
-            return;
+    if(msg.type==="set_mode"){
+        let reqMode = "express";
+        if (msg.mode === "complete") reqMode = "complete";
+        else if (msg.mode === "aureon") reqMode = "aureon";
+
+        let userPlan = "basic";
+        activeSlaves.forEach((d, uid) => {
+          if (!INTERNAL_BOT_IDS.includes(uid) && (new Date() - d.lastSeen) / 1000 < SLAVE_TIMEOUT_S) {
+            if (d.plan === "elite") userPlan = "elite";
+            else if (d.plan === "pro" && userPlan !== "elite") userPlan = "pro";
           }
+        });
+
+        if (reqMode === "complete" && userPlan !== "pro" && userPlan !== "elite") {
+          ws.send(JSON.stringify({ type: "mode_denied", reason: "Modo Completo disponível nos planos PRO e Elite.", requested: reqMode, timestamp: new Date().toISOString() }));
+          console.log("[LiveRoom] Modo completo negado — upgrade necessário");
+          return;
+        }
+        if (reqMode === "aureon" && userPlan !== "elite") {
+          ws.send(JSON.stringify({ type: "mode_denied", reason: "Modo AUREON é exclusivo do plano Elite.", requested: reqMode, timestamp: new Date().toISOString() }));
+          console.log("[LiveRoom] Modo AUREON negado — exclusivo Elite");
+          return;
         }
         clientModes.set(ws, reqMode);
         ws.send(JSON.stringify({ type: "mode_updated", mode: reqMode, timestamp: new Date().toISOString() }));
@@ -1912,11 +1922,11 @@ const PAPER_ASSETS = [
   "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s",
   // Metais
   "XAUUSD.s", "XAGUSD.s",
-  // Commodities
-  "WTIUSD", "NATGAS",
-  // Índices (nomes PU Prime)
-  "NAS100.s", "SP500.s", "US30.s", "GER40.s", "UK100.s", "JPN225ft.s",
+  // Índices (WTIUSD, NATGAS e US30.s removidos — sem candle M5 real)
+  "NAS100.s", "SP500.s", "GER40.s", "UK100.s", "JPN225ft.s",
 ];
+
+// ✅ v21: TRILHAS
 
 // ✅ v21: TRILHAS de RR — mesmo sinal/SL (mesmo risco), TP diferente por trilha.
 // BASE  = usa o tp1 que o eaSignal já calcula (≈1.39x pra metais/crypto, ≈1.33x forex)
