@@ -122,7 +122,7 @@ const LIVE_ASSETS = [
   // Índices (WTIUSD, NATGAS e US30.s removidos — sem candle M5 real)
   "NAS100.s", "SP500.s", "GER40.s", "UK100.s", "JPN225ft.s",
 ];
-const DEFAULT_STRATEGIES
+const DEFAULT_STRATEGIES = {
   // Crypto
   "BTCUSD": "AI", "ETHUSD": "AI", "BNBUSD": "AI", "SOLUSD": "AI", "XRPUSD": "AI",
   "ADAUSD": "AI", "DOTUSD": "AI",
