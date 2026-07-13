@@ -1167,9 +1167,14 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       notifyAllClients(signal);
       console.log(`[LiveRoom v19] ${result.direction} ${symbol} | ${result.probability}% | HTF: ${htfBias} | SL:${result.sl} TP1:${result.tp1}`);
 
-      // ✅ EXECUÇÃO AUTOMÁTICA: SOMENTE a conta do dono (AUTO_EXEC_ACCOUNT).
-      // Todos os outros clientes confirmam com 1 clique no site.
-      if(isSlaveOnline(AUTO_EXEC_ACCOUNT)){
+// ⛔ EXECUÇÃO AUTOMÁTICA DESATIVADA (11/07/2026).
+      // Motor sem borda comprovada — paramos de operar a conta real.
+      // O sinal continua sendo GERADO, exibido e REGISTRADO (paper + experimento
+      // Claude) normalmente; apenas NÃO vira ordem no MT5. Trava real, na fonte,
+      // no lugar do AutoTrading do MT5 (que era frágil). Para religar um dia,
+      // basta trocar AUTO_EXEC_ENABLED para true.
+      const AUTO_EXEC_ENABLED = false;
+      if(AUTO_EXEC_ENABLED && isSlaveOnline(AUTO_EXEC_ACCOUNT)){
         const tpToSend = result.tp1 || result.tp;
         const slToSend = result.sl;
         enqueueOrder(
