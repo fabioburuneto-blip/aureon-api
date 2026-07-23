@@ -1558,13 +1558,14 @@ app.get("/slave-order",(req,res)=>{
 app.post("/slave-confirm",(req,res)=>{broadcastToSite({type:"order_confirmed",...req.body,timestamp:new Date().toISOString()});res.json({status:"ok"});});
 
 app.post("/slave-trade-closed",async(req,res)=>{
-  const{user_id,symbol,direction,close_price,profit,strategy,probability,confirmations,trend_strength,sl,tp}=req.body;
+  const{user_id,symbol,direction,entry,close_price,profit,strategy,probability,confirmations,trend_strength,sl,tp}=req.body;
   if(!user_id||!symbol)return res.status(400).json({error:"user_id e symbol obrigatórios"});
   const profitVal=parseFloat(profit)||0,resultStr=profitVal>0?"win":"loss";
   broadcastToSite({type:"trade_closed",user_id,symbol,direction,profit:profitVal,result:resultStr,strategy,timestamp:new Date().toISOString()});
   const now=new Date(),source=req.body.source||"SLAVE";
-  await saveTradeToSupabase({user_code:user_id,symbol,direction:direction||"buy",entry_price:parseFloat(close_price)||0,sl:parseFloat(sl)||0,tp:parseFloat(tp)||0,profit:profitVal,result:resultStr,hour_of_day:now.getUTCHours(),day_of_week:now.getUTCDay(),market_strength:0,atr_value:0,probability:parseFloat(probability)||0,strategy:strategy||"AI",confirmations:parseInt(confirmations)||0,trend_strength:parseFloat(trend_strength)||0,source});
-  if(source==="LIVE-ROOM"){
+  const entryVal=parseFloat(entry);
+  if(!entryVal){console.log(`[slave-trade-closed] ⚠️ ${symbol}: sem 'entry' no payload (EA desatualizado?) — fallback entry_price=close_price`);}
+  await saveTradeToSupabase({user_code:user_id,symbol,direction:direction||"buy",entry_price:entryVal||(parseFloat(close_price)||0),close_price:parseFloat(close_price)||0,sl:parseFloat(sl)||0,tp:parseFloat(tp)||0,profit:profitVal,result:resultStr,hour_of_day:now.getUTCHours(),day_of_week:now.getUTCDay(),market_strength:0,atr_value:0,probability:parseFloat(probability)||0,strategy:strategy||"AI",confirmations:parseInt(confirmations)||0,trend_strength:parseFloat(trend_strength)||0,source});if(source==="LIVE-ROOM"){
     const recentSignal=liveSignalHistory.find(s=>s.asset===symbol&&s.direction?.toUpperCase()===direction?.toUpperCase()&&s.result==="open");
     if(recentSignal){
       recentSignal.result=resultStr;recentSignal.profit=profitVal;
