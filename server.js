@@ -2266,10 +2266,64 @@ async function monitorPaperPositions() {
 function roundPaperPrice(symbol, value) {
   const isForexSym = ["EURUSD.s","GBPUSD.s","USDJPY.s","AUDUSD.s","USDCAD.s","USDCHF.s","NZDUSD.s","EURGBP.s","GBPJPY.s","EURJPY.s"].includes(symbol);
   const isJPYSym   = symbol.includes("JPY");
-  const dig = isForexSym ? (isJPYSym ? 3 : 5) : 2;
+  let dig;
+  if (isForexSym) {
+    dig = isJPYSym ? 3 : 5;
+  } else {
+    // ✅ FIX: mesma lógica de casas decimais por MAGNITUDE que já existe no
+    // eaSignal_v3.js — antes era fixo em 2 casas pra tudo que não é forex,
+    // e ativos de preço baixo (ADA, DOT, XRP...) colapsavam entry==sl==tp,
+    // zerando a distância de risco (visto ao vivo hoje, 19:19h).
+    const a = Math.abs(value);
+    dig = a >= 100 ? 2 : a >= 10 ? 3 : a >= 1 ? 4 : 5;
+  }
   return parseFloat(value.toFixed(dig));
 }
+// ✅ FIX: quando o Railway reinicia (deploy, crash, restart), o Map
+// `paperPositions` (só em memória) zera — mas as posições continuam "open"
+// no Supabase, órfãs, nunca mais monitoradas (nunca fecham). Isso explicava
+// os 500+ registros presos em open por trilha. Ao subir, busca essas
+// posições órfãs no banco e devolve elas pro Map, pra o monitor retomar —
+// inclusive fechando na hora, via TIMEOUT, as que já passaram muito das 4h.
+async function reconcilePaperPositions() {
+  try {
+    const rows = await supabaseGet(
+      `trades?source=like.${encodeURIComponent("PAPER-*")}&result=eq.open&select=id,symbol,direction,entry_price,sl,tp,source,created_at&limit=2000`
+    );
+    if (!rows || !Array.isArray(rows) || !rows.length) {
+      console.log("[Paper] Reconciliação: nenhuma posição órfã encontrada");
+      return;
+    }
+    let restored = 0, skipped = 0;
+    for (const r of rows) {
+      const m = /^PAPER-(BASE|RR2X|RR3X)$/.exec(r.source || "");
+      if (!m) { skipped++; continue; } // formato legado sem sufixo de trilha — ignora
+      const track = m[1];
+      const tradeId = `RESTORED-${track}-${r.symbol}-${r.id}`;
+      paperPositions.set(tradeId, {
+        id: tradeId,
+        track,
+        symbol: r.symbol,
+        direction: (r.direction || "buy").toUpperCase(),
+        entry: parseFloat(r.entry_price) || 0,
+        sl: parseFloat(r.sl) || 0,
+        tp: parseFloat(r.tp) || 0,
+        probability: 0, confirmations: 0, trend_strength: 0,
+        htf_bias: "NEUTRAL", fear_greed: 50, session: "", mtf_score: 0, atr: 0,
+        hour: 0, dayOfWeek: 0,
+        openedAt: new Date(r.created_at).getTime(),
+        supabaseId: r.id,
+        liveSignalId: null,
+      });
+      restored++;
+    }
+    console.log(`[Paper] Reconciliação: ${restored} posição(ões) órfã(s) restauradas para monitoramento | ${skipped} ignoradas (formato legado)`);
+  } catch (err) {
+    console.error("[Paper] Erro na reconciliação:", err.message);
+  }
+}
 
+async function runPaperSignal(symbol) {
 async function runPaperSignal(symbol) {
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) {
@@ -2558,6 +2612,10 @@ httpServer.listen(PORT, async()=>{
     console.log("[Railway] Dados institucionais carregados");
   }, 5000);
 
+  // Reconcilia posições órfãs (de restart anterior) antes do monitor começar
+  setTimeout(reconcilePaperPositions, 10000);
+
   // Paper Trading — aprendizado autônomo (aguarda 60s para MT5 conectar)
   setTimeout(initPaperTrading, 60000);
+});
 });
