@@ -49,11 +49,11 @@ const LIQUIDATION_THRESHOLD  = 500000;
 const HTF_MIN_PROB = { WITH: 65, NEUTRAL: 70, AGAINST: 78 };
 
 const SESSION_HOURS = {
-  FOREX:     { start: 7,  end: 20 }, // 07h-20h UTC (Londres + NY)
-  XAU:       { start: 7,  end: 20 }, // Ouro segue Forex
-  COMMODITY: { start: 13, end: 20 }, // WTI/GAS: sessão NY
-  INDEX:     { start: 8,  end: 20 }, // Índices: Londres + NY
-  CRYPTO:    null,                   // 24h
+  FOREX:     { start: 7,  end: 20 },
+  XAU:       { start: 7,  end: 20 },
+  COMMODITY: { start: 13, end: 20 },
+  INDEX:     { start: 8,  end: 20 },
+  CRYPTO:    null,
 };
 
 const FOREX_ASSETS  = ["EURUSD.s", "GBPUSD.s", "USDJPY.s", "AUDUSD.s", "USDCAD.s", "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s"];
@@ -100,39 +100,29 @@ const historicalCache  = new Map();
 let   lastCacheUpdate  = 0;
 const CACHE_TTL_MS     = 5 * 60 * 1000;
 
-// ✅ FIX: Map para controlar cooldown de ORDENS enviadas (separado do signalCache)
-const lastOrderSent = new Map(); // symbol -> timestamp do último slavePendingOrders.set
+const lastOrderSent = new Map();
 
 const ANALYSIS_INTERVAL_PRIORITY = 30 * 1000;
 const ANALYSIS_INTERVAL_NORMAL   = 60 * 1000;
 const LIVE_ROOM_BOT_ID = "LIVE-ROOM-BOT";
 const AUTO_EXEC_ACCOUNT = "USER-FABIOBUR";
-// Bots internos — nunca recebem ordens roteadas nem contam como slave/cliente real
 const INTERNAL_BOT_IDS = ["MASTER-BOT", "LIVE-ROOM-BOT"];
 
 const LIVE_ASSETS = [
-  // Crypto
   "BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD",
   "ADAUSD", "DOTUSD",
-  // Forex (nomes PU Prime com sufixo .s)
   "EURUSD.s", "GBPUSD.s", "USDJPY.s", "AUDUSD.s", "USDCAD.s", "USDCHF.s",
   "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s",
-  // Metais — MT5
   "XAUUSD.s", "XAGUSD.s",
-  // Índices (WTIUSD, NATGAS e US30.s removidos — sem candle M5 real)
   "NAS100.s", "SP500.s", "GER40.s", "UK100.s", "JPN225ft.s",
 ];
 const DEFAULT_STRATEGIES = {
-  // Crypto
   "BTCUSD": "AI", "ETHUSD": "AI", "BNBUSD": "AI", "SOLUSD": "AI", "XRPUSD": "AI",
   "ADAUSD": "AI", "DOTUSD": "AI",
-  // Forex
   "EURUSD.s": "AI", "GBPUSD.s": "AI", "USDJPY.s": "AI", "AUDUSD.s": "AI",
   "USDCAD.s": "AI", "USDCHF.s": "AI", "NZDUSD.s": "AI", "EURGBP.s": "AI",
   "GBPJPY.s": "AI", "EURJPY.s": "AI",
-  // Metais e Commodities
   "XAUUSD.s": "AI", "XAGUSD.s": "AI", "WTIUSD": "AI", "NATGAS": "AI",
-  // Índices
   "NAS100.s": "AI", "SP500.s": "AI", "US30.s": "AI",
   "GER40.s": "AI", "UK100.s": "AI", "JPN225ft.s": "AI",
 };
@@ -144,7 +134,7 @@ const liveScoreboard = { signals: 0, wins: 0, losses: 0, profit: 0, date: new Da
 // ─────────────────────────────────────────────
 const institutionalData = {
   fearGreed:    { value: 50, label: "Neutro", updated: null },
-  fastSentiment: { value: 50, label: "Neutro", updated: null }, // ✅ v20: sentimento rápido (RSI médio)
+  fastSentiment: { value: 50, label: "Neutro", updated: null },
   whaleAlerts:  [],
   liquidations: [],
   openInterest: {},
@@ -290,10 +280,6 @@ function updateSmartMoneyScore(symbol, direction, usdValue) {
   sms.updated = new Date().toISOString();
 }
 
-// ✅ v20: Sentimento RÁPIDO — complementa o Fear&Greed (que só atualiza 1x/dia)
-// Calcula a média do RSI de todos os ativos monitorados que estão com preço
-// fresco. RSI médio alto = mercado "comprado" (ganância), baixo = "vendido"
-// (medo). Atualiza a cada ciclo de preço, então reage em minutos — não em dias.
 function calcFastSentiment() {
   let sumRsi = 0, count = 0, overbought = 0, oversold = 0;
   for (const sym of LIVE_ASSETS) {
@@ -323,7 +309,6 @@ function calcFastSentiment() {
     assets_overbought: overbought,
     assets_oversold:   oversold,
     assets_analyzed:   count,
-    // RSI baixo (mercado vendido) tende a favorecer reversão de COMPRA, e vice-versa
     bias: score <= 35 ? "BULL" : score >= 65 ? "BEAR" : "NEUTRAL",
     timeframe: "M5 (tempo real)",
     updated: new Date().toISOString(),
@@ -391,10 +376,6 @@ async function estimateLiquidations() {
   } catch {}
 }
 
-// ✅ v20: dados REAIS de derivativos via Bybit (1ª opção) e OKX (2ª opção)
-// Binance Futures (fapi.binance.com) retorna 451 no Railway — Bybit/OKX
-// geralmente não bloqueiam por região. Se ambos falharem, retorna null
-// e quem chamou cai no fallback estimado (CoinGecko/Fear&Greed).
 const DERIV_SYMBOL_MAP = {
   BTCUSD: { bybit: "BTCUSDT", okx: "BTC-USDT-SWAP" },
   ETHUSD: { bybit: "ETHUSDT", okx: "ETH-USDT-SWAP" },
@@ -404,7 +385,6 @@ async function fetchRealDerivatives(site) {
   const map = DERIV_SYMBOL_MAP[site];
   if (!map) return null;
 
-  // 1) Bybit — um único endpoint traz funding + OI + variação 24h
   try {
     const res = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${map.bybit}`);
     if (res.ok) {
@@ -424,7 +404,6 @@ async function fetchRealDerivatives(site) {
     }
   } catch (err) { console.log(`[Derivatives] Bybit erro ${site}:`, err.message); }
 
-  // 2) OKX — fallback se Bybit falhar
   try {
     const [frRes, oiRes] = await Promise.all([
       fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${map.okx}`),
@@ -446,17 +425,15 @@ async function fetchRealDerivatives(site) {
     }
   } catch (err) { console.log(`[Derivatives] OKX erro ${site}:`, err.message); }
 
-  return null; // ambos falharam — quem chamou usa estimativa
+  return null;
 }
 
 async function fetchOpenInterest() {
-  // CoinGecko derivatives — sem restrição geográfica, gratuito
   const symbols = [
     { gecko: "bitcoin",  site: "BTCUSD" },
     { gecko: "ethereum", site: "ETHUSD" }];
   for (const { gecko, site } of symbols) {
     try {
-      // ✅ v20: tenta OI real via Bybit/OKX primeiro
       const real = await fetchRealDerivatives(site);
       if (real && real.openInterestUsd > 0) {
         const oiUsd = real.openInterestUsd;
@@ -475,7 +452,7 @@ async function fetchOpenInterest() {
             : priceChange < -3
             ? `Mercado em queda ${priceChange.toFixed(1)}% 24h — OI ${usd}`
             : `Mercado estável | OI: ${usd}`,
-          source: real.source, // "bybit" ou "okx" — dado REAL
+          source: real.source,
           updated: new Date().toISOString(),
         };
 
@@ -486,10 +463,9 @@ async function fetchOpenInterest() {
             message: `📊 ${site} ${priceChange>0?"↑":"↓"} ${Math.abs(priceChange).toFixed(1)}% 24h — OI: ${usd}`,
             timestamp: new Date().toISOString() });
         }
-        continue; // não precisa do fallback CoinGecko
+        continue;
       }
 
-      // Fallback — CoinGecko (estimativa via volume/market cap)
       const res = await fetch(
         `https://api.coingecko.com/api/v3/coins/${gecko}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`,
         { headers: { "accept": "application/json" } }
@@ -497,13 +473,11 @@ async function fetchOpenInterest() {
       if (!res.ok) { console.log(`[OI] ${gecko} HTTP ${res.status}`); continue; }
       const json = await res.json();
 
-      // Usa market_cap como proxy de interesse de mercado
       const marketCap = json.market_data?.market_cap?.usd || 0;
       const volume24h = json.market_data?.total_volume?.usd || 0;
       const priceChange = json.market_data?.price_change_percentage_24h || 0;
       const bid = allPrices.get(site)?.bid || 0;
 
-      // OI estimado = volume 24h / 4 (proxy comum)
       const oiEstimated = volume24h / 4;
       const prev = institutionalData.openInterest[site];
       const change = prev?.value ? ((oiEstimated - prev.value) / prev.value * 100).toFixed(2) : "0";
@@ -522,7 +496,7 @@ async function fetchOpenInterest() {
           : priceChange < -3
           ? `Mercado em queda ${priceChange.toFixed(1)}% 24h — volume ${usd}`
           : `Mercado estável | Volume 24h: ${usd}`,
-        source: "estimated", // ⚠️ proxy via volume — Bybit/OKX indisponíveis
+        source: "estimated",
         updated: new Date().toISOString(),
       };
 
@@ -538,8 +512,6 @@ async function fetchOpenInterest() {
 }
 
 async function fetchFundingRates() {
-  // Estimativa de funding baseada em Fear&Greed + variação de preço 24h
-  // Fallback robusto sem dependência de Binance Futures
   const symbols = [
     { gecko: "bitcoin",  site: "BTCUSD" },
     { gecko: "ethereum", site: "ETHUSD" }];
@@ -547,10 +519,9 @@ async function fetchFundingRates() {
 
   for (const { gecko, site } of symbols) {
     try {
-      // ✅ v20: tenta funding rate REAL via Bybit/OKX primeiro
       const real = await fetchRealDerivatives(site);
       if (real) {
-        const rate = real.fundingRatePct; // já em %
+        const rate = real.fundingRatePct;
         const priceChange = real.priceChange24hPct ?? 0;
         institutionalData.fundingRate[site] = {
           rate:             parseFloat(rate.toFixed(4)),
@@ -563,14 +534,13 @@ async function fetchFundingRates() {
             : "⚪ Funding neutro",
           bias:    rate > 0.03 ? "BEAR" : rate < -0.03 ? "BULL" : "NEUTRAL",
           signal:  rate > 0.08 ? "SELL (reversão)" : rate < -0.08 ? "BUY (reversão)" : "NEUTRO",
-          source:  real.source, // "bybit" ou "okx" — dado REAL
+          source:  real.source,
           updated: new Date().toISOString(),
         };
         console.log(`[Funding] ${site}: REAL(${real.source}) ${rate.toFixed(4)}% | Δ24h:${priceChange.toFixed(1)}%`);
-        continue; // não precisa do fallback estimado
+        continue;
       }
 
-      // Fallback — estimativa baseada em Fear&Greed + variação de preço 24h
       const res = await fetch(
         `https://api.coingecko.com/api/v3/simple/price?ids=${gecko}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`,
         { headers: { "accept": "application/json" } }
@@ -582,17 +552,15 @@ async function fetchFundingRates() {
         priceChange = json[gecko]?.usd_24h_change || 0;
       }
 
-      // Estima funding: preço subindo = longs dominantes = funding positivo
-      // Fear extremo = funding negativo (shorts dominando)
       let rate = 0;
       if (fg <= 20) {
-        rate = -0.05 + (priceChange / 200); // medo extremo = funding negativo
+        rate = -0.05 + (priceChange / 200);
       } else if (fg >= 80) {
-        rate = 0.08 + (priceChange / 200);  // ganância = funding alto
+        rate = 0.08 + (priceChange / 200);
       } else {
-        rate = (priceChange / 100) * 0.03;  // neutro = baseado em variação
+        rate = (priceChange / 100) * 0.03;
       }
-      rate = Math.max(-0.15, Math.min(0.15, rate)); // limita entre -0.15% e +0.15%
+      rate = Math.max(-0.15, Math.min(0.15, rate));
 
       institutionalData.fundingRate[site] = {
         rate:           parseFloat(rate.toFixed(4)),
@@ -605,13 +573,12 @@ async function fetchFundingRates() {
           : "⚪ Funding estimado neutro",
         bias:    rate > 0.03 ? "BEAR" : rate < -0.03 ? "BULL" : "NEUTRAL",
         signal:  rate > 0.08 ? "SELL (reversão)" : rate < -0.08 ? "BUY (reversão)" : "NEUTRO",
-        source:  "estimated", // ⚠️ Bybit/OKX indisponíveis — proxy via F&G+preço
+        source:  "estimated",
         updated: new Date().toISOString(),
       };
 
       console.log(`[Funding] ${site}: estimado ${rate.toFixed(4)}% | F&G:${fg} | Δ24h:${priceChange.toFixed(1)}%`);
     } catch (err) {
-      // Fallback final baseado só no Fear&Greed
       const rate = fg < 30 ? -0.03 : fg > 70 ? 0.06 : 0.01;
       institutionalData.fundingRate[site] = {
         rate, bias: rate > 0.03 ? "BEAR" : rate < -0.03 ? "BULL" : "NEUTRAL",
@@ -722,19 +689,17 @@ function getMostUsedMode() {
 }
 function isGoodTradingHour(symbol) {
   const hour = new Date().getUTCHours();
-  if (CRYPTO_ASSETS.includes(symbol)) return true; // 24h
-  if (FOREX_ASSETS.includes(symbol))  return hour >= 7  && hour < 20; // Forex: 07h-20h UTC (ampliado)
-  if (XAU_ASSETS.includes(symbol))    return hour >= 7  && hour < 20; // Ouro/Prata: 07h-20h UTC
-  if (COMMODITY_ASSETS.includes(symbol)) return hour >= 13 && hour < 20; // WTI/GAS: sessão NY
-  if (INDEX_ASSETS.includes(symbol))  return hour >= 8  && hour < 20; // Índices: 08h-20h UTC
+  if (CRYPTO_ASSETS.includes(symbol)) return true;
+  if (FOREX_ASSETS.includes(symbol))  return hour >= 7  && hour < 20;
+  if (XAU_ASSETS.includes(symbol))    return hour >= 7  && hour < 20;
+  if (COMMODITY_ASSETS.includes(symbol)) return hour >= 13 && hour < 20;
+  if (INDEX_ASSETS.includes(symbol))  return hour >= 8  && hour < 20;
   return true;
 }
 function getSessionName() { const h = new Date().getUTCHours(); if (h >= 8 && h < 12) return "🇬🇧 Sessão Londres"; if (h >= 13 && h < 17) return "🇺🇸 Overlap NY+Londres ⭐⭐⭐"; if (h >= 17 && h < 21) return "🇺🇸 Sessão NY"; return "🌙 Fora de sessão"; }
 function getMinProbByHTF(direction, htfBias) { if (!htfBias || htfBias === "NEUTRAL") return HTF_MIN_PROB.NEUTRAL; const isWith = (direction==="BUY"&&htfBias==="BULL") || (direction==="SELL"&&htfBias==="BEAR"); return isWith ? HTF_MIN_PROB.WITH : HTF_MIN_PROB.AGAINST; }
 
-// ✅ FIX: Função centralizada para enfileirar ordem com cooldown
 function enqueueOrder(targetSlaveId, symbol, direction, sl, tp, lot, strategy, probability, confirmations, trendStrength, source) {
-  // Verifica cooldown de ordem por símbolo
   const lastSent = lastOrderSent.get(symbol) || 0;
   const elapsed  = Date.now() - lastSent;
   if (elapsed < SIGNAL_COOLDOWN) {
@@ -743,7 +708,6 @@ function enqueueOrder(targetSlaveId, symbol, direction, sl, tp, lot, strategy, p
     return false;
   }
 
-  // Valida TP — não enfileira se tp for zero ou inválido
   const tpVal = parseFloat(tp);
   const slVal = parseFloat(sl);
   if (!tpVal || tpVal <= 0) {
@@ -771,7 +735,6 @@ function enqueueOrder(targetSlaveId, symbol, direction, sl, tp, lot, strategy, p
     timestamp:      new Date().toISOString(),
   });
 
-  // Registra timestamp do envio
   lastOrderSent.set(symbol, Date.now());
   console.log(`[Order] ✅ Enfileirada: ${direction} ${symbol} SL:${slVal} TP:${tpVal} → ${targetSlaveId} | ID: ${orderId}`);
   return true;
@@ -861,7 +824,6 @@ function checkScoreboardReset() {
   if(liveScoreboard.date!==today){
     liveScoreboard.signals=0;liveScoreboard.wins=0;liveScoreboard.losses=0;liveScoreboard.profit=0;liveScoreboard.date=today;
     pendingNotifications.length=0;signalCache.clear();analysisCache.clear();processingAssets.clear();activeSignals.clear();alertCache.clear();
-    // ✅ Reset lastOrderSent no início do dia também
     lastOrderSent.clear();
     Object.keys(institutionalData.smartMoneyScore).forEach(k=>{institutionalData.smartMoneyScore[k].buyVolume=0;institutionalData.smartMoneyScore[k].sellVolume=0;});
     console.log("[LiveRoom] Novo dia — caches limpos (incluindo lastOrderSent)");
@@ -877,23 +839,18 @@ async function callEaSignalV3(strategy, symbol, historicalData=null, mode="expre
   if(priceData.closes&&Array.isArray(priceData.closes)&&priceData.closes.length>=20){
     closes=priceData.closes;highs=priceData.highs||[];lows=priceData.lows||[];opens=priceData.opens||[];
   } else {
-    // ⚠️ FIX: sem arrays OHLC reais do MT5 → o eaSignal analisa candles
-    // FABRICADOS (aleatórios em volta do bid). Análise vira ruído. Esse warn
-    // deixa isso visível no log. Confirme em /candle-check quais ativos caem aqui.
     console.warn(`[callEaSignalV3] ⚠️ ${symbol}: SEM candles M5 reais — fabricando aleatórios (análise não confiável). Verifique o EA MT5.`);
     const bid=parseFloat(priceData.bid);
     closes=[];highs=[];lows=[];opens=[];
     for(let i=59;i>=3;i--){const f=1+(Math.random()-.5)*.001;closes.push(parseFloat((bid*f).toFixed(5)));highs.push(parseFloat((bid*f*1.001).toFixed(5)));lows.push(parseFloat((bid*f*.999).toFixed(5)));opens.push(parseFloat((bid*f*.9998).toFixed(5)));}
     closes.push(bid);highs.push(bid*1.001);lows.push(bid*.999);opens.push(bid*.9998);
   }
-  // ✅ v11: Passa contexto institucional para o eaSignal (Claude vai usar)
   const body={
     strategy, symbol, mode, closes, highs, lows, opens,
     historical_win_rate:historicalData?.win_rate??-1,
     historical_sample_size:historicalData?.sample_size??0,
     hour_win_rate:historicalData?.hour_win_rate??-1,
     hour_sample_size:historicalData?.hour_sample_size??0,
-    // Contexto institucional para Claude analisar
     fear_greed:  institutionalData.fearGreed?.value || 50,
     funding_rate: institutionalData.fundingRate[symbol]?.rate || 0,
     open_interest: institutionalData.openInterest[symbol] || null,
@@ -916,7 +873,6 @@ async function callEaSignalV3(strategy, symbol, historicalData=null, mode="expre
 // ─────────────────────────────────────────────
 // LIVE ROOM — Análise
 // ─────────────────────────────────────────────
-// ✅ Gera narrativa do sinal para mostrar no card (modo express sem Claude)
 function buildSignalNarrative(symbol, result, htfBias) {
   const dir     = result.direction || "";
   const prob    = result.probability || 0;
@@ -930,28 +886,24 @@ function buildSignalNarrative(symbol, result, htfBias) {
   const votes   = analysis.votes || [];
   const sms     = analysis.smart_money_score;
   const trend   = analysis.market_structure?.trend || "RANGING";
-  const fg      = 12; // Fear&Greed atual (baixo = medo = bullish contrário)
+  const fg      = 12;
 
   const isBuy  = dir === "BUY";
   const dirLabel = isBuy ? "alta" : "baixa";
   const emoji  = isBuy ? "🟢" : "🔴";
 
-  // Conta estratégias que confirmam
   const confirming = votes.filter(v => v.direction === dir).length;
   const total      = votes.length || 6;
 
   let parts = [];
 
-  // Contexto de tendência
   if (trend === "BULLISH") parts.push("tendência de alta no M5");
   else if (trend === "BEARISH") parts.push("tendência de baixa no M5");
   else parts.push("mercado em range");
 
-  // HTF
   if (htf === "BULL") parts.push("HTF bullish confirma");
   else if (htf === "BEAR") parts.push("HTF bearish — setup contra-tendência");
 
-  // Indicadores chave
   if (rsi) {
     if (parseFloat(rsi) < 35)      parts.push(`RSI sobrevendido (${rsi})`);
     else if (parseFloat(rsi) > 65) parts.push(`RSI sobrecomprado (${rsi})`);
@@ -961,22 +913,18 @@ function buildSignalNarrative(symbol, result, htfBias) {
   if (stoch && parseFloat(stoch) > 75) parts.push(`Stoch sobrecomprado (${stoch})`);
   if (adx && parseFloat(adx) > 25)     parts.push(`tendência forte ADX ${adx}`);
 
-  // Fear&Greed
   if (fg <= 15 && isBuy)  parts.push("medo extremo favorece reversão de alta");
   if (fg >= 80 && !isBuy) parts.push("ganância extrema favorece reversão de baixa");
 
-  // Smart money score
   if (sms?.grade === "A") parts.push(`Smart Money muito forte (Score ${sms.score})`);
   else if (sms?.grade === "B") parts.push(`Smart Money forte (Score ${sms.score})`);
 
-  // Confluência de estratégias
   parts.push(`${confirming}/${total} estratégias confirmam ${dirLabel}`);
 
   const narrative = `${emoji} ${parts.slice(0, 4).join(" | ")}. Setup de ${dirLabel} com ${prob}% de probabilidade.`;
   return narrative;
 }
 
-// ✅ Gera "o que observar" baseado nos dados técnicos
 function buildWatchFor(symbol, result, claudeCtx) {
   const dir = result.direction || "";
   const htf = result.htf_bias || "NEUTRAL";
@@ -985,7 +933,6 @@ function buildWatchFor(symbol, result, claudeCtx) {
   return `${symbol} em range — aguardar definição de direção`;
 }
 
-// ✅ Gera contexto básico quando Claude não retornou análise
 function buildBasicContext(symbol, result) {
   const ind      = result.indicators || {};
   const rsi      = ind.rsi  ? parseFloat(ind.rsi).toFixed(1)  : null;
@@ -1039,9 +986,6 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
     const minInterval=isPriority?ANALYSIS_INTERVAL_PRIORITY:ANALYSIS_INTERVAL_NORMAL;
     if(Date.now()-lastAnalysis<minInterval) return;
     analysisCache.set(lockKey,Date.now());
-    // ✅ Modo completo (Claude API) só para planos PRO e ELITE
-    // Express: narrativa automática sem Claude (todos os planos)
-    // Completo: Claude analisa contexto antes das estratégias (PRO+)
     const clientMode = getMostUsedMode();
     const hasPROClient = [...activeSlaves.entries()].some(([uid, d]) =>
       !INTERNAL_BOT_IDS.includes(uid) &&
@@ -1090,7 +1034,6 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
               warning: claudeCtx2.warning || null,
             };
           } else {
-            // Gera contexto com HTF correto
             const ctx2 = buildBasicContext(symbol, result);
             ctx2.narrative = `${symbol} setup ${result.direction} com ${result.probability}% — abaixo do mínimo ${minProb}% exigido com HTF ${htfBiasLabel}. Aguardar confirmação.`;
             ctx2.watch_for = `Aguardar probabilidade ≥ ${minProb}% para entrar ${result.direction}`;
@@ -1126,7 +1069,6 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       const confluenceScore=result.analysis?.smart_money_score?.score||50;
       liveScoreboard.signals++;
       const isBestSession=getSessionName().includes("⭐⭐⭐");
-      // ✅ Narrativa do sinal — Claude (modo complete) ou gerada automaticamente (express)
       const claudeCtxSignal  = result.claude_context || null;
       const signalNarrative  = claudeCtxSignal?.narrative   || buildSignalNarrative(symbol, result, htfBias);
       const signalWarning    = claudeCtxSignal?.warning      || null;
@@ -1167,12 +1109,6 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       notifyAllClients(signal);
       console.log(`[LiveRoom v19] ${result.direction} ${symbol} | ${result.probability}% | HTF: ${htfBias} | SL:${result.sl} TP1:${result.tp1}`);
 
-// ⛔ EXECUÇÃO AUTOMÁTICA DESATIVADA (11/07/2026).
-      // Motor sem borda comprovada — paramos de operar a conta real.
-      // O sinal continua sendo GERADO, exibido e REGISTRADO (paper + experimento
-      // Claude) normalmente; apenas NÃO vira ordem no MT5. Trava real, na fonte,
-      // no lugar do AutoTrading do MT5 (que era frágil). Para religar um dia,
-      // basta trocar AUTO_EXEC_ENABLED para true.
       const AUTO_EXEC_ENABLED = false;
       if(AUTO_EXEC_ENABLED && isSlaveOnline(AUTO_EXEC_ACCOUNT)){
         const tpToSend = result.tp1 || result.tp;
@@ -1186,7 +1122,6 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
       }
     } else {
       if(liveRoomClients.size>0){
-        // ✅ Manda contexto do Claude junto com o no_signal
         const claudeCtx = result.claude_context || null;
         const noSigPayload = {
           type:"no_signal", asset:symbol, strategy,
@@ -1197,7 +1132,6 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
           htf_bias: result.htf_bias,
           timestamp: new Date().toISOString(),
         };
-        // Adiciona contexto rico quando Claude analisou
         if(claudeCtx && (claudeCtx.narrative || claudeCtx.key_levels)) {
           noSigPayload.claude_context = {
             regime:      claudeCtx.regime      || "RANGE",
@@ -1210,7 +1144,6 @@ async function analyzeLiveAsset(symbol, isPriority=false) {
             risk_factors: claudeCtx.risk_factors || [],
           };
         } else {
-          // Sem Claude — gera contexto básico com os dados técnicos disponíveis
           noSigPayload.claude_context = buildBasicContext(symbol, result);
         }
         broadcastToLiveRoom(noSigPayload);
@@ -1307,7 +1240,6 @@ app.get("/smart-money",(req,res)=>{
   res.json({scores:institutionalData.smartMoneyScore,fear_greed:institutionalData.fearGreed,correlations:institutionalData.correlations,cot_report:institutionalData.cotReport,timestamp:new Date().toISOString()});
 });
 
-// ✅ FIX: endpoint de debug para ver cooldowns ativos
 app.get("/order-cooldowns",(req,res)=>{
   const now = Date.now();
   const cooldowns = {};
@@ -1324,10 +1256,6 @@ app.get("/order-cooldowns",(req,res)=>{
   res.json({ cooldown_minutes: SIGNAL_COOLDOWN / 60000, symbols: cooldowns, timestamp: new Date().toISOString() });
 });
 
-// ✅ DIAGNÓSTICO: mostra, por ativo, se o servidor recebe candles M5 REAIS do
-// MT5 ou se está fabricando candles aleatórios. Se "fabricando_aleatorio" listar
-// ativos, o EA MT5 desses ativos não está enviando os arrays OHLC e a análise
-// deles NÃO é confiável. Acesse: <RAILWAY_URL>/candle-check
 app.get("/candle-check",(req,res)=>{
   const out = {};
   const fabricando = [];
@@ -1369,7 +1297,6 @@ app.post("/live-signal-result",async(req,res)=>{
   res.json({status:"ok"});
 });
 
-// ✅ v20: helper para calcular wins/losses/profit/win_rate de uma lista de trades
 function computeTradeStats(trades) {
   const valid = trades.filter(t=>t.result==="win"||t.result==="loss");
   const wins = valid.filter(t=>t.result==="win").length;
@@ -1382,14 +1309,10 @@ function computeTradeStats(trades) {
 app.get("/all-trades",async(req,res)=>{
   try{
     let query=`trades?order=created_at.desc&limit=${req.query.limit||500}`;
-    // ✅ v20: filtro opcional por data — útil pra excluir dados antigos
-    // (ex: pré-fix v5.5) e ver só os trades a partir de um momento específico
     if(req.query.since) query+=`&created_at=gte.${encodeURIComponent(req.query.since)}`;
     const trades=await supabaseGet(query);
     if(!trades||!trades.length)return res.json({total:0,trades:[],stats:{total:0,wins:0,losses:0,win_rate:0,total_profit:0},stats_last_24h:null,since:req.query.since||null});
 
-    // ✅ v20: stats das últimas 24h calculadas separadamente (sempre, independente de `since`/`limit`)
-    // — assim dá pra comparar "tudo" vs "recente" sem fazer duas chamadas manuais
     let stats24h=null;
     try{
       const since24h=new Date(Date.now()-24*60*60*1000).toISOString();
@@ -1401,12 +1324,6 @@ app.get("/all-trades",async(req,res)=>{
   }catch(err){res.status(500).json({error:err.message});}
 });
 
-// ─────────────────────────────────────────────
-// ✅ v22: RESUMO GERAL — paper trading (3 trilhas) + robô (MASTER-BOT) +
-// conta real (slaves) + total agregado, tudo em um único endpoint.
-// Agrupa por user_code da tabela `trades`.
-// Use ?since=2026-06-15T00:00:00Z para filtrar por data.
-// ─────────────────────────────────────────────
 app.get("/dashboard-summary",async(req,res)=>{
   try{
     let query=`trades?order=created_at.desc&limit=${req.query.limit||2000}&select=user_code,result,profit,created_at`;
@@ -1414,7 +1331,6 @@ app.get("/dashboard-summary",async(req,res)=>{
     const trades=await supabaseGet(query);
     if(!trades||!Array.isArray(trades)) return res.status(500).json({error:"Erro ao consultar Supabase"});
 
-    // Agrupa por user_code
     const groups={};
     for(const t of trades){
       const code=t.user_code||"UNKNOWN";
@@ -1427,12 +1343,10 @@ app.get("/dashboard-summary",async(req,res)=>{
       byUserCode[code]=computeTradeStats(list);
     }
 
-    // Agrega trilhas de paper trading num bloco "paper_total"
     const paperCodes=Object.keys(byUserCode).filter(c=>c.startsWith("PAPER-BOT"));
     const paperAll=paperCodes.flatMap(c=>groups[c]);
     const paperTotal=paperAll.length?computeTradeStats(paperAll):null;
 
-    // Agrega tudo que NÃO é paper (robô + conta real) num bloco "robot_total"
     const robotCodes=Object.keys(byUserCode).filter(c=>!c.startsWith("PAPER-BOT"));
     const robotAll=robotCodes.flatMap(c=>groups[c]);
     const robotTotal=robotAll.length?computeTradeStats(robotAll):null;
@@ -1441,24 +1355,16 @@ app.get("/dashboard-summary",async(req,res)=>{
       since:req.query.since||null,
       total_trades:trades.length,
       overall:computeTradeStats(trades),
-      robot_total:robotTotal,      // MASTER-BOT + USER-FABIOBUR (tudo que não é paper)
-      paper_total:paperTotal,       // BASE + RR2X + RR3X somados
-      by_user_code:byUserCode,       // detalhe individual de cada user_code
+      robot_total:robotTotal,
+      paper_total:paperTotal,
+      by_user_code:byUserCode,
       timestamp:new Date().toISOString(),
     });
   }catch(err){res.status(500).json({error:err.message});}
 });
 
-// ─────────────────────────────────────────────
-// ✅ v23: COMPARAÇÃO DAS 3 TRILHAS DE RR (BASE vs RR2X vs RR3X)
-// Mostra só os números que importam para decidir qual RR aplicar em produção.
-// Considera apenas trades FECHADOS (win/loss) das trilhas novas (PAPER-BOT-{track}).
-// Use ?since=2026-06-16T00:00:00Z para filtrar a partir do deploy das trilhas.
-// ─────────────────────────────────────────────
 app.get("/tracks-comparison",async(req,res)=>{
   try{
-    // Por padrão, só considera trades a partir de quando as trilhas começaram
-    // (evita misturar com os 65 trades antigos do PAPER-BOT sem sufixo)
     const since = req.query.since || "2026-06-16T00:00:00Z";
     let query=`trades?order=created_at.desc&limit=5000&select=user_code,result,profit,symbol,created_at&created_at=gte.${encodeURIComponent(since)}`;
     const trades=await supabaseGet(query);
@@ -1482,7 +1388,6 @@ app.get("/tracks-comparison",async(req,res)=>{
       const profit = parseFloat(all.reduce((s,t) => s + (parseFloat(t.profit)||0), 0).toFixed(2));
       const winRate = closed.length > 0 ? parseFloat(((wins/closed.length)*100).toFixed(1)) : 0;
 
-      // Profit factor = soma dos ganhos / soma das perdas (em valor absoluto)
       const grossWin = all.filter(t=>parseFloat(t.profit)>0).reduce((s,t)=>s+parseFloat(t.profit),0);
       const grossLoss = Math.abs(all.filter(t=>parseFloat(t.profit)<0).reduce((s,t)=>s+parseFloat(t.profit),0));
       const profitFactor = grossLoss > 0 ? parseFloat((grossWin/grossLoss).toFixed(2)) : (grossWin>0?999:0);
@@ -1506,7 +1411,6 @@ app.get("/tracks-comparison",async(req,res)=>{
       }
     }
 
-    // Recomendação: só sugere vencedora se houver amostra mínima
     const minSampleReached = Object.values(result).every(t => t.closed >= 30);
     let recomendacao;
     if(best.track && minSampleReached){
@@ -1533,8 +1437,6 @@ app.post("/slave-register",async(req,res)=>{
   if(!user_id)return res.status(400).json({error:"user_id obrigatório"});
   if(status==="disconnected"){activeSlaves.delete(user_id);broadcastToSite({type:"slave_status",user_id,connected:false});return res.json({status:"ok"});}
 
-  // ✅ FIX: MASTER-BOT e bots internos NÃO entram no activeSlaves
-  // Isso impede o Live Room de enfileirar ordens duplicadas para o EA Master
   if(INTERNAL_BOT_IDS.includes(user_id)){
     console.log(`[SlaveRegister] Bot interno ignorado: ${user_id}`);
     return res.json({status:"ok",user_id,plan:"elite",limits:getPlanLimits("elite")});
@@ -1565,7 +1467,8 @@ app.post("/slave-trade-closed",async(req,res)=>{
   const now=new Date(),source=req.body.source||"SLAVE";
   const entryVal=parseFloat(entry);
   if(!entryVal){console.log(`[slave-trade-closed] ⚠️ ${symbol}: sem 'entry' no payload (EA desatualizado?) — fallback entry_price=close_price`);}
-  await saveTradeToSupabase({user_code:user_id,symbol,direction:direction||"buy",entry_price:entryVal||(parseFloat(close_price)||0),close_price:parseFloat(close_price)||0,sl:parseFloat(sl)||0,tp:parseFloat(tp)||0,profit:profitVal,result:resultStr,hour_of_day:now.getUTCHours(),day_of_week:now.getUTCDay(),market_strength:0,atr_value:0,probability:parseFloat(probability)||0,strategy:strategy||"AI",confirmations:parseInt(confirmations)||0,trend_strength:parseFloat(trend_strength)||0,source});if(source==="LIVE-ROOM"){
+  await saveTradeToSupabase({user_code:user_id,symbol,direction:direction||"buy",entry_price:entryVal||(parseFloat(close_price)||0),close_price:parseFloat(close_price)||0,sl:parseFloat(sl)||0,tp:parseFloat(tp)||0,profit:profitVal,result:resultStr,hour_of_day:now.getUTCHours(),day_of_week:now.getUTCDay(),market_strength:0,atr_value:0,probability:parseFloat(probability)||0,strategy:strategy||"AI",confirmations:parseInt(confirmations)||0,trend_strength:parseFloat(trend_strength)||0,source});
+  if(source==="LIVE-ROOM"){
     const recentSignal=liveSignalHistory.find(s=>s.asset===symbol&&s.direction?.toUpperCase()===direction?.toUpperCase()&&s.result==="open");
     if(recentSignal){
       recentSignal.result=resultStr;recentSignal.profit=profitVal;
@@ -1589,7 +1492,6 @@ app.post("/client-execute-order",async(req,res)=>{
   if(!limits.autoTrade)return res.status(403).json({error:"Auto Trade não disponível"});
   if(!isSlaveOnline(user_id))return res.status(503).json({error:"EA Slave não conectado",slave_online:false});
 
-  // ✅ FIX: usa enqueueOrder com cooldown e validação de TP/SL
   const queued = enqueueOrder(
     user_id, symbol, direction, sl, tp,
     lot_size, strategy, probability, confirmations, trend_strength,
@@ -1620,8 +1522,6 @@ app.get("/user-trades",async(req,res)=>{
 app.get("/live-learning",async(req,res)=>{
   try{
     let query="live_signals?result=neq.open&select=asset,strategy,result,profit,hour_of_day,created_at&order=created_at.desc&limit=500";
-    // ✅ v20: mesmo filtro since do /all-trades — ex: ?since=2026-06-15T00:00:00Z
-    // pra olhar só sinais a partir de uma data (excluindo histórico pré-fix)
     if(req.query.since) query+=`&created_at=gte.${encodeURIComponent(req.query.since)}`;
     const data=await supabaseGet(query);
     if(!data||!data.length)return res.json({status:"no_data",assets:{},since:req.query.since||null});
@@ -1653,8 +1553,6 @@ wss.on("connection",(ws)=>{
           const stats=await fetchHistoricalStats(symbol,strategy),hour=new Date().getUTCHours(),hourStats=stats.hour_stats?.[hour]||{};
           const result=await callEaSignalV3(strategy,symbol,{win_rate:stats.win_rate,sample_size:stats.sample_size,hour_win_rate:hourStats.win_rate??-1,hour_sample_size:hourStats.count??0},mode);
 
-          // ✅ v22: salva sinal do TradePage e monitora TP/SL — fecha o ciclo de aprendizado
-          // Só monitora se tiver sinal válido com entry/sl/tp definidos
           if(result.status==="new_signal" && result.entry && result.sl && result.tp1 && user_id){
             const signalId=`TS-${symbol}-${Date.now()}`;
             const priceData=allPrices.get(symbol);
@@ -1662,13 +1560,11 @@ wss.on("connection",(ws)=>{
             const liveAsk=priceData?parseFloat(priceData.ask||priceData.bid):null;
             const entryLive = result.direction==="BUY" ? (liveAsk||result.entry) : (liveBid||result.entry);
 
-            // Recalcula SL/TP a partir das distâncias (mesmo fix do paper trading — evita invertidos)
             const slDist  = Math.abs(result.entry - result.sl);
             const tp1Dist = Math.abs(result.entry - (result.tp1||result.tp));
             const sl  = result.direction==="BUY" ? entryLive-slDist : entryLive+slDist;
             const tp1 = result.direction==="BUY" ? entryLive+tp1Dist : entryLive-tp1Dist;
 
-            // Guarda em memória para monitorar (mesmo mecanismo do paper trading)
             tradepageSignals.set(signalId,{
               id:         signalId,
               user_id,
@@ -1683,7 +1579,6 @@ wss.on("connection",(ws)=>{
               supabaseId: null,
             });
 
-            // Salva no Supabase como trade "open" com user_code do usuário real
             try{
               const body={
                 user_code:   user_id,
@@ -1715,10 +1610,6 @@ wss.on("connection",(ws)=>{
               }
             }catch(e){console.error("[TradePage] Erro ao salvar no Supabase:",e.message);}
 
-            // ✅ FIX: a tela recebia result.entry/sl/tp calculados no candle M5
-            // (defasado até ~5min), diferente do entry LIVE usado pra monitorar.
-            // Reescreve os campos com os valores LIVE (mesmas distâncias, recoladas
-            // no preço atual) antes de enviar — assim UI e monitoramento batem.
             const tp2Dist = result.tp2 ? Math.abs(result.entry - parseFloat(result.tp2)) : null;
             const tp3Dist = result.tp3 ? Math.abs(result.entry - parseFloat(result.tp3)) : null;
             result.entry = roundPaperPrice(symbol, entryLive);
@@ -1729,7 +1620,6 @@ wss.on("connection",(ws)=>{
             if (tp3Dist !== null) result.tp3 = roundPaperPrice(symbol, result.direction==="BUY" ? entryLive+tp3Dist : entryLive-tp3Dist);
 
             console.log(`[TradePage] 📊 Sinal salvo | ${result.direction} ${symbol} | user:${user_id} | Entry:${entryLive} SL:${sl.toFixed(2)} TP:${tp1.toFixed(2)} | Prob:${result.probability}%`);
-            // Inclui o signal_id na resposta para o cliente referenciar se quiser
             result.tradepage_signal_id=signalId;
           }
 
@@ -1778,24 +1668,17 @@ wss.on("connection",(ws)=>{
 setInterval(()=>{activeSlaves.forEach((data,userId)=>{if((new Date()-data.lastSeen)/1000>SLAVE_REMOVE_S){activeSlaves.delete(userId);broadcastToSite({type:"slave_status",user_id:userId,connected:false});}});if(mt5LastSeen&&(new Date()-mt5LastSeen)>MT5_TIMEOUT_MS)broadcastToSite({type:"mt5_status",connected:false});},5000);
 setInterval(async()=>{try{await fetch(`${RAILWAY_URL}/health`);}catch{}},4*60*1000);
 setInterval(fetchFearGreed,    30*60*1000);
-// ✅ v22: consolidado em UM único interval de 5min — antes havia 3 intervals
-// separados que cada um chamava fetchOpenInterest/fetchFundingRates, gerando
-// 4x chamadas redundantes ao Bybit/OKX por ciclo (2x cada função)
 setInterval(async()=>{
   await fetchOpenInterest();
   await fetchFundingRates();
   calcSmartMoneyScoreFromData();
 }, 5*60*1000);
-// ✅ v20: sentimento rápido recalculado a cada 1min — não depende de API externa,
-// só usa os preços/RSI já em memória, então reage muito mais rápido que o F&G diário
 setInterval(()=>{
   const fs = calcFastSentiment();
   if (fs) {
     const prevValue = institutionalData.fastSentiment?.value;
     institutionalData.fastSentiment = fs;
     broadcastToSite({ type: "fast_sentiment_update", ...fs });
-    // alerta se houver mudança brusca (>=15 pontos) entre ciclos — captura
-    // exatamente o tipo de movimento rápido que o F&G diário não pega
     if (typeof prevValue === "number" && Math.abs(fs.value - prevValue) >= 15) {
       broadcastToLiveRoom({ type: "institutional_alert", category: "fast_sentiment", level: "warning",
         message: `⚡ Mudança rápida de sentimento: ${prevValue} → ${fs.value} (${fs.emoji} ${fs.label})`,
@@ -1815,7 +1698,6 @@ app.get("/health",(_, res)=>{
   const slaves=[];activeSlaves.forEach((data,userId)=>{const ago=Math.round((new Date()-data.lastSeen)/1000);slaves.push({user_id:userId,online:ago<SLAVE_TIMEOUT_S,balance:data.balance,plan:data.plan,last_seen_secs:ago});});
   const prices=[];allPrices.forEach((data,symbol)=>prices.push({symbol,bid:data.bid,fresh:isPriceFresh(data)}));
   const hour=new Date().getUTCHours();
-  // Monta status de cooldowns
   const now = Date.now();
   const orderCooldowns = {};
   lastOrderSent.forEach((ts, symbol) => { const rem = Math.max(0, SIGNAL_COOLDOWN - (now - ts)); orderCooldowns[symbol] = { blocked: rem > 0, remaining_seconds: Math.round(rem/1000) }; });
@@ -1830,7 +1712,6 @@ app.get("/health",(_, res)=>{
     session:getSessionName(),
     trading_hours:{current_utc:hour,forex_xau_active:hour>=8&&hour<17,crypto_active:true,best_session:hour>=13&&hour<17?"🇺🇸 Overlap NY+Londres ⭐⭐⭐":hour>=8&&hour<17?"🇬🇧 Sessão Londres ⭐":"🌙 Fora de sessão"},
     active_signals:Object.fromEntries(activeSignals),
-    // ✅ FIX: cooldowns de ordem visíveis no health
     order_cooldowns: orderCooldowns,
     focused_asset:getMostFocusedAsset(), current_mode:getMostUsedMode(),
     learning_cache_size:historicalCache.size, analysis_cache_size:analysisCache.size,
@@ -1850,10 +1731,6 @@ app.get("/health",(_, res)=>{
 });
 
 // ─────────────────────────────────────────────
-// INICIALIZAÇÃO
-// ─────────────────────────────────────────────
-
-// ─────────────────────────────────────────────
 // ENDPOINT PAPER TRADING
 // ─────────────────────────────────────────────
 app.get("/paper-trading",(req,res)=>{
@@ -1864,7 +1741,6 @@ app.get("/paper-trading",(req,res)=>{
     const unrealized=currentPrice?estimateProfit(pos.symbol,pos.direction,pos.entry,currentPrice,PAPER_LOT):null;
     positions.push({id,...pos,current_price:currentPrice,unrealized_profit:unrealized,open_minutes:Math.round((Date.now()-pos.openedAt)/60000)});
   });
-  // ✅ v21: scoreboard por trilha (BASE/RR2X/RR3X) + total agregado
   const tracks = {};
   let agg = {total:0,wins:0,losses:0,pending:0};
   Object.entries(paperTradeCount).forEach(([track,c])=>{
@@ -1894,73 +1770,39 @@ app.get("/paper-trading",(req,res)=>{
   });
 });
 
-/**
- * TraderAureonia AI — Paper Trading Module
- * Integrar no server.js v19-MTF-fix
- *
- * Como funciona:
- * 1. A cada 30min (configurável) gera sinal para cada ativo via eaSignal_v3
- * 2. Se sinal válido → salva no Supabase como "pending"
- * 3. A cada 30s monitora preço atual e verifica se atingiu TP ou SL
- * 4. Ao atingir TP → result: "win", profit estimado positivo
- * 5. Ao atingir SL → result: "loss", profit estimado negativo
- * 6. Timeout 4h → fecha pelo preço atual (win/loss pelo mark-to-market)
- *
- * ADICIONAR no server.js logo após o bloco de estado global existente,
- * e chamar initPaperTrading() dentro do httpServer.listen()
- */
-
 // ─────────────────────────────────────────────
 // CONFIGURAÇÕES PAPER TRADING
 // ─────────────────────────────────────────────
-const PAPER_INTERVAL_MS     = 30 * 60 * 1000; // Gera novos sinais a cada 30min
-const PAPER_MONITOR_MS      = 30 * 1000;       // Verifica preços a cada 30s
-const PAPER_TIMEOUT_MS      = 4 * 60 * 60 * 1000; // Fecha posição após 4h
-const PAPER_LOT             = 0.01;            // Lote fixo para estimativa de lucro
-const PAPER_MAX_OPEN        = 1;               // Máximo de posições paper abertas por (ativo, trilha)
-const PAPER_MIN_PROBABILITY = 65.0;            // Probabilidade mínima para abrir paper trade
+const PAPER_INTERVAL_MS     = 30 * 60 * 1000;
+const PAPER_MONITOR_MS      = 30 * 1000;
+const PAPER_TIMEOUT_MS      = 4 * 60 * 60 * 1000;
+const PAPER_LOT             = 0.01;
+const PAPER_MAX_OPEN        = 1;
+const PAPER_MIN_PROBABILITY = 65.0;
 const PAPER_ASSETS = [
-  // Crypto
   "BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD", "XRPUSD",
   "ADAUSD", "DOTUSD",
-  // Forex (nomes PU Prime com sufixo .s)
   "EURUSD.s", "GBPUSD.s", "USDJPY.s", "AUDUSD.s", "USDCAD.s", "USDCHF.s",
   "NZDUSD.s", "EURGBP.s", "GBPJPY.s", "EURJPY.s",
-  // Metais
   "XAUUSD.s", "XAGUSD.s",
-  // Índices (WTIUSD, NATGAS e US30.s removidos — sem candle M5 real)
   "NAS100.s", "SP500.s", "GER40.s", "UK100.s", "JPN225ft.s",
 ];
 
-// ✅ v21: TRILHAS
-
-// ✅ v21: TRILHAS de RR — mesmo sinal/SL (mesmo risco), TP diferente por trilha.
-// BASE  = usa o tp1 que o eaSignal já calcula (≈1.39x pra metais/crypto, ≈1.33x forex)
-// RR2X  = TP a 2.0x a distância do SL (mesmo risco, alvo maior)
-// RR3X  = TP a 3.0x a distância do SL
-// Isso permite comparar ao longo do tempo qual RR dá mais profit total,
-// já que entry/SL/direção são idênticos entre as 3 — só o TP muda.
 const PAPER_RR_TRACKS = {
   BASE: { label: "Padrão (eaSignal tp1)", rrMultiplier: null },
   RR2X: { label: "2x Risco",              rrMultiplier: 2.0  },
   RR3X: { label: "3x Risco",              rrMultiplier: 3.0  },
 };
 
-// Tick values aproximados por ativo (USD por pip/point no lote 0.01)
 const PAPER_TICK_VALUES = {
-  // Crypto — $0.01 por point no lote 0.01
   "BTCUSD":  0.01, "ETHUSD":  0.01, "BNBUSD":  0.01,
   "SOLUSD":  0.01, "XRPUSD":  0.01, "ADAUSD":  0.01,
   "DOTUSD":  0.01,
-  // Forex — $0.10 por pip no lote 0.01
   "EURUSD.s":  0.10, "GBPUSD.s":  0.10, "USDJPY.s":  0.09,
   "AUDUSD.s":  0.10, "USDCAD.s":  0.08, "USDCHF.s":  0.10,
   "NZDUSD.s":  0.10, "EURGBP.s":  0.10, "GBPJPY.s":  0.09, "EURJPY.s":  0.09,
-  // Metais
   "XAUUSD.s":0.01, "XAGUSD.s":0.01,
-  // Commodities
   "WTIUSD":  0.01, "NATGAS":  0.01,
-  // Índices — $0.01 por point no lote 0.01
   "NAS100.s":  0.01, "SP500.s":   0.01, "US30.s":    0.01,
   "GER40.s":   0.01, "UK100.s":   0.01, "JPN225ft.s":  0.01,
 };
@@ -1968,11 +1810,9 @@ const PAPER_TICK_VALUES = {
 // ─────────────────────────────────────────────
 // ESTADO PAPER TRADING
 // ─────────────────────────────────────────────
-const paperPositions   = new Map(); // id -> posição aberta (campo `track` indica a trilha)
-const paperCooldown    = new Map(); // symbol -> timestamp último sinal paper
-// ✅ v22: sinais do TradePage — monitorados igual ao paper trading
-const tradepageSignals = new Map(); // signalId -> sinal aberto do TradePage
-// ✅ v21: contadores por trilha
+const paperPositions   = new Map();
+const paperCooldown    = new Map();
+const tradepageSignals = new Map();
 const paperTradeCount  = {
   BASE: { total: 0, wins: 0, losses: 0, pending: 0 },
   RR2X: { total: 0, wins: 0, losses: 0, pending: 0 },
@@ -1982,30 +1822,15 @@ const paperTradeCount  = {
 // ─────────────────────────────────────────────
 // ESTIMA LUCRO/PERDA
 // ─────────────────────────────────────────────
-// ✅ FIX: valor em USD de um movimento de 1.0 no preço, por 1.0 lote.
-//   profit = priceDiff * pointValue * lot
-// Mantém EXATAMENTE o cálculo antigo (correto) para crypto, ouro, índices e
-// forex (não-JPY), e corrige os que antes caíam no `else` genérico e vinham
-// quase zero: PRATA, PETRÓLEO (WTI) e GÁS (NATGAS). Também corrige os pares
-// JPY, que pela conta antiga saíam ~100x maiores que o real.
-// ⚠️ Os tamanhos de contrato (100oz ouro, 5000oz prata, 1000 barris WTI,
-//    10000 MMBtu gás) seguem o padrão de mercado — confira contra a PU Prime
-//    se quiser bater centavo a centavo; não muda a marcação de win/loss.
 const POINT_VALUE_PER_LOT = {
-  // Crypto — $1 de preço = $1 por lote
   "BTCUSD":1, "ETHUSD":1, "BNBUSD":1, "SOLUSD":1, "XRPUSD":1, "ADAUSD":1, "DOTUSD":1,
-  // Forex não-JPY — $10 por pip por lote (pip 0.0001)
   "EURUSD.s":100000, "GBPUSD.s":100000, "AUDUSD.s":100000, "USDCAD.s":80000,
   "USDCHF.s":100000, "NZDUSD.s":100000, "EURGBP.s":100000,
-  // Forex JPY — pip 0.01 (corrige o exagero da conta antiga)
   "USDJPY.s":900, "GBPJPY.s":900, "EURJPY.s":900,
-  // Metais
-  "XAUUSD.s":100,    // ouro: 100 oz por lote
-  "XAGUSD.s":5000,   // prata: 5000 oz por lote  ← antes vinha ~zero
-  // Commodities
-  "WTIUSD":1000,     // petróleo: 1000 barris por lote  ← antes vinha ~zero
-  "NATGAS":10000,    // gás: 10000 MMBtu por lote  ← antes vinha ~zero
-  // Índices — ~$1 por ponto por lote
+  "XAUUSD.s":100,
+  "XAGUSD.s":5000,
+  "WTIUSD":1000,
+  "NATGAS":10000,
   "NAS100.s":1, "SP500.s":1, "US30.s":1, "GER40.s":1, "UK100.s":1, "JPN225ft.s":1,
 };
 
@@ -2023,8 +1848,6 @@ function estimateProfit(symbol, direction, entryPrice, closePrice, lot) {
 // ─────────────────────────────────────────────
 async function savePaperTrade(tradeData) {
   try {
-    // ✅ v21: user_code e source identificam a trilha de RR — permite
-    // filtrar /all-trades por user_code para comparar BASE vs RR2X vs RR3X
     const track = tradeData.track || "BASE";
     const body = {
       user_code:       `PAPER-BOT-${track}`,
@@ -2034,7 +1857,7 @@ async function savePaperTrade(tradeData) {
       sl:              tradeData.sl,
       tp:              tradeData.tp1,
       profit:          0,
-      result:          "open",   // será atualizado para win/loss
+      result:          "open",
       hour_of_day:     tradeData.hour,
       day_of_week:     tradeData.dayOfWeek,
       market_strength: tradeData.trend_strength || 0,
@@ -2044,7 +1867,6 @@ async function savePaperTrade(tradeData) {
       confirmations:   tradeData.confirmations || 0,
       trend_strength:  tradeData.trend_strength || 0,
       source:          `PAPER-${track}`,
-      // metadados extras para aprendizado
       htf_bias:        tradeData.htf_bias || "NEUTRAL",
       fear_greed:      tradeData.fear_greed || 50,
       session:         tradeData.session || "",
@@ -2072,10 +1894,13 @@ async function savePaperTrade(tradeData) {
 // ─────────────────────────────────────────────
 // ATUALIZA RESULTADO NO SUPABASE
 // ─────────────────────────────────────────────
+// ✅ FIX: agora retorna true/false explicitamente, pra quem chamou saber se a
+// gravação realmente aconteceu (e não confiar cegamente que "rodou sem throw"
+// significa "gravou" — foi exatamente essa suposição que escondeu o bug do RLS).
 async function updatePaperResult(supabaseId, result, profit, closePrice, closedBy, track) {
   if (!supabaseId) {
     console.log("[Paper] ⚠️ updatePaperResult chamado SEM supabaseId — não há linha pra atualizar");
-    return;
+    return false;
   }
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/trades?id=eq.${supabaseId}`, {
@@ -2097,16 +1922,18 @@ async function updatePaperResult(supabaseId, result, profit, closePrice, closedB
     if (!res.ok) {
       const body = await res.text();
       console.log(`[Paper] ❌ PATCH FALHOU id=${supabaseId} HTTP:${res.status} — ${body.slice(0,200)}`);
-      return;
+      return false;
     }
     const updated = await res.json();
     if (!Array.isArray(updated) || updated.length === 0) {
       console.log(`[Paper] ⚠️ PATCH id=${supabaseId} retornou OK mas 0 linhas afetadas — id não bateu com nenhum registro`);
-    } else {
-      console.log(`[Paper] ✅ Persistido no Supabase: id=${supabaseId} result=${result}`);
+      return false;
     }
+    console.log(`[Paper] ✅ Persistido no Supabase: id=${supabaseId} result=${result}`);
+    return true;
   } catch (err) {
     console.error("[Paper] Erro ao atualizar resultado:", err.message);
+    return false;
   }
 }
 
@@ -2126,7 +1953,6 @@ async function monitorPaperPositions() {
     const currentAsk = parseFloat(priceData.ask || priceData.bid);
     const elapsed    = now - pos.openedAt;
 
-    // Preço de referência por direção
     const checkPrice = pos.direction === "BUY" ? currentBid : currentAsk;
 
     let closed   = false;
@@ -2134,7 +1960,6 @@ async function monitorPaperPositions() {
     let closePrice = checkPrice;
     let closedBy = "";
 
-    // ── Verifica TP ──
     if (pos.direction === "BUY"  && currentBid >= pos.tp) {
       result   = "win";
       closePrice = pos.tp;
@@ -2147,7 +1972,6 @@ async function monitorPaperPositions() {
       closed   = true;
     }
 
-    // ── Verifica SL ──
     if (!closed) {
       if (pos.direction === "BUY"  && currentBid <= pos.sl) {
         result   = "loss";
@@ -2162,11 +1986,7 @@ async function monitorPaperPositions() {
       }
     }
 
-    // ── Timeout 4h — fecha pelo preço atual ──
     if (!closed && elapsed >= PAPER_TIMEOUT_MS) {
-      // ✅ FIX: decide win/loss pelo LADO do preço em relação à entrada, e não
-      // pelo profit arredondado — que zerava em ativos de movimento pequeno e
-      // acabava marcando trade perdedor como "win".
       const favoravel = pos.direction === "BUY"
         ? checkPrice > pos.entry
         : checkPrice < pos.entry;
@@ -2182,16 +2002,21 @@ async function monitorPaperPositions() {
       const track = pos.track || "BASE";
       const counter = paperTradeCount[track] || paperTradeCount.BASE;
 
-      // Atualiza Supabase
-      await updatePaperResult(pos.supabaseId, result, profit, closePrice, closedBy, track);
+      // ✅ FIX: só avança (contadores + remoção da memória) se a gravação no
+      // Supabase realmente confirmou. Se falhar, mantém a posição em memória
+      // pra tentar de novo no próximo ciclo (30s) — evita perder o fechamento
+      // por causa de um erro transitório de rede/banco.
+      const persisted = await updatePaperResult(pos.supabaseId, result, profit, closePrice, closedBy, track);
 
-      // Atualiza scoreboard da trilha correspondente
+      if (!persisted) {
+        console.log(`[Paper] ⚠️ Falha ao persistir ${pos.symbol} (id=${pos.supabaseId}) — mantendo em memória pra tentar de novo`);
+        continue;
+      }
+
       counter.pending = Math.max(0, counter.pending - 1);
       if (result === "win")  { counter.wins++;   }
       else                   { counter.losses++; }
 
-      // Atualiza live_signals também (para o historical do eaSignal) — só pra trilha BASE,
-      // pra não distorcer o win_rate histórico usado pelo eaSignal com as trilhas RR2X/RR3X
       if (pos.liveSignalId && track === "BASE") {
         await updateLiveSignalResult(pos.liveSignalId, result, profit, closePrice, closedBy === "TP" ? 1 : 0);
       }
@@ -2203,7 +2028,6 @@ async function monitorPaperPositions() {
                   `Entry:${pos.entry} SL:${pos.sl} TP:${pos.tp} Close:${closePrice} | P/L:$${profit} | ` +
                   `Fechado por:${closedBy} | Duração:${durationMin}min`);
 
-      // Broadcast para live room
       broadcastToLiveRoom({
         type:       "paper_trade_closed",
         track,
@@ -2232,8 +2056,6 @@ async function monitorPaperPositions() {
     }
   }
 
-  // ✅ v22: monitora sinais do TradePage — mesmo mecanismo do paper trading
-  // Timeout menor (2h) porque o usuário já viu o resultado na tela
   const TRADEPAGE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
   for (const [id, sig] of tradepageSignals.entries()) {
     const priceData = allPrices.get(sig.symbol);
@@ -2256,7 +2078,6 @@ async function monitorPaperPositions() {
     }
 
     if (closed && sig.supabaseId) {
-      // Atualiza resultado no Supabase
       try {
         await fetch(`${SUPABASE_URL}/rest/v1/trades?id=eq.${sig.supabaseId}`,{
           method:"PATCH",
@@ -2275,7 +2096,6 @@ async function monitorPaperPositions() {
 // ─────────────────────────────────────────────
 // GERA SINAL PAPER PARA UM ATIVO
 // ─────────────────────────────────────────────
-// Arredonda preço com a mesma precisão usada pelo eaSignal (dig)
 function roundPaperPrice(symbol, value) {
   const isForexSym = ["EURUSD.s","GBPUSD.s","USDJPY.s","AUDUSD.s","USDCAD.s","USDCHF.s","NZDUSD.s","EURGBP.s","GBPJPY.s","EURJPY.s"].includes(symbol);
   const isJPYSym   = symbol.includes("JPY");
@@ -2283,21 +2103,15 @@ function roundPaperPrice(symbol, value) {
   if (isForexSym) {
     dig = isJPYSym ? 3 : 5;
   } else {
-    // ✅ FIX: mesma lógica de casas decimais por MAGNITUDE que já existe no
-    // eaSignal_v3.js — antes era fixo em 2 casas pra tudo que não é forex,
-    // e ativos de preço baixo (ADA, DOT, XRP...) colapsavam entry==sl==tp,
-    // zerando a distância de risco (visto ao vivo hoje, 19:19h).
     const a = Math.abs(value);
     dig = a >= 100 ? 2 : a >= 10 ? 3 : a >= 1 ? 4 : 5;
   }
   return parseFloat(value.toFixed(dig));
 }
-// ✅ FIX: quando o Railway reinicia (deploy, crash, restart), o Map
-// `paperPositions` (só em memória) zera — mas as posições continuam "open"
-// no Supabase, órfãs, nunca mais monitoradas (nunca fecham). Isso explicava
-// os 500+ registros presos em open por trilha. Ao subir, busca essas
-// posições órfãs no banco e devolve elas pro Map, pra o monitor retomar —
-// inclusive fechando na hora, via TIMEOUT, as que já passaram muito das 4h.
+
+// ✅ FIX: reconcilia posições órfãs (de restart anterior) devolvendo elas pro
+// Map em memória, pra o monitor retomar (inclusive fechando na hora, via
+// TIMEOUT, as que já passaram muito das 4h).
 async function reconcilePaperPositions() {
   try {
     const rows = await supabaseGet(
@@ -2310,7 +2124,7 @@ async function reconcilePaperPositions() {
     let restored = 0, skipped = 0;
     for (const r of rows) {
       const m = /^PAPER-(BASE|RR2X|RR3X)$/.exec(r.source || "");
-      if (!m) { skipped++; continue; } // formato legado sem sufixo de trilha — ignora
+      if (!m) { skipped++; continue; }
       const track = m[1];
       const tradeId = `RESTORED-${track}-${r.symbol}-${r.id}`;
       paperPositions.set(tradeId, {
@@ -2343,8 +2157,6 @@ async function runPaperSignal(symbol) {
     return;
   }
 
-  // ✅ v21: cooldown agora é por (símbolo, trilha) — só pula a geração do sinal
-  // se TODAS as trilhas já tiverem posição aberta pra esse símbolo
   const openForSymbol = [...paperPositions.values()].filter(p => p.symbol === symbol);
   const tracksWithOpen = new Set(openForSymbol.map(p => p.track || "BASE"));
   const allTracksOpen = Object.keys(PAPER_RR_TRACKS).every(t => tracksWithOpen.has(t)
@@ -2360,7 +2172,6 @@ async function runPaperSignal(symbol) {
     const dayOfWeek  = now.getUTCDay();
     const session    = getSessionName();
 
-    // Busca histórico para calibrar
     const stats     = await fetchHistoricalStats(symbol, "AI");
     const hourStats = stats.hour_stats?.[hour] || {};
     const histData  = {
@@ -2386,26 +2197,19 @@ async function runPaperSignal(symbol) {
 
     const bid      = parseFloat(priceData.bid);
     const ask      = parseFloat(priceData.ask || priceData.bid);
-    const entry    = result.direction === "BUY" ? ask : bid;       // preço LIVE — usado pra abrir a posição paper
-    const resultEntry = parseFloat(result.entry);                   // preço que o eaSignal usou pro cálculo (M5 close)
+    const entry    = result.direction === "BUY" ? ask : bid;
+    const resultEntry = parseFloat(result.entry);
     const resultSL    = parseFloat(result.sl);
     const resultTP1   = parseFloat(result.tp1 || result.tp);
     const atr      = result.indicators?.atr || 0;
     const fearGreed = institutionalData.fearGreed?.value || 50;
     const mtfScore  = result.analysis?.mtf_alignment?.score || 0;
 
-    // Valida níveis brutos do eaSignal
     if (!resultEntry || resultEntry<=0 || !resultSL || resultSL<=0 || !resultTP1 || resultTP1<=0) {
       console.log(`[Paper] ${symbol} — entry/SL/TP inválido no resultado do eaSignal — descartado`);
       return;
     }
 
-    // ✅ FIX: o `result.entry` do eaSignal vem do último candle M5 e pode estar
-    // defasado em relação ao bid/ask LIVE (até 5min de diferença). Em vez de
-    // comparar result.sl/result.tp1 (absolutos) contra o preço live — o que
-    // gerava falsos "SL invertido" quando os preços divergiam — extraímos as
-    // DISTÂNCIAS (que carregam o RR correto) e reaplicamos no preço live.
-    // Isso garante SL/TP sempre no lado certo da entrada, por construção.
     const slDist  = Math.abs(resultEntry - resultSL);
     const tp1Dist = Math.abs(resultEntry - resultTP1);
     const priceDrift = Math.abs(entry - resultEntry);
@@ -2417,17 +2221,13 @@ async function runPaperSignal(symbol) {
     const sl  = roundPaperPrice(symbol, result.direction === "BUY" ? entry - slDist  : entry + slDist);
     const tp1 = roundPaperPrice(symbol, result.direction === "BUY" ? entry + tp1Dist : entry - tp1Dist);
 
-    // Verifica distância mínima (evita sinais com SL/TP colados no preço)
-    const minDist = entry * 0.001; // 0.1% mínimo
+    const minDist = entry * 0.001;
     if (slDist < minDist || tp1Dist < minDist) {
       console.log(`[Paper] ${symbol} — distância SL/TP muito pequena — descartado`);
       return;
     }
 
-    // ✅ v21: abre UMA posição por trilha — mesmo entry/SL/direção (mesmo risco),
-    // TP diferente por trilha (BASE = tp1 do eaSignal, RR2X = 2x slDist, RR3X = 3x slDist)
     for (const [track, cfg] of Object.entries(PAPER_RR_TRACKS)) {
-      // Pula a trilha se já tem posição aberta pra esse símbolo nela
       const openForTrack = openForSymbol.filter(p => (p.track || "BASE") === track).length;
       if (openForTrack >= PAPER_MAX_OPEN) {
         console.log(`[Paper-${track}] ${symbol} já tem posição aberta nessa trilha — pulando`);
@@ -2462,7 +2262,6 @@ async function runPaperSignal(symbol) {
         liveSignalId: null,
       };
 
-      // Salva no Supabase (trades table) — user_code/source incluem a trilha
       const dbId = await savePaperTrade({
         ...position,
         tp1: tpForTrack,
@@ -2472,8 +2271,6 @@ async function runPaperSignal(symbol) {
       });
       position.supabaseId = dbId;
 
-      // Salva também no live_signals — só pra trilha BASE (evita distorcer o
-      // historical_win_rate do eaSignal com as variantes RR2X/RR3X)
       if (track === "BASE") {
         const liveSignal = {
           asset:         symbol,
@@ -2503,7 +2300,6 @@ async function runPaperSignal(symbol) {
                   `Prob:${result.probability}% HTF:${result.htf_bias} | ` +
                   `Fear&Greed:${fearGreed} Session:${session}`);
 
-      // Broadcast para live room
       broadcastToLiveRoom({
         type:          "paper_trade_opened",
         track,
@@ -2532,7 +2328,6 @@ async function runPaperSignal(symbol) {
 // LOOP PRINCIPAL — gera sinais para todos os ativos
 // ─────────────────────────────────────────────
 async function runPaperTradingCycle() {
-  // ✅ v21: resumo por trilha no log do ciclo
   const trackSummary = Object.entries(paperTradeCount)
     .map(([t,c]) => `${t}(T:${c.total} W:${c.wins} L:${c.losses})`)
     .join(" | ");
@@ -2541,45 +2336,9 @@ async function runPaperTradingCycle() {
 
   for (const symbol of PAPER_ASSETS) {
     await runPaperSignal(symbol);
-    await new Promise(r => setTimeout(r, 2000)); // 2s entre ativos para não sobrecarregar
+    await new Promise(r => setTimeout(r, 2000));
   }
 }
-
-// ─────────────────────────────────────────────
-// ENDPOINT — status do paper trading
-// ─────────────────────────────────────────────
-// Adicionar no app do express:
-//
-// app.get("/paper-trading", (req, res) => {
-//   const positions = [];
-//   paperPositions.forEach((pos, id) => {
-//     const priceData   = allPrices.get(pos.symbol);
-//     const currentPrice = priceData ? parseFloat(priceData.bid) : null;
-//     const unrealized  = currentPrice
-//       ? estimateProfit(pos.symbol, pos.direction, pos.entry, currentPrice, PAPER_LOT)
-//       : null;
-//     positions.push({
-//       id, ...pos,
-//       current_price: currentPrice,
-//       unrealized_profit: unrealized,
-//       open_minutes: Math.round((Date.now() - pos.openedAt) / 60000),
-//     });
-//   });
-//   res.json({
-//     active:     true,
-//     interval_min: PAPER_INTERVAL_MS / 60000,
-//     scoreboard: {
-//       ...paperTradeCount,
-//       win_rate: paperTradeCount.wins + paperTradeCount.losses > 0
-//         ? ((paperTradeCount.wins / (paperTradeCount.wins + paperTradeCount.losses)) * 100).toFixed(1) + "%"
-//         : "0%",
-//     },
-//     open_positions: positions,
-//     assets: PAPER_ASSETS,
-//     min_probability: PAPER_MIN_PROBABILITY,
-//     timestamp: new Date().toISOString(),
-//   });
-// });
 
 // ─────────────────────────────────────────────
 // INIT — chamar dentro do httpServer.listen()
@@ -2589,13 +2348,8 @@ function initPaperTrading() {
   console.log(`[Paper Trading] Ciclos a cada ${PAPER_INTERVAL_MS/60000}min | Monitor a cada ${PAPER_MONITOR_MS/1000}s | Timeout ${PAPER_TIMEOUT_MS/3600000}h`);
   console.log(`[Paper Trading] Ativos: ${PAPER_ASSETS.join(", ")} | Prob mínima: ${PAPER_MIN_PROBABILITY}%`);
 
-  // Primeiro ciclo após 1 min (aguarda MT5 conectar)
   setTimeout(runPaperTradingCycle, 60 * 1000);
-
-  // Ciclos regulares
   setInterval(runPaperTradingCycle, PAPER_INTERVAL_MS);
-
-  // Monitor de posições abertas (verifica TP/SL a cada 30s)
   setInterval(monitorPaperPositions, PAPER_MONITOR_MS);
 }
 
@@ -2605,13 +2359,10 @@ httpServer.listen(PORT, async()=>{
   console.log(`[Railway] FIX: lastOrderSent Map ativo — cooldown de ordem separado do signalCache`);
   console.log(`[Railway] FIX: enqueueOrder valida TP/SL antes de enfileirar`);
 
-  // Inicia Live Room
   startLiveRoom24h();
 
-  // Inicia Binance WebSocket para whale alerts
   setTimeout(connectBinanceWhaleWatcher, 2000);
 
-  // Busca dados institucionais iniciais
   setTimeout(async()=>{
     await Promise.all([
       fetchFearGreed(),
@@ -2624,9 +2375,7 @@ httpServer.listen(PORT, async()=>{
     console.log("[Railway] Dados institucionais carregados");
   }, 5000);
 
-  // Reconcilia posições órfãs (de restart anterior) antes do monitor começar
   setTimeout(reconcilePaperPositions, 10000);
 
-  // Paper Trading — aprendizado autônomo (aguarda 60s para MT5 conectar)
   setTimeout(initPaperTrading, 60000);
 });
