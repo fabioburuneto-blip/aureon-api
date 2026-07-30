@@ -2073,25 +2073,38 @@ async function savePaperTrade(tradeData) {
 // ATUALIZA RESULTADO NO SUPABASE
 // ─────────────────────────────────────────────
 async function updatePaperResult(supabaseId, result, profit, closePrice, closedBy, track) {
-  if (!supabaseId) return;
+  if (!supabaseId) {
+    console.log("[Paper] ⚠️ updatePaperResult chamado SEM supabaseId — não há linha pra atualizar");
+    return;
+  }
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/trades?id=eq.${supabaseId}`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/trades?id=eq.${supabaseId}`, {
       method:  "PATCH",
       headers: {
         "Content-Type":  "application/json",
         "apikey":        SUPABASE_KEY,
         "Authorization": `Bearer ${SUPABASE_KEY}`,
-        "Prefer":        "return=minimal",
+        "Prefer":        "return=representation",
       },
       body: JSON.stringify({
         result,
         profit:      parseFloat(profit) || 0,
         close_price: closePrice,
         closed_at:   new Date().toISOString(),
-        // ✅ v21: mantém a trilha visível no source ao fechar (ex: PAPER-RR2X-TP)
-        source:      `PAPER-${track || "BASE"}-${closedBy}`, // PAPER-BASE-TP, PAPER-RR2X-SL, PAPER-RR3X-TIMEOUT
+        source:      `PAPER-${track || "BASE"}-${closedBy}`,
       }),
     });
+    if (!res.ok) {
+      const body = await res.text();
+      console.log(`[Paper] ❌ PATCH FALHOU id=${supabaseId} HTTP:${res.status} — ${body.slice(0,200)}`);
+      return;
+    }
+    const updated = await res.json();
+    if (!Array.isArray(updated) || updated.length === 0) {
+      console.log(`[Paper] ⚠️ PATCH id=${supabaseId} retornou OK mas 0 linhas afetadas — id não bateu com nenhum registro`);
+    } else {
+      console.log(`[Paper] ✅ Persistido no Supabase: id=${supabaseId} result=${result}`);
+    }
   } catch (err) {
     console.error("[Paper] Erro ao atualizar resultado:", err.message);
   }
