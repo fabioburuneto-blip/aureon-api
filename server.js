@@ -2324,7 +2324,6 @@ async function reconcilePaperPositions() {
 }
 
 async function runPaperSignal(symbol) {
-async function runPaperSignal(symbol) {
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) {
     console.log(`[Paper] ${symbol} sem dados frescos — pulando`);
@@ -2617,5 +2616,4 @@ httpServer.listen(PORT, async()=>{
 
   // Paper Trading — aprendizado autônomo (aguarda 60s para MT5 conectar)
   setTimeout(initPaperTrading, 60000);
-});
 });
