@@ -1666,14 +1666,30 @@ wss.on("connection",(ws)=>{
 // INTERVALS
 // ─────────────────────────────────────────────
 setInterval(()=>{activeSlaves.forEach((data,userId)=>{if((new Date()-data.lastSeen)/1000>SLAVE_REMOVE_S){activeSlaves.delete(userId);broadcastToSite({type:"slave_status",user_id:userId,connected:false});}});if(mt5LastSeen&&(new Date()-mt5LastSeen)>MT5_TIMEOUT_MS)broadcastToSite({type:"mt5_status",connected:false});},5000);
+
+// ✅ FIX: revalida o plano de cada slave conectado periodicamente, em vez de
+// só uma vez no registro — sem isso, um upgrade/downgrade de plano só surtia
+// efeito depois que o robô desconectasse e reconectasse no MT5.
+setInterval(async () => {
+  for (const [userId, data] of activeSlaves.entries()) {
+    if (INTERNAL_BOT_IDS.includes(userId)) continue;
+    try {
+      const planCheck = await checkProPlan(userId);
+      const newPlan = planCheck.plan || "basic";
+      if (newPlan !== data.plan) {
+        console.log(`[PlanRefresh] ${userId}: ${data.plan} → ${newPlan}`);
+        data.plan = newPlan;
+        data.limits = getPlanLimits(newPlan);
+        activeSlaves.set(userId, data);
+        broadcastToSite({ type: "slave_status", user_id: userId, connected: true, plan: newPlan });
+      }
+    } catch (e) {
+      console.log(`[PlanRefresh] Erro ao revalidar ${userId}:`, e.message);
+    }
+  }
+}, 5 * 60 * 1000);
+
 setInterval(async()=>{try{await fetch(`${RAILWAY_URL}/health`);}catch{}},4*60*1000);
-setInterval(fetchFearGreed,    30*60*1000);
-setInterval(async()=>{
-  await fetchOpenInterest();
-  await fetchFundingRates();
-  calcSmartMoneyScoreFromData();
-}, 5*60*1000);
-setInterval(()=>{
   const fs = calcFastSentiment();
   if (fs) {
     const prevValue = institutionalData.fastSentiment?.value;
