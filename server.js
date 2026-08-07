@@ -768,14 +768,6 @@ async function saveLiveSignal(signal) {
 async function updateLiveSignalResult(id,result,profit,closePrice,tpHit) { if(!id) return; await supabasePatch(`live_signals?id=eq.${id}`,{result,profit:parseFloat(profit)||0,close_price:closePrice||null,tp_hit:tpHit||0,closed_at:new Date().toISOString()}); lastCacheUpdate=0; }
 async function checkProPlan(userId) { try { const r=await fetch(`${CHECK_SLAVE_URL}?user_id=${userId}`); if(!r.ok)return{allowed:true,plan:"basic"}; return await r.json(); } catch { return{allowed:true,plan:"basic"}; } }
 async function saveTradeToSupabase(tradeData) { try { await fetch(`${SUPABASE_URL}/rest/v1/trades`,{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`,"Prefer":"return=minimal"},body:JSON.stringify(tradeData)}); } catch {} }
-async function activateUserPlan(email,plan,months) {
-  try {
-    const sr=await fetch(`${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}&select=id,email,plan`,{headers:{"apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`}});
-    const users=await sr.json();
-    const exp=new Date(); exp.setMonth(exp.getMonth()+(months||1));
-    if(users&&users.length>0){await fetch(`${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(email)}`,{method:"PATCH",headers:{"Content-Type":"application/json","apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`,"Prefer":"return=minimal"},body:JSON.stringify({plan,plan_expires_at:exp.toISOString()})});console.log(`[Hotmart] Plano ${plan} ativado para ${email}`);}
-  } catch {}
-}
 
 // ─────────────────────────────────────────────
 // BROADCAST
@@ -1180,22 +1172,6 @@ const PLAN_LIMITS = {
   elite:{assets:"ALL",strategies:["SMC_PRO","PA","WYCKOFF","SD","FIBONACCI","AI"],modes:["express","complete"],maxPositions:20,autoTrade:true,copyTrade:true,liveRoom:true},
 };
 function getPlanLimits(plan){return PLAN_LIMITS[plan]||PLAN_LIMITS.basic;}
-
-app.post("/webhook/hotmart", async (req,res)=>{
-  const event=req.body;
-  if(["PURCHASE_APPROVED","PURCHASE_COMPLETE","SUBSCRIPTION_REACTIVATED"].includes(event?.event)){
-    const email=event?.data?.buyer?.email,product=event?.data?.product?.name||"",price=event?.data?.purchase?.price?.value||0;
-    let plan="basic",months=1;
-    if(product.toLowerCase().includes("elite")||price>=390)plan="elite";
-    else if(product.toLowerCase().includes("pro")||price>=190)plan="pro";
-    if(price>=900)months=12;
-    if(email){await activateUserPlan(email,plan,months);broadcastToSite({type:"plan_activated",email,plan});}
-  }
-  if(["PURCHASE_CANCELED","PURCHASE_REFUNDED","SUBSCRIPTION_CANCELLATION"].includes(event?.event)){
-    const email=event?.data?.buyer?.email;if(email)await activateUserPlan(email,"free",0);
-  }
-  res.json({status:"ok"});
-});
 
 app.post("/price",(req,res)=>{
   const data=req.body;if(!data||!data.symbol)return res.status(400).json({error:"Dados inválidos"});
