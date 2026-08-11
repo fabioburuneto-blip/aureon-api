@@ -962,6 +962,7 @@ function buildBasicContext(symbol, result) {
   return { regime, bias, narrative, key_levels: Object.keys(keyLevels).length > 0 ? keyLevels : null, watch_for: watchFor, opportunity, warning: null };
 }
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
 // MOTOR ÚNICO — ZONA (SMC) + PRECISÃO (Fibonacci) + GATILHO (candle)
 // ─────────────────────────────────────────────
 
@@ -977,7 +978,6 @@ function getCandlesForTF(priceData, tf) {
   if (!c || !c.closes || c.closes.length < 5) return null;
   return c;
 }
-
 function calcSimpleATR(candles, period = 14) {
   const { highs, lows, closes } = candles;
   if (!highs || highs.length < period + 1) return 0;
@@ -1003,21 +1003,6 @@ function findSwings(candles, lookback = 2) {
     if (isLow)  swingLows.push({ index: i, price: lows[i] });
   }
   return { swingHighs, swingLows };
-}
-
-function detectFVGs(candles) {
-  const { highs, lows } = candles;
-  const fvgs = [];
-  for (let i = 2; i < highs.length; i++) {
-    if (lows[i] > highs[i-2]) fvgs.push({ direction: "BULL", top: lows[i], bottom: highs[i-2], index: i, mitigated: false });
-    if (highs[i] < lows[i-2]) fvgs.push({ direction: "BEAR", top: lows[i-2], bottom: highs[i], index: i, mitigated: false });
-  }
-  for (const fvg of fvgs) {
-    for (let j = fvg.index + 1; j < highs.length; j++) {
-      if (highs[j] >= fvg.bottom && lows[j] <= fvg.top) { fvg.mitigated = true; break; }
-    }
-  }
-  return fvgs.filter(f => !f.mitigated);
 }
 
 function detectOrderBlocks(candles) {
@@ -1903,7 +1888,8 @@ setInterval(async () => {
   }
 }, 5 * 60 * 1000);
 
-setInterval(async()=>{try{await fetch(`${RAILWAY_URL}/health`);}catch{}},4*60*1000);
+setInterval(async()=>{
+  try{await fetch(`${RAILWAY_URL}/health`);}catch{}},4*60*1000);
   const fs = calcFastSentiment();
   if (fs) {
     const prevValue = institutionalData.fastSentiment?.value;
