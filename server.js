@@ -961,7 +961,234 @@ function buildBasicContext(symbol, result) {
   const regime = trend === "RANGING" ? "RANGE" : trend === "BULLISH" ? "TREND_BULL" : "TREND_BEAR";
   return { regime, bias, narrative, key_levels: Object.keys(keyLevels).length > 0 ? keyLevels : null, watch_for: watchFor, opportunity, warning: null };
 }
+// ─────────────────────────────────────────────
+// MOTOR ÚNICO — ZONA (SMC) + PRECISÃO (Fibonacci) + GATILHO (candle)
+// ─────────────────────────────────────────────
 
+function getCandlesForTF(priceData, tf) {
+  const map = {
+    M5:  { closes: priceData.closes,     highs: priceData.highs,     lows: priceData.lows,     opens: priceData.opens },
+    M15: { closes: priceData.closes_m15, highs: priceData.highs_m15, lows: priceData.lows_m15, opens: priceData.opens_m15 },
+    H1:  { closes: priceData.closes_h1,  highs: priceData.highs_h1,  lows: priceData.lows_h1,  opens: priceData.opens_h1 },
+    H4:  { closes: priceData.closes_h4,  highs: priceData.highs_h4,  lows: priceData.lows_h4,  opens: priceData.opens_h4 },
+    D1:  { closes: priceData.closes_d1,  highs: priceData.highs_d1,  lows: priceData.lows_d1,  opens: priceData.opens_d1 },
+  };
+  const c = map[tf];
+  if (!c || !c.closes || c.closes.length < 5) return null;
+  return c;
+}
+
+function calcSimpleATR(candles, period = 14) {
+  const { highs, lows, closes } = candles;
+  if (!highs || highs.length < period + 1) return 0;
+  let sum = 0;
+  const start = highs.length - period;
+  for (let i = start; i < highs.length; i++) {
+    const tr = Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1]));
+    sum += tr;
+  }
+  return sum / period;
+}
+
+function findSwings(candles, lookback = 2) {
+  const { highs, lows } = candles;
+  const swingHighs = [], swingLows = [];
+  for (let i = lookback; i < highs.length - lookback; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= lookback; j++) {
+      if (highs[i] <= highs[i-j] || highs[i] <= highs[i+j]) isHigh = false;
+      if (lows[i]  >= lows[i-j]  || lows[i]  >= lows[i+j])  isLow = false;
+    }
+    if (isHigh) swingHighs.push({ index: i, price: highs[i] });
+    if (isLow)  swingLows.push({ index: i, price: lows[i] });
+  }
+  return { swingHighs, swingLows };
+}
+
+function detectFVGs(candles) {
+  const { highs, lows } = candles;
+  const fvgs = [];
+  for (let i = 2; i < highs.length; i++) {
+    if (lows[i] > highs[i-2]) fvgs.push({ direction: "BULL", top: lows[i], bottom: highs[i-2], index: i, mitigated: false });
+    if (highs[i] < lows[i-2]) fvgs.push({ direction: "BEAR", top: lows[i-2], bottom: highs[i], index: i, mitigated: false });
+  }
+  for (const fvg of fvgs) {
+    for (let j = fvg.index + 1; j < highs.length; j++) {
+      if (highs[j] >= fvg.bottom && lows[j] <= fvg.top) { fvg.mitigated = true; break; }
+    }
+  }
+  return fvgs.filter(f => !f.mitigated);
+}
+
+function detectOrderBlocks(candles) {
+  const { opens, closes, highs, lows } = candles;
+  const atr = calcSimpleATR(candles);
+  if (!atr) return [];
+  const { swingHighs, swingLows } = findSwings(candles);
+  const obs = [];
+  for (let i = 1; i < closes.length; i++) {
+    const body = Math.abs(closes[i] - opens[i]);
+    if (body < atr * 1.5) continue;
+    const isBullCandle = closes[i] > opens[i];
+    const prevIsBear = closes[i-1] < opens[i-1];
+    const prevIsBull = closes[i-1] > opens[i-1];
+    if (isBullCandle && prevIsBear) {
+      const brokenSwing = swingHighs.find(s => s.index < i && s.index >= i - 20 && closes[i] > s.price);
+      if (brokenSwing) {
+        const ob = { direction: "BULL", top: highs[i-1], bottom: lows[i-1], index: i-1, mitigated: false };
+        for (let j = i + 1; j < closes.length; j++) { if (lows[j] <= ob.top && lows[j] >= ob.bottom) { ob.mitigated = true; break; } }
+        obs.push(ob);
+      }
+    }
+    if (!isBullCandle && prevIsBull) {
+      const brokenSwing = swingLows.find(s => s.index < i && s.index >= i - 20 && closes[i] < s.price);
+      if (brokenSwing) {
+        const ob = { direction: "BEAR", top: highs[i-1], bottom: lows[i-1], index: i-1, mitigated: false };
+        for (let j = i + 1; j < closes.length; j++) { if (highs[j] >= ob.bottom && highs[j] <= ob.top) { ob.mitigated = true; break; } }
+        obs.push(ob);
+      }
+    }
+  }
+  return obs.filter(o => !o.mitigated);
+}
+
+function calculateFibonacciLevels(candles, direction) {
+  const { swingHighs, swingLows } = findSwings(candles);
+  if (!swingHighs.length || !swingLows.length) return null;
+  const lastHigh = swingHighs[swingHighs.length - 1];
+  const lastLow  = swingLows[swingLows.length - 1];
+  let start, end;
+  if (direction === "BULL") {
+    const validLow = swingLows.filter(l => l.index < lastHigh.index).pop();
+    if (!validLow) return null;
+    start = validLow; end = lastHigh;
+  } else {
+    const validHigh = swingHighs.filter(h => h.index < lastLow.index).pop();
+    if (!validHigh) return null;
+    start = validHigh; end = lastLow;
+  }
+  const range = Math.abs(end.price - start.price);
+  const ratios = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.618];
+  const levels = {};
+  for (const r of ratios) levels[r] = direction === "BULL" ? end.price - range * r : end.price + range * r;
+  return {
+    direction, impulseStart: start.price, impulseEnd: end.price, levels,
+    goldenZone: direction === "BULL" ? { top: levels[0.618], bottom: levels[0.786] } : { top: levels[0.786], bottom: levels[0.618] },
+  };
+}
+
+function detectCandlePatterns(candles) {
+  const { opens, closes, highs, lows } = candles;
+  const patterns = [];
+  for (let i = 1; i < closes.length; i++) {
+    const bodyNow  = Math.abs(closes[i] - opens[i]);
+    const bodyPrev = Math.abs(closes[i-1] - opens[i-1]);
+    const range = highs[i] - lows[i];
+    if (range <= 0) continue;
+    const curBull  = closes[i]   > opens[i];
+    const prevBull = closes[i-1] > opens[i-1];
+    if (curBull !== prevBull && bodyNow > bodyPrev) {
+      if (curBull  && closes[i] >= opens[i-1] && opens[i] <= closes[i-1]) patterns.push({ type: "ENGULFING", direction: "BULL", index: i });
+      if (!curBull && closes[i] <= opens[i-1] && opens[i] >= closes[i-1]) patterns.push({ type: "ENGULFING", direction: "BEAR", index: i });
+    }
+    const upperWick = highs[i] - Math.max(opens[i], closes[i]);
+    const lowerWick = Math.min(opens[i], closes[i]) - lows[i];
+    if (lowerWick >= bodyNow * 2 && lowerWick > upperWick) patterns.push({ type: "PIN_BAR", direction: "BULL", index: i });
+    if (upperWick >= bodyNow * 2 && upperWick > lowerWick) patterns.push({ type: "PIN_BAR", direction: "BEAR", index: i });
+  }
+  return patterns;
+}
+
+function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
+  const macroCandles = getCandlesForTF(priceData, macroTF);
+  const microCandles = getCandlesForTF(priceData, microTF);
+  if (!macroCandles || !microCandles) return { error: `Sem candles suficientes de ${macroTF} ou ${microTF}` };
+  const macroOBs  = detectOrderBlocks(macroCandles);
+  const macroFVGs = detectFVGs(macroCandles);
+  const microOBs  = detectOrderBlocks(microCandles);
+  const microFVGs = detectFVGs(microCandles);
+  const fibDirection = htfBias === "BEAR" ? "BEAR" : "BULL";
+  const macroFib = calculateFibonacciLevels(macroCandles, fibDirection);
+  const microFib = calculateFibonacciLevels(microCandles, fibDirection);
+  const allMicroPatterns = detectCandlePatterns(microCandles);
+  const recentPatterns = allMicroPatterns.filter(p => p.index >= microCandles.closes.length - 5);
+  const currentPrice = parseFloat(priceData.bid);
+  const inGoodHour = isGoodTradingHour(symbol);
+  return {
+    symbol, currentPrice, macroTF, microTF, htfBias: htfBias || "NEUTRAL",
+    inGoodHour, session: getSessionName(),
+    zona: {
+      macro: { orderBlocks: macroOBs.map(o => ({ direction: o.direction, top: o.top, bottom: o.bottom })), fvgs: macroFVGs.map(f => ({ direction: f.direction, top: f.top, bottom: f.bottom })) },
+      micro: { orderBlocks: microOBs.map(o => ({ direction: o.direction, top: o.top, bottom: o.bottom })), fvgs: microFVGs.map(f => ({ direction: f.direction, top: f.top, bottom: f.bottom })) },
+    },
+    precisao: {
+      macro: macroFib ? { goldenZone: macroFib.goldenZone, direction: macroFib.direction } : null,
+      micro: microFib ? { goldenZone: microFib.goldenZone, direction: microFib.direction } : null,
+    },
+    gatilho: { padroesRecentes: recentPatterns.map(p => ({ tipo: p.type, direcao: p.direction })) },
+  };
+}
+
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+
+function buildClaudePrompt(pkg) {
+  return `Você é um trader profissional analisando o mercado. Recebeu um pacote de dados já processados (zonas de Order Block, FVG, níveis de Fibonacci, padrões de candle recentes) para o ativo ${pkg.symbol}, comparando o timeframe macro (${pkg.macroTF}) com o micro (${pkg.microTF}).
+
+Sua tarefa: decidir se, JUNTANDO essas informações, existe um setup de qualidade agora — reconhecendo o CONCEITO por trás dos dados (ex: correção até uma zona de Order Block que também coincide com a golden zone de Fibonacci, com um candle de rejeição confirmando), mesmo que a forma exata varie. Não invente níveis novos — use só os que estão no pacote.
+
+Se não houver nada relevante, diga isso claramente — não force um setup que não existe.
+
+Dados:
+${JSON.stringify(pkg, null, 2)}
+
+Responda APENAS em JSON, neste formato exato:
+{
+  "setupEncontrado": true ou false,
+  "descricao": "explicação curta, como um trader profissional descreveria o que vê",
+  "zonaEntrada": { "top": number, "bottom": number } ou null,
+  "stop": number ou null,
+  "alvo": number ou null,
+  "raciocinio": "por que essa combinação faz sentido (ou por que não)"
+}`;
+}
+
+async function callClaudeForAnalysis(pkg) {
+  if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando análise"); return null; }
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 500, messages: [{ role: "user", content: buildClaudePrompt(pkg) }] }),
+    });
+    if (!res.ok) { console.log(`[Claude] Erro HTTP ${res.status}`); return null; }
+    const data = await res.json();
+    const text = data?.content?.[0]?.text || "";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) { console.log("[Claude] Resposta sem JSON reconhecível"); return null; }
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) { console.log("[Claude] Erro na chamada:", err.message); return null; }
+}
+
+async function logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResult) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !claudeResult) return;
+  try {
+    const currentPrice = pkg.currentPrice;
+    const hasSetup = claudeResult.setupEncontrado && claudeResult.stop && claudeResult.alvo;
+    await fetch(`${SUPABASE_URL}/rest/v1/professional_analysis`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", "Prefer": "return=minimal" },
+      body: JSON.stringify({
+        symbol, macro_tf: macroTF, micro_tf: microTF,
+        setup_encontrado: claudeResult.setupEncontrado, descricao: claudeResult.descricao,
+        zona_entrada_top: claudeResult.zonaEntrada?.top ?? null, zona_entrada_bottom: claudeResult.zonaEntrada?.bottom ?? null,
+        stop: claudeResult.stop ?? null, alvo: claudeResult.alvo ?? null, raciocinio: claudeResult.raciocinio,
+        context_package: pkg,
+        test_entry: hasSetup ? currentPrice : null, test_sl: hasSetup ? claudeResult.stop : null, test_tp: hasSetup ? claudeResult.alvo : null,
+      }),
+    });
+  } catch (err) { console.log("[ProfessionalAnalysis] Erro ao salvar:", err.message); }
+}
 async function analyzeLiveAsset(symbol, isPriority=false) {
   const priceData=allPrices.get(symbol);
   if(!priceData||!isPriceFresh(priceData)) return;
@@ -1272,7 +1499,18 @@ app.post("/live-signal-result",async(req,res)=>{
   broadcastToLiveRoom({type:"signal_result",signal_id,result,profit:profitVal,scoreboard:liveScoreboard,timestamp:new Date().toISOString()});
   res.json({status:"ok"});
 });
-
+app.post("/professional-analysis", async (req, res) => {
+  const { symbol, macroTF = "H4", microTF = "M5" } = req.body;
+  if (!symbol) return res.status(400).json({ error: "symbol obrigatório" });
+  const priceData = allPrices.get(symbol);
+  if (!priceData || !isPriceFresh(priceData)) return res.status(503).json({ error: "Sem dados frescos para esse ativo" });
+  const pkg = buildFullContextPackage(symbol, priceData, macroTF, microTF, null);
+  if (pkg.error) return res.status(400).json(pkg);
+  const claudeResult = await callClaudeForAnalysis(pkg);
+  if (!claudeResult) return res.status(502).json({ error: "Falha ao obter análise" });
+  await logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResult);
+  res.json({ ...claudeResult, contexto: pkg });
+});
 function computeTradeStats(trades) {
   const valid = trades.filter(t=>t.result==="win"||t.result==="loss");
   const wins = valid.filter(t=>t.result==="win").length;
