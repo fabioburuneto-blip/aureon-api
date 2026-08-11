@@ -1912,6 +1912,7 @@ setInterval(async () => {
 
 setInterval(async()=>{
   try{await fetch(`${RAILWAY_URL}/health`);}catch{}},4*60*1000);
+setInterval(()=>{
   const fs = calcFastSentiment();
   if (fs) {
     const prevValue = institutionalData.fastSentiment?.value;
