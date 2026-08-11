@@ -1018,23 +1018,27 @@ function detectOrderBlocks(candles) {
     const prevIsBear = closes[i-1] < opens[i-1];
     const prevIsBull = closes[i-1] > opens[i-1];
     if (isBullCandle && prevIsBear) {
-      const brokenSwing = swingHighs.find(s => s.index < i && s.index >= i - 20 && closes[i] > s.price);
+      const brokenSwing = swingHighs.find(function(s) { return s.index < i && s.index >= i - 20 && closes[i] > s.price; });
       if (brokenSwing) {
         const ob = { direction: "BULL", top: highs[i-1], bottom: lows[i-1], index: i-1, mitigated: false };
-        for (let j = i + 1; j < closes.length; j++) { if (lows[j] <= ob.top && lows[j] >= ob.bottom) { ob.mitigated = true; break; } }
+        for (let j = i + 1; j < closes.length; j++) {
+          if (lows[j] <= ob.top && lows[j] >= ob.bottom) { ob.mitigated = true; break; }
+        }
         obs.push(ob);
       }
     }
     if (!isBullCandle && prevIsBull) {
-      const brokenSwing = swingLows.find(s => s.index < i && s.index >= i - 20 && closes[i] < s.price);
+      const brokenSwing = swingLows.find(function(s) { return s.index < i && s.index >= i - 20 && closes[i] < s.price; });
       if (brokenSwing) {
         const ob = { direction: "BEAR", top: highs[i-1], bottom: lows[i-1], index: i-1, mitigated: false };
-        for (let j = i + 1; j < closes.length; j++) { if (highs[j] >= ob.bottom && highs[j] <= ob.top) { ob.mitigated = true; break; } }
+        for (let j = i + 1; j < closes.length; j++) {
+          if (highs[j] >= ob.bottom && highs[j] <= ob.top) { ob.mitigated = true; break; }
+        }
         obs.push(ob);
       }
     }
   }
-  return obs.filter(o => !o.mitigated);
+  return obs.filter(function(o) { return !o.mitigated; });
 }
 
 function calculateFibonacciLevels(candles, direction) {
@@ -1044,21 +1048,27 @@ function calculateFibonacciLevels(candles, direction) {
   const lastLow  = swingLows[swingLows.length - 1];
   let start, end;
   if (direction === "BULL") {
-    const validLow = swingLows.filter(l => l.index < lastHigh.index).pop();
+    const validLow = swingLows.filter(function(l) { return l.index < lastHigh.index; }).pop();
     if (!validLow) return null;
     start = validLow; end = lastHigh;
   } else {
-    const validHigh = swingHighs.filter(h => h.index < lastLow.index).pop();
+    const validHigh = swingHighs.filter(function(h) { return h.index < lastLow.index; }).pop();
     if (!validHigh) return null;
     start = validHigh; end = lastLow;
   }
   const range = Math.abs(end.price - start.price);
   const ratios = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.618];
   const levels = {};
-  for (const r of ratios) levels[r] = direction === "BULL" ? end.price - range * r : end.price + range * r;
+  for (let k = 0; k < ratios.length; k++) {
+    const r = ratios[k];
+    levels[r] = direction === "BULL" ? end.price - range * r : end.price + range * r;
+  }
   return {
-    direction, impulseStart: start.price, impulseEnd: end.price, levels,
-    goldenZone: direction === "BULL" ? { top: levels[0.618], bottom: levels[0.786] } : { top: levels[0.786], bottom: levels[0.618] },
+    direction: direction,
+    impulseStart: start.price,
+    impulseEnd: end.price,
+    levels: levels,
+    goldenZone: direction === "BULL" ? { top: levels[0.618], bottom: levels[0.786] } : { top: levels[0.786], bottom: levels[0.618] }
   };
 }
 
@@ -1087,7 +1097,7 @@ function detectCandlePatterns(candles) {
 function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
   const macroCandles = getCandlesForTF(priceData, macroTF);
   const microCandles = getCandlesForTF(priceData, microTF);
-  if (!macroCandles || !microCandles) return { error: `Sem candles suficientes de ${macroTF} ou ${microTF}` };
+  if (!macroCandles || !microCandles) return { error: "Sem candles suficientes de " + macroTF + " ou " + microTF };
   const macroOBs  = detectOrderBlocks(macroCandles);
   const macroFVGs = detectFVGs(macroCandles);
   const microOBs  = detectOrderBlocks(microCandles);
@@ -1096,24 +1106,36 @@ function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
   const macroFib = calculateFibonacciLevels(macroCandles, fibDirection);
   const microFib = calculateFibonacciLevels(microCandles, fibDirection);
   const allMicroPatterns = detectCandlePatterns(microCandles);
-  const recentPatterns = allMicroPatterns.filter(p => p.index >= microCandles.closes.length - 5);
+  const recentPatterns = allMicroPatterns.filter(function(p) { return p.index >= microCandles.closes.length - 5; });
   const currentPrice = parseFloat(priceData.bid);
   const inGoodHour = isGoodTradingHour(symbol);
   return {
-    symbol, currentPrice, macroTF, microTF, htfBias: htfBias || "NEUTRAL",
-    inGoodHour, session: getSessionName(),
+    symbol: symbol,
+    currentPrice: currentPrice,
+    macroTF: macroTF,
+    microTF: microTF,
+    htfBias: htfBias || "NEUTRAL",
+    inGoodHour: inGoodHour,
+    session: getSessionName(),
     zona: {
-      macro: { orderBlocks: macroOBs.map(o => ({ direction: o.direction, top: o.top, bottom: o.bottom })), fvgs: macroFVGs.map(f => ({ direction: f.direction, top: f.top, bottom: f.bottom })) },
-      micro: { orderBlocks: microOBs.map(o => ({ direction: o.direction, top: o.top, bottom: o.bottom })), fvgs: microFVGs.map(f => ({ direction: f.direction, top: f.top, bottom: f.bottom })) },
+      macro: {
+        orderBlocks: macroOBs.map(function(o) { return { direction: o.direction, top: o.top, bottom: o.bottom }; }),
+        fvgs: macroFVGs.map(function(f) { return { direction: f.direction, top: f.top, bottom: f.bottom }; })
+      },
+      micro: {
+        orderBlocks: microOBs.map(function(o) { return { direction: o.direction, top: o.top, bottom: o.bottom }; }),
+        fvgs: microFVGs.map(function(f) { return { direction: f.direction, top: f.top, bottom: f.bottom }; })
+      }
     },
     precisao: {
       macro: macroFib ? { goldenZone: macroFib.goldenZone, direction: macroFib.direction } : null,
-      micro: microFib ? { goldenZone: microFib.goldenZone, direction: microFib.direction } : null,
+      micro: microFib ? { goldenZone: microFib.goldenZone, direction: microFib.direction } : null
     },
-    gatilho: { padroesRecentes: recentPatterns.map(p => ({ tipo: p.type, direcao: p.direction })) },
+    gatilho: {
+      padroesRecentes: recentPatterns.map(function(p) { return { tipo: p.type, direcao: p.direction }; })
+    }
   };
 }
-
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 
