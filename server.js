@@ -1004,7 +1004,21 @@ function findSwings(candles, lookback = 2) {
   }
   return { swingHighs, swingLows };
 }
-
+function detectFVGs(candles) {
+  const { highs, lows } = candles;
+  const fvgs = [];
+  for (let i = 2; i < highs.length; i++) {
+    if (lows[i] > highs[i-2]) fvgs.push({ direction: "BULL", top: lows[i], bottom: highs[i-2], index: i, mitigated: false });
+    if (highs[i] < lows[i-2]) fvgs.push({ direction: "BEAR", top: lows[i-2], bottom: highs[i], index: i, mitigated: false });
+  }
+  for (let k = 0; k < fvgs.length; k++) {
+    const fvg = fvgs[k];
+    for (let j = fvg.index + 1; j < highs.length; j++) {
+      if (highs[j] >= fvg.bottom && lows[j] <= fvg.top) { fvg.mitigated = true; break; }
+    }
+  }
+  return fvgs.filter(function(f) { return !f.mitigated; });
+}
 function detectOrderBlocks(candles) {
   const { opens, closes, highs, lows } = candles;
   const atr = calcSimpleATR(candles);
