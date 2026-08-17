@@ -1142,15 +1142,16 @@ function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
       }
     },
     precisao: {
-      macro: macroFib ? { goldenZone: macroFib.goldenZone, direction: macroFib.direction } : null,
-      micro: microFib ? { goldenZone: microFib.goldenZone, direction: microFib.direction } : null
-    },
+  macro: macroFib ? { levels: macroFib.levels, goldenZone: macroFib.goldenZone, direction: macroFib.direction, impulseStart: macroFib.impulseStart, impulseEnd: macroFib.impulseEnd } : null,
+  micro: microFib ? { levels: microFib.levels, goldenZone: microFib.goldenZone, direction: microFib.direction, impulseStart: microFib.impulseStart, impulseEnd: microFib.impulseEnd } : null,
+},
     gatilho: {
       padroesRecentes: recentPatterns.map(function(p) { return { tipo: p.type, direcao: p.direction }; })
     }
   };
 }
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+console.log("[DEBUG] ANTHROPIC_API_KEY length:", ANTHROPIC_API_KEY.length);
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 
 function buildClaudePrompt(pkg) {
