@@ -1261,9 +1261,12 @@ Responda APENAS em JSON, neste formato exato:
   "zonaEntrada": { "top": number, "bottom": number } ou null,
   "stop": number ou null,
   "alvo": number ou null,
-  "raciocinio": "por que essa combinação faz sentido (ou por que não)"
-}`;
+  "raciocinio": "por que essa combinação faz sentido (ou por que não)",
+  "zonaRelevante": { "top": number, "bottom": number, "tipo": "OB" ou "FVG" ou "GOLDEN_ZONE" } ou null,
+  "cenario": "se setupEncontrado for false MAS existir uma zona específica que você está observando (ex: um Order Block ou a Golden Zone que o preço ainda não tocou), explique aqui o que você esperaria ver acontecer SE o preço chegasse lá — sem garantir resultado, só descrevendo o cenário que tornaria a entrada mais provável. Deixe null se não houver nenhuma zona específica valendo destaque agora." ou null
 }
+
+IMPORTANTE sobre zonaRelevante/cenario: use apenas quando houver uma zona ESPECÍFICA do pacote de dados (não invente níveis) que faça sentido monitorar. Não preencha só para preencher — se o mercado estiver genuinamente sem nada relevante à vista, deixe null.`;
 
 async function callClaudeForAnalysis(pkg) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando análise"); return null; }
