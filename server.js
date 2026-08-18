@@ -1274,7 +1274,7 @@ async function callClaudeForAnalysis(pkg) {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 500, messages: [{ role: "user", content: buildClaudePrompt(pkg) }] }),
+      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 2000, messages: [{ role: "user", content: buildClaudePrompt(pkg) }] }),
     });
     if (!res.ok) { console.log(`[Claude] Erro HTTP ${res.status}`); return null; }
     const data = await res.json();
