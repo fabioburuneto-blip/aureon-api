@@ -1108,6 +1108,26 @@ function detectCandlePatterns(candles) {
   return patterns;
 }
 
+// Formata candles pro padrão que o lightweight-charts espera: { time, open, high, low, close }.
+// time em segundos (Unix), não milissegundos — é o formato exigido pela biblioteca.
+function formatCandlesForChart(candles) {
+  if (!candles || !candles.closes) return [];
+  const { closes, highs, lows, opens } = candles;
+  const n = closes.length;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    // Não temos o timestamp real de cada candle aqui — geramos um índice
+    // decrescente a partir de "agora", espaçado por minuto, só pra dar
+    // ordem cronológica ao gráfico (o eixo de tempo exato não é crítico
+    // pra essa visualização de contexto).
+    out.push({
+      time: nowSec - (n - 1 - i) * 60,
+      open: opens[i], high: highs[i], low: lows[i], close: closes[i],
+    });
+  }
+  return out;
+}
 function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
   const macroCandles = getCandlesForTF(priceData, macroTF);
   const microCandles = getCandlesForTF(priceData, microTF);
