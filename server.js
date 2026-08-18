@@ -1004,6 +1004,64 @@ function findSwings(candles, lookback = 2) {
   }
   return { swingHighs, swingLows };
 }
+// Classifica cada swing como HH/HL/LH/LL, comparando com o swing anterior
+// do mesmo tipo (topo com topo, fundo com fundo) — é a leitura clássica de
+// estrutura de mercado (Higher High, Higher Low, Lower High, Lower Low).
+function classifyStructure(swingHighs, swingLows) {
+  const highs = swingHighs.map((s, i) => ({
+    ...s,
+    label: i === 0 ? null : (s.price > swingHighs[i-1].price ? "HH" : "LH"),
+  })).filter(s => s.label);
+
+  const lows = swingLows.map((s, i) => ({
+    ...s,
+    label: i === 0 ? null : (s.price > swingLows[i-1].price ? "HL" : "LL"),
+  })).filter(s => s.label);
+
+  return { highs, lows };
+}
+
+// Detecta o CHoCH (Change of Character) mais recente — quando a estrutura
+// que vinha se formando (ex: sequência de HH/HL, alta) é quebrada por um
+// movimento na direção oposta (o preço fecha abaixo do último HL, por ex).
+function detectCHoCH(candles, swingHighs, swingLows) {
+  const { closes } = candles;
+  const allSwings = [
+    ...swingHighs.map(s => ({ ...s, type: "high" })),
+    ...swingLows.map(s => ({ ...s, type: "low" })),
+  ].sort((a, b) => a.index - b.index);
+
+  if (allSwings.length < 3) return null;
+
+  // Olha os últimos swings pra achar a tendência vigente (sequência de
+  // topos e fundos ascendentes = alta; descendentes = baixa).
+  const lastLows = swingLows.slice(-2);
+  const lastHighs = swingHighs.slice(-2);
+  let trend = null;
+  if (lastLows.length === 2 && lastLows[1].price > lastLows[0].price) trend = "BULL";
+  if (lastHighs.length === 2 && lastHighs[1].price < lastHighs[0].price) trend = "BEAR";
+  if (!trend) return null;
+
+  // CHoCH de alta pra baixa: preço fecha abaixo do último HL.
+  if (trend === "BULL" && lastLows.length) {
+    const lastHL = lastLows[lastLows.length - 1];
+    for (let i = lastHL.index + 1; i < closes.length; i++) {
+      if (closes[i] < lastHL.price) {
+        return { index: i, price: lastHL.price, direction: "BEAR" };
+      }
+    }
+  }
+  // CHoCH de baixa pra alta: preço fecha acima do último LH.
+  if (trend === "BEAR" && lastHighs.length) {
+    const lastLH = lastHighs[lastHighs.length - 1];
+    for (let i = lastLH.index + 1; i < closes.length; i++) {
+      if (closes[i] > lastLH.price) {
+        return { index: i, price: lastLH.price, direction: "BULL" };
+      }
+    }
+  }
+  return null;
+}
 function detectFVGs(candles) {
   const { highs, lows } = candles;
   const fvgs = [];
@@ -1143,6 +1201,12 @@ function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
   const recentPatterns = allMicroPatterns.filter(function(p) { return p.index >= microCandles.closes.length - 5; });
   const currentPrice = parseFloat(priceData.bid);
   const inGoodHour = isGoodTradingHour(symbol);
+    const { swingHighs: microSH, swingLows: microSL } = findSwings(microCandles);
+  const { swingHighs: macroSH, swingLows: macroSL } = findSwings(macroCandles);
+  const microStructure = classifyStructure(microSH, microSL);
+  const macroStructure = classifyStructure(macroSH, macroSL);
+  const microChoch = detectCHoCH(microCandles, microSH, microSL);
+  const macroChoch = detectCHoCH(macroCandles, macroSH, macroSL);
   return {
     symbol: symbol,
     currentPrice: currentPrice,
@@ -1165,10 +1229,14 @@ function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
   macro: macroFib ? { levels: macroFib.levels, goldenZone: macroFib.goldenZone, direction: macroFib.direction, impulseStart: macroFib.impulseStart, impulseEnd: macroFib.impulseEnd } : null,
   micro: microFib ? { levels: microFib.levels, goldenZone: microFib.goldenZone, direction: microFib.direction, impulseStart: microFib.impulseStart, impulseEnd: microFib.impulseEnd } : null,
 },
-    gatilho: { padroesRecentes: recentPatterns.map(p => ({ tipo: p.type, direcao: p.direction })) },
+        gatilho: { padroesRecentes: recentPatterns.map(p => ({ tipo: p.type, direcao: p.direction })) },
     candles: {
       micro: formatCandlesForChart(microCandles),
       macro: formatCandlesForChart(macroCandles),
+    },
+    estrutura: {
+      micro: { swingsAltos: microStructure.highs, swingsBaixos: microStructure.lows, choch: microChoch },
+      macro: { swingsAltos: macroStructure.highs, swingsBaixos: macroStructure.lows, choch: macroChoch },
     },
   };
 }
