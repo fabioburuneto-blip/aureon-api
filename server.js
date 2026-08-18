@@ -1267,7 +1267,7 @@ Responda APENAS em JSON, neste formato exato:
 }
 
 IMPORTANTE sobre zonaRelevante/cenario: use apenas quando houver uma zona ESPECÍFICA do pacote de dados (não invente níveis) que faça sentido monitorar. Não preencha só para preencher — se o mercado estiver genuinamente sem nada relevante à vista, deixe null.`;
-
+}
 async function callClaudeForAnalysis(pkg) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando análise"); return null; }
   try {
