@@ -1211,6 +1211,61 @@ async function logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResu
     });
   } catch (err) { console.log("[ProfessionalAnalysis] Erro ao salvar:", err.message); }
 }
+// ─────────────────────────────────────────────
+// RESOLVE PENDENTES DA ANÁLISE PROFISSIONAL
+// ─────────────────────────────────────────────
+const PROFESSIONAL_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24h — setups de H4 levam tempo pra desenvolver
+
+async function resolveProfessionalAnalysis() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  try {
+    const rows = await supabaseGet(
+      `professional_analysis?outcome=eq.pending&test_entry=not.is.null&select=id,symbol,test_entry,test_sl,test_tp,created_at&limit=200`
+    );
+    if (!rows || !Array.isArray(rows) || !rows.length) return;
+
+    const now = Date.now();
+    for (const r of rows) {
+      const priceData = allPrices.get(r.symbol);
+      if (!priceData) continue;
+
+      const bid = parseFloat(priceData.bid);
+      const ask = parseFloat(priceData.ask || priceData.bid);
+      const direction = r.test_tp > r.test_entry ? "BUY" : "SELL";
+
+      let outcome = null, resolvedPrice = null;
+      if (direction === "BUY") {
+        if (bid >= r.test_tp) { outcome = "win"; resolvedPrice = r.test_tp; }
+        else if (bid <= r.test_sl) { outcome = "loss"; resolvedPrice = r.test_sl; }
+      } else {
+        if (ask <= r.test_tp) { outcome = "win"; resolvedPrice = r.test_tp; }
+        else if (ask >= r.test_sl) { outcome = "loss"; resolvedPrice = r.test_sl; }
+      }
+
+      const elapsed = now - new Date(r.created_at).getTime();
+      if (!outcome && elapsed >= PROFESSIONAL_TIMEOUT_MS) {
+        outcome = "timeout";
+        resolvedPrice = direction === "BUY" ? bid : ask;
+      }
+
+      if (outcome) {
+        await fetch(`${SUPABASE_URL}/rest/v1/professional_analysis?id=eq.${r.id}`, {
+          method: "PATCH",
+          headers: {
+            "apikey": SUPABASE_KEY,
+            "Authorization": `Bearer ${SUPABASE_KEY}`,
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+          },
+          body: JSON.stringify({ outcome, resolved_price: resolvedPrice, resolved_at: new Date().toISOString() }),
+        });
+        console.log(`[ProfessionalAnalysis] Resolvido: ${r.symbol} id=${r.id} → ${outcome}`);
+      }
+    }
+  } catch (err) {
+    console.log("[ProfessionalAnalysis] Erro ao resolver:", err.message);
+  }
+}
 async function analyzeLiveAsset(symbol, isPriority=false) {
   const priceData=allPrices.get(symbol);
   if(!priceData||!isPriceFresh(priceData)) return;
@@ -1532,6 +1587,39 @@ app.post("/professional-analysis", async (req, res) => {
   if (!claudeResult) return res.status(502).json({ error: "Falha ao obter análise" });
   await logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResult);
   res.json({ ...claudeResult, contexto: pkg });
+});
+app.get("/professional-analysis-history", async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    let query = `professional_analysis?order=created_at.desc&limit=${req.query.limit || 100}`;
+    if (symbol) query += `&symbol=eq.${encodeURIComponent(symbol)}`;
+    const rows = await supabaseGet(query);
+    if (!rows || !Array.isArray(rows)) return res.status(500).json({ error: "Erro ao consultar histórico" });
+
+    const resolved = rows.filter(r => r.outcome && r.outcome !== "pending");
+    const wins = resolved.filter(r => r.outcome === "win").length;
+    const losses = resolved.filter(r => r.outcome === "loss").length;
+    const timeouts = resolved.filter(r => r.outcome === "timeout").length;
+    const winRate = (wins + losses) > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : null;
+
+    res.json({
+      total: rows.length,
+      resolved: resolved.length,
+      pending: rows.length - resolved.length,
+      wins, losses, timeouts,
+      win_rate: winRate ? `${winRate}%` : "Amostra insuficiente ainda",
+      records: rows.map(r => ({
+        id: r.id, symbol: r.symbol, macro_tf: r.macro_tf, micro_tf: r.micro_tf,
+        setup_encontrado: r.setup_encontrado, descricao: r.descricao,
+        zona_entrada_top: r.zona_entrada_top, zona_entrada_bottom: r.zona_entrada_bottom,
+        stop: r.stop, alvo: r.alvo, outcome: r.outcome, resolved_price: r.resolved_price,
+        created_at: r.created_at, resolved_at: r.resolved_at,
+      })),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 function computeTradeStats(trades) {
   const valid = trades.filter(t=>t.result==="win"||t.result==="loss");
@@ -1944,6 +2032,7 @@ setInterval(fetchLiquidations,  2*60*1000);
 setInterval(fetchCorrelations,  5*60*1000);
 setInterval(fetchCOTReport,    60*60*1000);
 setInterval(fetchEconomicCalendar, 60*60*1000);
+setInterval(resolveProfessionalAnalysis, 5 * 60 * 1000); // resolve pendentes a cada 5min
 
 // ─────────────────────────────────────────────
 // HEALTH
