@@ -1145,9 +1145,11 @@ function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
   macro: macroFib ? { levels: macroFib.levels, goldenZone: macroFib.goldenZone, direction: macroFib.direction, impulseStart: macroFib.impulseStart, impulseEnd: macroFib.impulseEnd } : null,
   micro: microFib ? { levels: microFib.levels, goldenZone: microFib.goldenZone, direction: microFib.direction, impulseStart: microFib.impulseStart, impulseEnd: microFib.impulseEnd } : null,
 },
-    gatilho: {
-      padroesRecentes: recentPatterns.map(function(p) { return { tipo: p.type, direcao: p.direction }; })
-    }
+    gatilho: { padroesRecentes: recentPatterns.map(p => ({ tipo: p.type, direcao: p.direction })) },
+    candles: {
+      micro: formatCandlesForChart(microCandles),
+      macro: formatCandlesForChart(macroCandles),
+    },
   };
 }
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
