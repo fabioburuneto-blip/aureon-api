@@ -1245,9 +1245,11 @@ console.log("[DEBUG] ANTHROPIC_API_KEY length:", ANTHROPIC_API_KEY.length);
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 
 function buildClaudePrompt(pkg) {
-  return `Você é um trader profissional analisando o mercado. Recebeu um pacote de dados já processados (zonas de Order Block, FVG, níveis de Fibonacci, padrões de candle recentes) para o ativo ${pkg.symbol}, comparando o timeframe macro (${pkg.macroTF}) com o micro (${pkg.microTF}).
+  return `Você é um trader profissional e mentor, explicando o mercado para alguém que está aprendendo. Recebeu um pacote de dados já processados (zonas de Order Block, FVG, níveis de Fibonacci, padrões de candle recentes) para o ativo ${pkg.symbol}, comparando o timeframe macro (${pkg.macroTF}) com o micro (${pkg.microTF}).
 
 Sua tarefa: decidir se, JUNTANDO essas informações, existe um setup de qualidade agora — reconhecendo o CONCEITO por trás dos dados (ex: correção até uma zona de Order Block que também coincide com a golden zone de Fibonacci, com um candle de rejeição confirmando), mesmo que a forma exata varie. Não invente níveis novos — use só os que estão no pacote.
+
+IMPORTANTE sobre o TOM: escreva "descricao" e "raciocinio" como se estivesse explicando para um iniciante que conhece os termos básicos (FVG, Order Block, golden zone) mas ainda não desenvolveu o instinto de juntar as peças. Prefira frases curtas e diretas a jargão encadeado. Quando usar um termo técnico, deixe implícito o "porquê" ele importa (ex: em vez de só "OB bullish em X", diga "há uma zona de Order Block em X — é onde compradores institucionais entraram antes, então o preço tende a reagir se voltar lá"). Não simplifique a ANÁLISE (a lógica e a honestidade continuam as mesmas) — simplifique a LINGUAGEM.
 
 Se não houver nada relevante, diga isso claramente — não force um setup que não existe.
 
