@@ -1262,12 +1262,14 @@ Responda APENAS em JSON, neste formato exato:
   "stop": number ou null,
   "alvo": number ou null,
   "raciocinio": "por que essa combinação faz sentido (ou por que não)",
-  "zonaRelevante": { "top": number, "bottom": number, "tipo": "OB" ou "FVG" ou "GOLDEN_ZONE" } ou null,
-  "cenario": "se setupEncontrado for false MAS existir uma zona específica que você está observando (ex: um Order Block ou a Golden Zone que o preço ainda não tocou), explique aqui o que você esperaria ver acontecer SE o preço chegasse lá — sem garantir resultado, só descrevendo o cenário que tornaria a entrada mais provável. Deixe null se não houver nenhuma zona específica valendo destaque agora." ou null
+    "zonaRelevante": { "top": number, "bottom": number, "tipo": "OB" ou "FVG" ou "GOLDEN_ZONE" } ou null,
+  "cenario": "se setupEncontrado for false MAS existir uma zona específica que você está observando (ex: um Order Block ou a Golden Zone que o preço ainda não tocou), explique aqui o que você esperaria ver acontecer SE o preço chegasse lá — sem garantir resultado, só descrevendo o cenário que tornaria a entrada mais provável. Deixe null se não houver nenhuma zona específica valendo destaque agora." ou null,
+  "confluencias": [{ "tipo": "FVG" ou "ORDER_BLOCK" ou "GOLDEN_ZONE" ou "CHOCH" ou "PIN_BAR" ou "ENGULFING" ou "ESTRUTURA_HH_HL" ou "ESTRUTURA_LH_LL", "direcao": "BULL" ou "BEAR" }] ou []
 }
 
-IMPORTANTE sobre zonaRelevante/cenario: use apenas quando houver uma zona ESPECÍFICA do pacote de dados (não invente níveis) que faça sentido monitorar. Não preencha só para preencher — se o mercado estiver genuinamente sem nada relevante à vista, deixe null.`;
+IMPORTANTE sobre confluencias: liste APENAS fatores que estão de fato presentes no pacote de dados (zona, gatilho, estrutura) e que você usou no seu raciocínio — nunca invente um fator que não está nos dados. Cada item é só um registro descritivo de "isso está presente e aponta nessa direção" — NÃO é uma pontuação e não deve ser tratado como indicador de probabilidade de acerto. Se não houver nenhum fator claro, devolva lista vazia [].`;
 }
+
 async function callClaudeForAnalysis(pkg) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando análise"); return null; }
   try {
@@ -1298,6 +1300,7 @@ async function logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResu
         setup_encontrado: claudeResult.setupEncontrado, descricao: claudeResult.descricao,
         zona_entrada_top: claudeResult.zonaEntrada?.top ?? null, zona_entrada_bottom: claudeResult.zonaEntrada?.bottom ?? null,
         stop: claudeResult.stop ?? null, alvo: claudeResult.alvo ?? null, raciocinio: claudeResult.raciocinio,
+        confluencias: claudeResult.confluencias ?? [],
         context_package: pkg,
         test_entry: hasSetup ? currentPrice : null, test_sl: hasSetup ? claudeResult.stop : null, test_tp: hasSetup ? claudeResult.alvo : null,
       }),
@@ -1703,7 +1706,8 @@ app.get("/professional-analysis-history", async (req, res) => {
         id: r.id, symbol: r.symbol, macro_tf: r.macro_tf, micro_tf: r.micro_tf,
         setup_encontrado: r.setup_encontrado, descricao: r.descricao,
         zona_entrada_top: r.zona_entrada_top, zona_entrada_bottom: r.zona_entrada_bottom,
-        stop: r.stop, alvo: r.alvo, outcome: r.outcome, resolved_price: r.resolved_price,
+            stop: r.stop, alvo: r.alvo, outcome: r.outcome, resolved_price: r.resolved_price,
+        confluencias: r.confluencias || [],
         created_at: r.created_at, resolved_at: r.resolved_at,
       })),
       timestamp: new Date().toISOString(),
