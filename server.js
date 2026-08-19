@@ -1712,7 +1712,6 @@ app.get("/professional-analysis-history", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-                                          ← cursor aqui, linha em branco
 app.get("/standard-analysis-history", async (req, res) => {
   try {
     const symbol = req.query.symbol;
