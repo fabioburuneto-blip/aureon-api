@@ -1688,13 +1688,11 @@ app.get("/professional-analysis-history", async (req, res) => {
     if (symbol) query += `&symbol=eq.${encodeURIComponent(symbol)}`;
     const rows = await supabaseGet(query);
     if (!rows || !Array.isArray(rows)) return res.status(500).json({ error: "Erro ao consultar histórico" });
-
     const resolved = rows.filter(r => r.outcome && r.outcome !== "pending");
     const wins = resolved.filter(r => r.outcome === "win").length;
     const losses = resolved.filter(r => r.outcome === "loss").length;
     const timeouts = resolved.filter(r => r.outcome === "timeout").length;
     const winRate = (wins + losses) > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : null;
-
     res.json({
       total: rows.length,
       resolved: resolved.length,
@@ -1707,6 +1705,38 @@ app.get("/professional-analysis-history", async (req, res) => {
         zona_entrada_top: r.zona_entrada_top, zona_entrada_bottom: r.zona_entrada_bottom,
         stop: r.stop, alvo: r.alvo, outcome: r.outcome, resolved_price: r.resolved_price,
         created_at: r.created_at, resolved_at: r.resolved_at,
+      })),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+                                          ← cursor aqui, linha em branco
+app.get("/standard-analysis-history", async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    let query = `trades?source=eq.TRADEPAGE&order=created_at.desc&limit=${req.query.limit || 100}`;
+    if (req.query.since) query += `&created_at=gte.${encodeURIComponent(req.query.since)}`;
+    if (symbol) query += `&symbol=eq.${encodeURIComponent(symbol)}`;
+    const rows = await supabaseGet(query);
+    if (!rows || !Array.isArray(rows)) return res.status(500).json({ error: "Erro ao consultar histórico" });
+    const resolved = rows.filter(r => r.result === "win" || r.result === "loss");
+    const wins = resolved.filter(r => r.result === "win").length;
+    const losses = resolved.filter(r => r.result === "loss").length;
+    const winRate = resolved.length > 0 ? ((wins / resolved.length) * 100).toFixed(1) : null;
+    res.json({
+      total: rows.length,
+      resolved: resolved.length,
+      pending: rows.length - resolved.length,
+      wins, losses,
+      win_rate: winRate ? `${winRate}%` : "Amostra insuficiente ainda",
+      records: rows.map(r => ({
+        id: r.id, symbol: r.symbol, direction: r.direction,
+        entry_price: r.entry_price, sl: r.sl, tp: r.tp,
+        probability: r.probability, reason: r.reason || null,
+        result: r.result, profit: r.profit, close_price: r.close_price,
+        created_at: r.created_at, closed_at: r.closed_at,
       })),
       timestamp: new Date().toISOString(),
     });
@@ -2013,6 +2043,7 @@ wss.on("connection",(ws)=>{
                 confirmations: result.confirmations||0,
                 trend_strength: result.trend_strength||0,
                 source:      "TRADEPAGE",
+                reason:      result.reason || null,
               };
               const r=await fetch(`${SUPABASE_URL}/rest/v1/trades`,{
                 method:"POST",
