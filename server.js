@@ -1311,25 +1311,24 @@ ${listaCombos}
 
 Responda APENAS em JSON, neste formato exato:
 {
-  "melhorCombo": { "macroTF": "H4", "microTF": "M5" },
-  "setupEncontrado": true ou false,
-  "descricao": "explicação curta da combinação escolhida",
-  "zonaEntrada": { "top": number, "bottom": number } ou null,
-  "stop": number ou null,
-  "alvo": number ou null,
-  "raciocinio": "por que essa combinação faz mais sentido que as outras (ou por que nenhuma tem setup agora)",
-  "zonaRelevante": { "top": number, "bottom": number, "tipo": "OB" ou "FVG" ou "GOLDEN_ZONE" } ou null,
-  "cenario": "cenário de observação se não houver setup mas houver zona relevante" ou null,
-  "confluencias": [{ "tipo": "FVG" ou "ORDER_BLOCK" ou "GOLDEN_ZONE" ou "CHOCH" ou "PIN_BAR" ou "ENGULFING" ou "ESTRUTURA_HH_HL" ou "ESTRUTURA_LH_LL", "direcao": "BULL" ou "BEAR" }] ou [],
-  "panorama": [
-    { "macroTF": "H4", "microTF": "M5", "resumo": "1 frase curta sobre o regime/viés dessa combinação" }
+  "combinacoes": [
+    {
+      "macroTF": "H4", "microTF": "M5",
+      "setupEncontrado": true ou false,
+      "descricao": "explicação curta do que você vê nessa combinação",
+      "zonaEntrada": { "top": number, "bottom": number } ou null,
+      "stop": number ou null,
+      "alvo": number ou null,
+      "raciocinio": "por que tem ou não tem setup aqui",
+      "confluencias": [{ "tipo": "FVG" ou "ORDER_BLOCK" ou "GOLDEN_ZONE" ou "CHOCH" ou "PIN_BAR" ou "ENGULFING" ou "ESTRUTURA_HH_HL" ou "ESTRUTURA_LH_LL", "direcao": "BULL" ou "BEAR" }] ou [],
+      "resumo": "1 frase curta sobre o regime/viés dessa combinação"
+    }
   ]
 }
 
-IMPORTANTE sobre confluencias: só fatores realmente presentes na combinação ESCOLHIDA. Nunca invente. Descritivo, não é pontuação de probabilidade.
+IMPORTANTE: inclua uma entrada em "combinacoes" para CADA uma das ${combosLight.length} combinações recebidas, na mesma ordem. Cada entrada é analisada de forma independente, com os dados só daquela combinação — não misture dados de uma combinação com o veredito de outra.
 
-IMPORTANTE sobre panorama: uma entrada para CADA uma das ${combosLight.length} combinações recebidas, baseada só nos dados daquela combinação.`;
-}
+IMPORTANTE sobre confluencias: só fatores realmente presentes NAQUELA combinação. Nunca invente. Descritivo, não é pontuação de probabilidade.`;
 
 async function callClaudeForMultiTF(symbol, combosLight) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando multi-TF"); return null; }
@@ -1759,17 +1758,42 @@ app.post("/professional-analysis", async (req, res) => {
     return { macroTF: c.macroTF, microTF: c.microTF, ...rest, estrutura: estruturaLight };
   });
 
-  const claudeResult = await callClaudeForMultiTF(symbol, combosLight);
-  if (!claudeResult) return res.status(502).json({ error: "Falha ao obter análise" });
+    const claudeResult = await callClaudeForMultiTF(symbol, combosLight);
+  if (!claudeResult || !Array.isArray(claudeResult.combinacoes)) return res.status(502).json({ error: "Falha ao obter análise" });
 
-  const winner = combosFull.find(c =>
-    c.macroTF === claudeResult.melhorCombo?.macroTF && c.microTF === claudeResult.melhorCombo?.microTF
-  ) || combosFull[0];
+  // Ranking igual ao que o Base44 já descreveu: primeiro quem tem setup, depois quem tem mais confluências.
+  const ranked = claudeResult.combinacoes
+    .map((c, i) => ({ ...c, macroTF: combosFull[i]?.macroTF, microTF: combosFull[i]?.microTF, _idx: i }))
+    .sort((a, b) => {
+      if (a.setupEncontrado !== b.setupEncontrado) return a.setupEncontrado ? -1 : 1;
+      return (b.confluencias?.length || 0) - (a.confluencias?.length || 0);
+    });
+  const best = ranked[0];
+  const winner = combosFull[best._idx] || combosFull[0];
 
-  winner.pkg.panorama = claudeResult.panorama || null;
+  // Anexa os dados técnicos REAIS (calculados localmente, sem custo de IA) em cada combinação,
+  // pra grade "Todas as combinações" poder expandir e mostrar OB/FVG/Fibonacci/estrutura de verdade.
+  const combinacoesCompletas = claudeResult.combinacoes.map((c, i) => ({
+    ...c,
+    macroTF: combosFull[i]?.macroTF,
+    microTF: combosFull[i]?.microTF,
+    contexto: combosFull[i]?.pkg || null,
+  }));
 
-  await logProfessionalAnalysis(symbol, winner.macroTF, winner.microTF, winner.pkg, claudeResult);
-  res.json({ ...claudeResult, contexto: winner.pkg });
+  const resultadoFinal = {
+    setupEncontrado: best.setupEncontrado,
+    descricao: best.descricao,
+    zonaEntrada: best.zonaEntrada,
+    stop: best.stop,
+    alvo: best.alvo,
+    raciocinio: best.raciocinio,
+    confluencias: best.confluencias,
+    melhorCombo: { macroTF: best.macroTF, microTF: best.microTF },
+    combinacoes: combinacoesCompletas,
+  };
+
+  await logProfessionalAnalysis(symbol, winner.macroTF, winner.microTF, winner.pkg, best);
+  res.json({ ...resultadoFinal, contexto: winner.pkg });
 });
 app.get("/professional-analysis-history", async (req, res) => {
   try {
