@@ -1337,14 +1337,32 @@ async function callClaudeForMultiTF(symbol, combosLight) {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 3000, messages: [{ role: "user", content: buildMultiTFPrompt(symbol, combosLight) }] }),
+      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 8000, messages: [{ role: "user", content: buildMultiTFPrompt(symbol, combosLight) }] }),
     });
-    if (!res.ok) { console.log(`[Claude] Erro HTTP ${res.status} (multi-TF)`); return null; }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      console.log(`[Claude] Erro HTTP ${res.status} (multi-TF) — ${errBody.slice(0,300)}`);
+      return null;
+    }
     const data = await res.json();
+    const stopReason = data?.stop_reason;
     const text = data?.content?.[0]?.text || "";
+    // ✅ DEBUG: se a resposta foi cortada por limite de tokens, isso aparece explícito
+    // no log, em vez de só "sem JSON reconhecível" — evita adivinhação na próxima vez.
+    if (stopReason === "max_tokens") {
+      console.log(`[Claude] ⚠️ Resposta multi-TF CORTADA por max_tokens (${symbol}) — texto tem ${text.length} chars`);
+    }
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) { console.log("[Claude] Resposta sem JSON reconhecível (multi-TF)"); return null; }
-    return JSON.parse(jsonMatch[0]);
+    if (!jsonMatch) {
+      console.log(`[Claude] Resposta sem JSON reconhecível (multi-TF, ${symbol}) — stop_reason:${stopReason} — trecho final: ${text.slice(-200)}`);
+      return null;
+    }
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (parseErr) {
+      console.log(`[Claude] JSON inválido (multi-TF, ${symbol}) — stop_reason:${stopReason} — erro:${parseErr.message} — trecho final: ${jsonMatch[0].slice(-200)}`);
+      return null;
+    }
   } catch (err) { console.log("[Claude] Erro na chamada multi-TF:", err.message); return null; }
 }
 async function logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResult) {
