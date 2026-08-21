@@ -1243,6 +1243,8 @@ function buildFullContextPackage(symbol, priceData, macroTF, microTF, htfBias) {
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 console.log("[DEBUG] ANTHROPIC_API_KEY length:", ANTHROPIC_API_KEY.length);
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+const MULTI_TF_MACRO_OPTIONS = ["D1", "H4", "H1"];
+const MULTI_TF_MICRO_OPTIONS = ["M15", "M5"];
 
 function buildClaudePrompt(pkg) {
   return `Você é um trader profissional e mentor, explicando o mercado para alguém que está aprendendo. Recebeu um pacote de dados já processados (zonas de Order Block, FVG, níveis de Fibonacci, padrões de candle recentes) para o ativo ${pkg.symbol}, comparando o timeframe macro (${pkg.macroTF}) com o micro (${pkg.microTF}).
@@ -1286,7 +1288,64 @@ async function callClaudeForAnalysis(pkg) {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) { console.log("[Claude] Resposta sem JSON reconhecível"); return null; }
     return JSON.parse(jsonMatch[0]);
-  } catch (err) { console.log("[Claude] Erro na chamada:", err.message); return null; }
+    } catch (err) { console.log("[Claude] Erro na chamada:", err.message); return null; }
+}
+
+function buildMultiTFPrompt(symbol, combosLight) {
+  const listaCombos = combosLight.map((c, i) =>
+    `\n--- Combinação ${i + 1}: macro ${c.macroTF} / micro ${c.microTF} ---\n${JSON.stringify(c, null, 2)}`
+  ).join("\n");
+
+  return `Você é um trader profissional e mentor, explicando o mercado para alguém que está aprendendo. Recebeu ${combosLight.length} combinações de timeframe (macro + micro) já processadas para o ativo ${symbol} — cada uma com suas próprias zonas de Order Block, FVG, níveis de Fibonacci, estrutura de mercado (HH/HL/LH/LL, CHoCH) e padrões de candle recentes.
+
+Sua tarefa tem duas partes:
+
+1) ESCOLHER a MELHOR combinação para operar agora — reconhecendo o CONCEITO por trás dos dados, mesmo que a forma exata varie entre combinações. Não invente níveis novos — use só os que estão nos pacotes. Se NENHUMA combinação tiver um setup de qualidade, diga isso claramente (setupEncontrado: false) — não force um setup que não existe.
+
+2) Fazer um PANORAMA curto (uma linha por combinação) do que está acontecendo em CADA uma das ${combosLight.length} combinações recebidas, mesmo as que você não escolheu — assim o trader vê o mercado completo, não só a combinação vencedora.
+
+IMPORTANTE sobre o TOM: escreva "descricao", "raciocinio" e cada linha do "panorama" como se estivesse explicando para um iniciante que conhece os termos básicos mas ainda não desenvolveu o instinto de juntar as peças. Frases curtas, termo técnico com o "porquê" implícito. Não simplifique a ANÁLISE — simplifique a LINGUAGEM.
+
+Combinações recebidas:
+${listaCombos}
+
+Responda APENAS em JSON, neste formato exato:
+{
+  "melhorCombo": { "macroTF": "H4", "microTF": "M5" },
+  "setupEncontrado": true ou false,
+  "descricao": "explicação curta da combinação escolhida",
+  "zonaEntrada": { "top": number, "bottom": number } ou null,
+  "stop": number ou null,
+  "alvo": number ou null,
+  "raciocinio": "por que essa combinação faz mais sentido que as outras (ou por que nenhuma tem setup agora)",
+  "zonaRelevante": { "top": number, "bottom": number, "tipo": "OB" ou "FVG" ou "GOLDEN_ZONE" } ou null,
+  "cenario": "cenário de observação se não houver setup mas houver zona relevante" ou null,
+  "confluencias": [{ "tipo": "FVG" ou "ORDER_BLOCK" ou "GOLDEN_ZONE" ou "CHOCH" ou "PIN_BAR" ou "ENGULFING" ou "ESTRUTURA_HH_HL" ou "ESTRUTURA_LH_LL", "direcao": "BULL" ou "BEAR" }] ou [],
+  "panorama": [
+    { "macroTF": "H4", "microTF": "M5", "resumo": "1 frase curta sobre o regime/viés dessa combinação" }
+  ]
+}
+
+IMPORTANTE sobre confluencias: só fatores realmente presentes na combinação ESCOLHIDA. Nunca invente. Descritivo, não é pontuação de probabilidade.
+
+IMPORTANTE sobre panorama: uma entrada para CADA uma das ${combosLight.length} combinações recebidas, baseada só nos dados daquela combinação.`;
+}
+
+async function callClaudeForMultiTF(symbol, combosLight) {
+  if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando multi-TF"); return null; }
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 3000, messages: [{ role: "user", content: buildMultiTFPrompt(symbol, combosLight) }] }),
+    });
+    if (!res.ok) { console.log(`[Claude] Erro HTTP ${res.status} (multi-TF)`); return null; }
+    const data = await res.json();
+    const text = data?.content?.[0]?.text || "";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) { console.log("[Claude] Resposta sem JSON reconhecível (multi-TF)"); return null; }
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) { console.log("[Claude] Erro na chamada multi-TF:", err.message); return null; }
 }
 
 async function logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResult) {
@@ -1675,16 +1734,42 @@ app.post("/live-signal-result",async(req,res)=>{
   res.json({status:"ok"});
 });
 app.post("/professional-analysis", async (req, res) => {
-  const { symbol, macroTF = "H4", microTF = "M5" } = req.body;
+  const { symbol } = req.body;
   if (!symbol) return res.status(400).json({ error: "symbol obrigatório" });
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) return res.status(503).json({ error: "Sem dados frescos para esse ativo" });
-  const pkg = buildFullContextPackage(symbol, priceData, macroTF, microTF, null);
-  if (pkg.error) return res.status(400).json(pkg);
-  const claudeResult = await callClaudeForAnalysis(pkg);
+
+  const combosFull = [];
+  for (const macroTF of MULTI_TF_MACRO_OPTIONS) {
+    for (const microTF of MULTI_TF_MICRO_OPTIONS) {
+      const pkg = buildFullContextPackage(symbol, priceData, macroTF, microTF, null);
+      if (pkg.error) continue; // TF sem candles suficientes agora — pula, não força
+      combosFull.push({ macroTF, microTF, pkg });
+    }
+  }
+  if (!combosFull.length) return res.status(400).json({ error: "Sem candles suficientes em nenhum timeframe disponível para esse ativo agora" });
+
+   const trimSwings = (arr) => (arr || []).slice(-3); // só os 3 mais recentes — é o que o StructureCard mostra
+  const combosLight = combosFull.map(c => {
+    const { candles, estrutura, ...rest } = c.pkg; // tira candles (peso) e recorta estrutura (era inteira à toa)
+    const estruturaLight = estrutura ? {
+      micro: { swingsAltos: trimSwings(estrutura.micro?.swingsAltos), swingsBaixos: trimSwings(estrutura.micro?.swingsBaixos), choch: estrutura.micro?.choch ?? null },
+      macro: { swingsAltos: trimSwings(estrutura.macro?.swingsAltos), swingsBaixos: trimSwings(estrutura.macro?.swingsBaixos), choch: estrutura.macro?.choch ?? null },
+    } : null;
+    return { macroTF: c.macroTF, microTF: c.microTF, ...rest, estrutura: estruturaLight };
+  });
+
+  const claudeResult = await callClaudeForMultiTF(symbol, combosLight);
   if (!claudeResult) return res.status(502).json({ error: "Falha ao obter análise" });
-  await logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResult);
-  res.json({ ...claudeResult, contexto: pkg });
+
+  const winner = combosFull.find(c =>
+    c.macroTF === claudeResult.melhorCombo?.macroTF && c.microTF === claudeResult.melhorCombo?.microTF
+  ) || combosFull[0];
+
+  winner.pkg.panorama = claudeResult.panorama || null;
+
+  await logProfessionalAnalysis(symbol, winner.macroTF, winner.microTF, winner.pkg, claudeResult);
+  res.json({ ...claudeResult, contexto: winner.pkg });
 });
 app.get("/professional-analysis-history", async (req, res) => {
   try {
