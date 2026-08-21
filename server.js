@@ -1326,9 +1326,10 @@ Responda APENAS em JSON, neste formato exato:
   ]
 }
 
-IMPORTANTE: inclua uma entrada em "combinacoes" para CADA uma das ${combosLight.length} combinações recebidas, na mesma ordem. Cada entrada é analisada de forma independente, com os dados só daquela combinação — não misture dados de uma combinação com o veredito de outra.
+IMPORTANTE: inclua uma entrada em "combinacoes" para CADA uma das ${combosLight.length} combinações recebidas, na mesma ordem. Cada entrada é analisada de forma independente, com os dados só daquela combinação — não misture dados de uma combinação com o veredito de outraf.
 
 IMPORTANTE sobre confluencias: só fatores realmente presentes NAQUELA combinação. Nunca invente. Descritivo, não é pontuação de probabilidade.`;
+}
 
 async function callClaudeForMultiTF(symbol, combosLight) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando multi-TF"); return null; }
@@ -1346,7 +1347,6 @@ async function callClaudeForMultiTF(symbol, combosLight) {
     return JSON.parse(jsonMatch[0]);
   } catch (err) { console.log("[Claude] Erro na chamada multi-TF:", err.message); return null; }
 }
-
 async function logProfessionalAnalysis(symbol, macroTF, microTF, pkg, claudeResult) {
   if (!SUPABASE_URL || !SUPABASE_KEY || !claudeResult) return;
   try {
@@ -1764,7 +1764,7 @@ app.post("/professional-analysis", async (req, res) => {
   // Ranking igual ao que o Base44 já descreveu: primeiro quem tem setup, depois quem tem mais confluências.
   const ranked = claudeResult.combinacoes
     .map((c, i) => ({ ...c, macroTF: combosFull[i]?.macroTF, microTF: combosFull[i]?.microTF, _idx: i }))
-    .sort((a, b) => {
+        .sort((a, b) => {
       if (a.setupEncontrado !== b.setupEncontrado) return a.setupEncontrado ? -1 : 1;
       return (b.confluencias?.length || 0) - (a.confluencias?.length || 0);
     });
@@ -1792,7 +1792,7 @@ app.post("/professional-analysis", async (req, res) => {
     combinacoes: combinacoesCompletas,
   };
 
-  await logProfessionalAnalysis(symbol, winner.macroTF, winner.microTF, winner.pkg, best);
+    await logProfessionalAnalysis(symbol, winner.macroTF, winner.microTF, winner.pkg, best);
   res.json({ ...resultadoFinal, contexto: winner.pkg });
 });
 app.get("/professional-analysis-history", async (req, res) => {
