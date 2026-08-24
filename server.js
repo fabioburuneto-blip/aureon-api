@@ -1337,7 +1337,7 @@ IMPORTANTE sobre confluencias: só fatores realmente presentes NAQUELA combinaç
 IMPORTANTE sobre alvos: cada alvo em "alvos" precisa corresponder a um nível REAL da estrutura (order block, FVG, swing, Fibonacci) daquela combinação — nunca um múltiplo aritmético do risco. Se a estrutura só sustentar 1 ou 2 alvos válidos, devolva só esses. Ordene do mais próximo (menor R:R) para o mais distante.
 
 IMPORTANTE sobre justificativa: "entrada" e "stop" devem explicar o motivo técnico específico daquele nível NAQUELA combinação — nunca frase genérica.`;
-
+}
 async function callClaudeForMultiTF(symbol, combosLight) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando multi-TF"); return null; }
   try {
