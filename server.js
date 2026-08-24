@@ -1316,9 +1316,15 @@ Responda APENAS em JSON, neste formato exato:
       "macroTF": "H4", "microTF": "M5",
       "setupEncontrado": true ou false,
       "descricao": "explicação curta do que você vê nessa combinação",
-      "zonaEntrada": { "top": number, "bottom": number } ou null,
+       "zonaEntrada": { "top": number, "bottom": number } ou null,
       "stop": number ou null,
-      "alvo": number ou null,
+      "alvos": [
+        { "preco": number, "motivo": "até 15 palavras — que nível REAL da estrutura justifica esse alvo (order block, FVG, swing anterior, extensão de Fibonacci). Nunca calcular por múltiplo de R." }
+      ] ou [],
+      "justificativa": {
+        "entrada": "até 15 palavras — por que essa zona específica, não outra",
+        "stop": "até 15 palavras — por que esse nível invalida a tese (estrutura, liquidez, order block oposto)"
+      },
       "raciocinio": "por que tem ou não tem setup aqui",
       "confluencias": [{ "tipo": "FVG" ou "ORDER_BLOCK" ou "GOLDEN_ZONE" ou "CHOCH" ou "PIN_BAR" ou "ENGULFING" ou "ESTRUTURA_HH_HL" ou "ESTRUTURA_LH_LL", "direcao": "BULL" ou "BEAR" }] ou [],
       "resumo": "1 frase curta sobre o regime/viés dessa combinação"
@@ -1326,10 +1332,11 @@ Responda APENAS em JSON, neste formato exato:
   ]
 }
 
-IMPORTANTE: inclua uma entrada em "combinacoes" para CADA uma das ${combosLight.length} combinações recebidas, na mesma ordem. Cada entrada é analisada de forma independente, com os dados só daquela combinação — não misture dados de uma combinação com o veredito de outraf.
+IMPORTANTE sobre confluencias: só fatores realmente presentes NAQUELA combinação. Nunca invente. Descritivo, não é pontuação de probabilidade.
 
-IMPORTANTE sobre confluencias: só fatores realmente presentes NAQUELA combinação. Nunca invente. Descritivo, não é pontuação de probabilidade.`;
-}
+IMPORTANTE sobre alvos: cada alvo em "alvos" precisa corresponder a um nível REAL da estrutura (order block, FVG, swing, Fibonacci) daquela combinação — nunca um múltiplo aritmético do risco. Se a estrutura só sustentar 1 ou 2 alvos válidos, devolva só esses. Ordene do mais próximo (menor R:R) para o mais distante.
+
+IMPORTANTE sobre justificativa: "entrada" e "stop" devem explicar o motivo técnico específico daquele nível NAQUELA combinação — nunca frase genérica.`;
 
 async function callClaudeForMultiTF(symbol, combosLight) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando multi-TF"); return null; }
@@ -1798,12 +1805,14 @@ app.post("/professional-analysis", async (req, res) => {
     contexto: combosFull[i]?.pkg || null,
   }));
 
-  const resultadoFinal = {
+    const resultadoFinal = {
     setupEncontrado: best.setupEncontrado,
     descricao: best.descricao,
     zonaEntrada: best.zonaEntrada,
     stop: best.stop,
-    alvo: best.alvo,
+    alvos: best.alvos || [],
+    alvo: (best.alvos && best.alvos[0]) ? best.alvos[0].preco : null, // compatibilidade: primeiro alvo como "alvo" único, até o frontend migrar
+    justificativa: best.justificativa || null,
     raciocinio: best.raciocinio,
     confluencias: best.confluencias,
     melhorCombo: { macroTF: best.macroTF, microTF: best.microTF },
