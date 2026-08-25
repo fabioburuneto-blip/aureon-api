@@ -1291,18 +1291,39 @@ async function callClaudeForAnalysis(pkg) {
     } catch (err) { console.log("[Claude] Erro na chamada:", err.message); return null; }
 }
 
-function buildMultiTFPrompt(symbol, combosLight) {
+function getEstrategiaInstrucao(estrategia, foco) {
+  const blocos = {
+    SMC: {
+      GERAL: `Aplique o fluxo completo do Smart Money Concepts: (1) Estrutura define a direção — só considere setups a favor do BOS mais recente; CHoCH é alerta de possível reversão, nunca entrada imediata. (2) Liquidez define o mapa — identifique de onde o preço pode estar buscando combustível (equal highs/lows, topos/fundos varridos) e para onde ele tende a ir. (3) Order Block e FVG definem a zona de entrada — priorize OBs que romperam estrutura, saíram com deslocamento, e que ainda não foram mitigados; FVG+OB na mesma região é confluência forte. (4) Use Fibonacci como FILTRO de qualidade da zona, não como entrada isolada — desconto (abaixo de 50%) para compra, prêmio (acima de 50%) para venda. (5) Padrões de candle (pin bar, engolfo) servem de gatilho de confirmação dentro da zona, não de sinal isolado. Narre esse fluxo de forma conectada — nunca liste os elementos separados sem explicar como um leva ao outro.`,
+      ORDER_BLOCK: `Foque a explicação no(s) Order Block(s) presente(s) nos dados. Avalie a QUALIDADE de cada um usando os critérios reais: rompeu estrutura (BOS)? Saiu com deslocamento? Varreu liquidez antes de se formar? Deixou FVG na mesma região? Ainda está intacto (não mitigado)? Mencione estrutura/liquidez ao redor SOMENTE se for necessário para julgar a qualidade do OB — não narre o fluxo completo. Se não houver contexto suficiente para avaliar (ex: não dá para saber se está a favor da tendência maior), diga isso explicitamente em vez de forçar uma leitura.`,
+      FVG: `Foque a explicação no(s) Fair Value Gap(s) presente(s) nos dados. Avalie se o FVG está alinhado com a tendência maior, se coincide com Order Block ou nível de Fibonacci na mesma região (confluência forte), e se já foi parcialmente preenchido (regra dos 50%). Mencione estrutura ao redor SOMENTE se necessário para julgar se o FVG é a favor ou contra o fluxo dominante — não narre tudo. Se não houver contexto suficiente, diga isso explicitamente.`,
+      LIQUIDEZ: `Foque a explicação nas zonas de liquidez presentes nos dados (equal highs/lows, topos/fundos relevantes). Explique de onde o preço pode estar "buscando combustível" e para onde ele tende a se mover, e se há sinal de sweep (varredura) recente com reversão. Mencione estrutura/OB/FVG SOMENTE se necessário para contextualizar a liquidez — não narre o fluxo completo.`,
+      ESTRUTURA: `Foque a explicação na estrutura de mercado (BOS/CHoCH, HH/HL/LH/LL) presente nos dados. Diga claramente se a estrutura atual é de alta, baixa ou indefinida, e se houve CHoCH recente sinalizando possível mudança. Mencione OB/FVG/liquidez SOMENTE se necessário para contextualizar a leitura estrutural — não narre o fluxo completo.`,
+    },
+    FIBONACCI: {
+      GERAL: `Trace a retração de Fibonacci em DOIS níveis: (1) MACRO — do impulso do timeframe macro (${'${combosLight[0]?.macroTF || "macro"}'}), identificando a golden zone (61,8%-78,6%) como referência de contexto: se o preço chegar lá, qual gatilho você esperaria ver (rejeição, candle de confirmação) antes de considerar a região válida? (2) MICRO — do impulso do timeframe micro, com a mesma lógica de golden zone e gatilho esperado. Explique a relação entre os dois: a golden zone micro está dentro ou alinhada com a zona de desconto/prêmio do macro? Isso é o que dá qualidade ao setup. Nunca trate o toque no nível como gatilho — o nível marca zona de interesse, o gatilho vem de confirmação real nos dados (candle, estrutura).`,
+    },
+    PRICE_ACTION: {
+      GERAL: `Foque a leitura em Price Action puro: topos e fundos recentes, níveis de suporte/resistência como ZONAS (não linhas exatas), e padrões de vela presentes nos dados (pin bar, engolfo, vela de força/displacement, doji em zona-chave). Para cada padrão identificado, explique o CONTEXTO em que ele aparece — um engolfo isolado não significa nada; o mesmo engolfo numa zona de suporte/resistência relevante, alinhado com a estrutura maior, é um setup de qualidade. Sempre mencione brevemente se a estrutura maior (tendência de alta/baixa/lateral) apoia ou contraria o padrão encontrado.`,
+    },
+  };
+  const grupo = blocos[estrategia] || blocos.SMC;
+  return grupo[foco] || grupo.GERAL;
+}
+
+function buildMultiTFPrompt(symbol, combosLight, estrategia, foco) {
+  const instrucaoEstrategia = getEstrategiaInstrucao(estrategia, foco);
   const listaCombos = combosLight.map((c, i) =>
     `\n--- Combinação ${i + 1}: macro ${c.macroTF} / micro ${c.microTF} ---\n${JSON.stringify(c, null, 2)}`
   ).join("\n");
 
   return `Você é um trader profissional e mentor, explicando o mercado para alguém que está aprendendo. Recebeu ${combosLight.length} combinações de timeframe (macro + micro) já processadas para o ativo ${symbol} — cada uma com suas próprias zonas de Order Block, FVG, níveis de Fibonacci, estrutura de mercado (HH/HL/LH/LL, CHoCH) e padrões de candle recentes.
 
+INSTRUÇÃO DE ESTRATÉGIA (aplique isso na análise de cada combinação):
+${instrucaoEstrategia}
+
 Sua tarefa tem duas partes:
-
-1) ESCOLHER a MELHOR combinação para operar agora — reconhecendo o CONCEITO por trás dos dados, mesmo que a forma exata varie entre combinações. Não invente níveis novos — use só os que estão nos pacotes. Se NENHUMA combinação tiver um setup de qualidade, diga isso claramente (setupEncontrado: false) — não force um setup que não existe.
-
-2) Fazer um PANORAMA curto (uma linha por combinação) do que está acontecendo em CADA uma das ${combosLight.length} combinações recebidas, mesmo as que você não escolheu — assim o trader vê o mercado completo, não só a combinação vencedora.
+1) ESCOLHER a MELHOR combinação para operar agora, SEGUINDO A INSTRUÇÃO DE ESTRATÉGIA ACIMA — reconhecendo o CONCEITO por trás dos dados, mesmo que a forma exata varie entre combinações. Não invente níveis novos — use só os que estão nos pacotes. Se NENHUMA combinação tiver um setup de qualidade, diga isso claramente (setupEncontrado: false) — não force um setup que não existe.2) Fazer um PANORAMA curto (uma linha por combinação) do que está acontecendo em CADA uma das ${combosLight.length} combinações recebidas, mesmo as que você não escolheu — assim o trader vê o mercado completo, não só a combinação vencedora.
 
 IMPORTANTE sobre o TOM: escreva "descricao", "raciocinio" e cada linha do "panorama" como se estivesse explicando para um iniciante que conhece os termos básicos mas ainda não desenvolveu o instinto de juntar as peças. Frases curtas, termo técnico com o "porquê" implícito. Não simplifique a ANÁLISE — simplifique a LINGUAGEM.
 
@@ -1338,13 +1359,13 @@ IMPORTANTE sobre alvos: cada alvo em "alvos" precisa corresponder a um nível RE
 
 IMPORTANTE sobre justificativa: "entrada" e "stop" devem explicar o motivo técnico específico daquele nível NAQUELA combinação — nunca frase genérica.`;
 }
-async function callClaudeForMultiTF(symbol, combosLight) {
+async function callClaudeForMultiTF(symbol, combosLight, estrategia, foco) {
   if (!ANTHROPIC_API_KEY) { console.log("[Claude] ANTHROPIC_API_KEY não configurada — pulando multi-TF"); return null; }
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 8000, messages: [{ role: "user", content: buildMultiTFPrompt(symbol, combosLight) }] }),
+      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 8000, messages: [{ role: "user", content: buildMultiTFPrompt(symbol, combosLight, estrategia, foco) }] }),
     });
     if (!res.ok) {
       const errBody = await res.text().catch(() => "");
@@ -1758,7 +1779,7 @@ app.post("/live-signal-result",async(req,res)=>{
   res.json({status:"ok"});
 });
 app.post("/professional-analysis", async (req, res) => {
-  const { symbol } = req.body;
+  const { symbol, estrategia = "SMC", foco = "GERAL" } = req.body;
   if (!symbol) return res.status(400).json({ error: "symbol obrigatório" });
   const priceData = allPrices.get(symbol);
   if (!priceData || !isPriceFresh(priceData)) return res.status(503).json({ error: "Sem dados frescos para esse ativo" });
@@ -1783,7 +1804,7 @@ app.post("/professional-analysis", async (req, res) => {
     return { macroTF: c.macroTF, microTF: c.microTF, ...rest, estrutura: estruturaLight };
   });
 
-    const claudeResult = await callClaudeForMultiTF(symbol, combosLight);
+    const claudeResult = await callClaudeForMultiTF(symbol, combosLight, estrategia, foco);
   if (!claudeResult || !Array.isArray(claudeResult.combinacoes)) return res.status(502).json({ error: "Falha ao obter análise" });
 
   // Ranking igual ao que o Base44 já descreveu: primeiro quem tem setup, depois quem tem mais confluências.
