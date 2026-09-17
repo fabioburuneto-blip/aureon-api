@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <title>Dra. Patricia Rodrigues — Osteopatia &amp; Fisioterapia</title>
+  <meta name="description" content="Osteopatia, fisioterapia e hipnoterapia com a Dra. Patricia Rodrigues. Seu corpo em equilíbrio, sua vida sem dor." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,400;1,9..144,500&family=Inter:wght@300;400;500;600&family=Caveat:wght@500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ============ NAV ============ -->
+    <header class="site-nav" data-nav>
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true">PR</span>
+        <span class="brand-text">
+          <strong>Dra. Patricia Rodrigues</strong>
+          <em>Osteopata</em>
+        </span>
+      </a>
+      <nav class="nav-links">
+        <a href="#servicos">Serviços</a>
+        <a href="#jornada">Jornada</a>
+        <a href="#sobre">Sobre</a>
+        <a href="#galeria">Galeria</a>
+      </nav>
+      <a class="nav-cta" href="https://bit.ly/DrPatrycia" target="_blank" rel="noopener">Agendar consulta</a>
+    </header>
+
+    <main id="top">
+
+      <!-- ============ HERO BANNER (imagem fornecida) ============ -->
+      <section class="hero-banner" aria-label="Apresentação Dra. Patricia Rodrigues">
+        <img
+          class="hero-banner__img"
+          src="/images/hero-banner.webp"
+          alt="Dra. Patricia Rodrigues, Osteopata — Seu corpo em equilíbrio, sua vida sem dor. Osteopatia, fisioterapia e hipnoterapia para cuidar do seu corpo, da sua mente e da sua qualidade de vida."
+          width="1536"
+          height="1024"
+          fetchpriority="high"
+        />
+        <div class="hero-banner__scrollcue" aria-hidden="true">
+          <span></span>
+          <p>role para explorar</p>
+        </div>
+      </section>
+
+      <!-- ============ HERO SCRUB (canvas scroll scrubbing + kinetic type) ============ -->
+      <section class="hero-scrub" data-hero-scrub aria-label="Jornada de alívio da dor">
+        <div class="hero-scrub__stage">
+          <canvas class="hero-scrub__canvas" data-scrub-canvas></canvas>
+
+          <div class="hero-scrub__caption" data-scrub-caption>
+            <span data-caption-before>tensão. compensação. dor.</span>
+            <span data-caption-after>equilíbrio. alinhamento. alívio.</span>
+          </div>
+
+          <div class="kinetic-reveal" data-kinetic-reveal>
+            <h1 class="kinetic-reveal__name" aria-label="Dra. Patricia Rodrigues">
+              <span class="kw" data-word>Dra.</span>
+              <span class="kw" data-word>Patricia</span>
+              <span class="kw" data-word>Rodrigues</span>
+            </h1>
+            <p class="kinetic-reveal__tagline" data-tagline>Viva sem dor.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SERVIÇOS ============ -->
+      <section id="servicos" class="services">
+
+        <div class="services__intro reveal-block" data-reveal>
+          <p class="eyebrow">Atendimento</p>
+          <h2>Cuidado sob medida, <em>corpo inteiro.</em></h2>
+        </div>
+
+        <article class="service service--a" data-reveal>
+          <div class="service__index">01</div>
+          <div class="service__media" aria-hidden="true">
+            <svg viewBox="0 0 200 200" class="service__icon">
+              <path d="M100 20 C 70 60, 130 90, 100 130 C 75 160, 100 180, 100 180" />
+              <circle cx="100" cy="20" r="12" />
+            </svg>
+          </div>
+          <div class="service__copy">
+            <h3>Osteopatia <span>Adulto</span></h3>
+            <p>Tratamento manual das disfunções do sistema musculoesquelético, buscando a causa da dor — não apenas o sintoma. Uma abordagem que devolve mobilidade, equilíbrio postural e qualidade de movimento.</p>
+          </div>
+        </article>
+
+        <article class="service service--b" data-reveal>
+          <div class="service__index">02</div>
+          <div class="service__media" aria-hidden="true">
+            <svg viewBox="0 0 200 200" class="service__icon">
+              <circle cx="100" cy="40" r="16" />
+              <path d="M100 56 L100 120 M100 80 L70 105 M100 80 L130 105 M100 120 L78 160 M100 120 L122 160" />
+            </svg>
+          </div>
+          <div class="service__copy">
+            <h3>Osteopatia <span>Pediátrica</span></h3>
+            <p>Técnicas suaves e específicas para bebês e crianças, respeitando cada fase do desenvolvimento. Auxilia em cólicas, torcicolo congênito, distúrbios do sono e assimetrias posturais.</p>
+          </div>
+        </article>
+
+        <article class="service service--c" data-reveal>
+          <div class="service__index">03</div>
+          <div class="service__media" aria-hidden="true">
+            <svg viewBox="0 0 200 200" class="service__icon">
+              <path d="M60 150 Q 60 90 100 90 Q 140 90 140 150" />
+              <path d="M100 90 L100 40" />
+              <circle cx="100" cy="30" r="10" />
+            </svg>
+          </div>
+          <div class="service__copy">
+            <h3>Fisioterapia</h3>
+            <p>Reabilitação funcional e reeducação do movimento. Fortalecimento, mobilidade e prevenção de lesões através de um plano terapêutico individualizado — porque movimento é vida.</p>
+          </div>
+        </article>
+
+        <article class="service service--d" data-reveal>
+          <div class="service__index">04</div>
+          <div class="service__media" aria-hidden="true">
+            <svg viewBox="0 0 200 200" class="service__icon">
+              <path d="M100 40 C 60 40 50 80 65 100 C 50 110 55 140 80 145 C 85 165 115 165 120 145 C 145 140 150 110 135 100 C 150 80 140 40 100 40 Z" />
+              <circle cx="85" cy="85" r="4" />
+              <circle cx="115" cy="85" r="4" />
+              <circle cx="100" cy="110" r="4" />
+            </svg>
+          </div>
+          <div class="service__copy">
+            <h3>Hipnoterapia</h3>
+            <p>Equilíbrio emocional como parte do tratamento físico. A hipnoterapia acessa padrões inconscientes ligados à dor crônica, ansiedade e tensão — tratando a pessoa, não apenas o corpo.</p>
+          </div>
+        </article>
+
+      </section>
+
+      <!-- ============ JORNADA DO PACIENTE (slider comparativo) ============ -->
+      <section id="jornada" class="journey">
+        <div class="journey__intro reveal-block" data-reveal>
+          <p class="eyebrow">Jornada do paciente</p>
+          <h2>Do desconforto <em>ao alinhamento.</em></h2>
+          <p class="journey__lead">Arraste para revelar a transformação — de um corpo em tensão a um corpo em equilíbrio.</p>
+        </div>
+
+        <div class="compare" data-compare>
+          <div class="compare__frame">
+
+            <div class="compare__layer compare__layer--after" aria-hidden="true">
+              <svg viewBox="0 0 400 520" class="figure figure--after">
+                <defs>
+                  <radialGradient id="glow" cx="50%" cy="42%" r="60%">
+                    <stop offset="0%" stop-color="#8fa382" stop-opacity="0.35"/>
+                    <stop offset="100%" stop-color="#8fa382" stop-opacity="0"/>
+                  </radialGradient>
+                </defs>
+                <circle cx="200" cy="220" r="180" fill="url(#glow)" />
+                <g class="figure__body" fill="none" stroke="#b9caae" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="200" cy="90" r="34" />
+                  <path d="M200 124 L200 300" />
+                  <path d="M200 150 L140 145 L110 210" />
+                  <path d="M200 150 L260 145 L290 210" />
+                  <path d="M150 165 L250 165" />
+                  <path d="M160 300 L160 420 L145 470" />
+                  <path d="M240 300 L240 420 L255 470" />
+                  <path d="M150 300 L250 300" />
+                </g>
+                <g class="figure__sparkle" fill="#c9d6c0">
+                  <circle cx="120" cy="120" r="3" />
+                  <circle cx="290" cy="150" r="2.4" />
+                  <circle cx="90" cy="260" r="2" />
+                  <circle cx="310" cy="300" r="2.6" />
+                </g>
+              </svg>
+              <span class="compare__tag compare__tag--after">alinhado</span>
+            </div>
+
+            <div class="compare__layer compare__layer--before" data-compare-before aria-hidden="true">
+              <svg viewBox="0 0 400 520" class="figure figure--before">
+                <g class="figure__body" fill="none" stroke="#8a8577" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="212" cy="98" r="34" />
+                  <path d="M212 132 C 190 180, 225 220, 195 300" />
+                  <path d="M212 155 L150 168 L100 150" />
+                  <path d="M212 155 L268 130 L280 90" />
+                  <path d="M160 175 L262 148" />
+                  <path d="M195 300 L175 415 L158 468" />
+                  <path d="M195 300 L228 418 L245 468" />
+                  <path d="M160 300 L232 302" />
+                </g>
+                <g class="figure__pain">
+                  <circle class="pain-dot" cx="212" cy="132" r="9" />
+                  <circle class="pain-dot" cx="262" cy="150" r="8" />
+                  <circle class="pain-dot" cx="195" cy="230" r="9" />
+                  <circle class="pain-dot" cx="195" cy="300" r="8" />
+                  <path class="pain-mark" d="M222 122 L232 110 L226 122 L236 112" />
+                  <path class="pain-mark" d="M272 140 L284 130 L276 142 L288 132" />
+                  <path class="pain-mark" d="M205 220 L217 210 L209 222 L221 212" />
+                </g>
+              </svg>
+              <span class="compare__tag compare__tag--before">em tensão</span>
+            </div>
+
+            <div class="compare__handle" data-compare-handle tabindex="0" role="slider" aria-label="Comparar antes e depois" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+              <span class="compare__handle-line"></span>
+              <span class="compare__handle-grip">
+                <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 6 L2 12 L8 18 M16 6 L22 12 L16 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SOBRE ============ -->
+      <section id="sobre" class="about">
+        <div class="about__spine-mount" data-spine-mount aria-hidden="true">
+          <canvas data-spine-canvas></canvas>
+        </div>
+
+        <div class="about__content reveal-block" data-reveal>
+          <p class="eyebrow">Abordagem integrativa</p>
+          <h2>Te ofereço <em>qualidade de vida.</em></h2>
+          <p class="about__lead">
+            Corpo, movimento e mente não são tratados em separado. Uno osteopatia, fisioterapia e
+            hipnoterapia em um cuidado completo — porque dor crônica raramente tem uma única origem,
+            e alívio de verdade exige olhar para a pessoa inteira.
+          </p>
+
+          <div class="about__pillars">
+            <div class="pillar">
+              <span class="pillar__num">01</span>
+              <h4>Corpo</h4>
+              <p>Diagnóstico manual preciso e tratamento estrutural, adulto e pediátrico.</p>
+            </div>
+            <div class="pillar">
+              <span class="pillar__num">02</span>
+              <h4>Movimento</h4>
+              <p>Reabilitação funcional que devolve força, mobilidade e autonomia.</p>
+            </div>
+            <div class="pillar">
+              <span class="pillar__num">03</span>
+              <h4>Mente</h4>
+              <p>Hipnoterapia para tratar os padrões emocionais por trás da dor persistente.</p>
+            </div>
+          </div>
+
+          <a class="about__cta" href="https://bit.ly/DrPatrycia" target="_blank" rel="noopener">
+            Agende sua consulta <span aria-hidden="true">→</span>
+          </a>
+        </div>
+      </section>
+
+      <!-- ============ GALERIA ============ -->
+      <section id="galeria" class="gallery">
+        <div class="gallery__intro reveal-block" data-reveal>
+          <p class="eyebrow">Consultório</p>
+          <h2>Um espaço para <em>desacelerar.</em></h2>
+        </div>
+
+        <div class="bento" data-reveal>
+          <figure class="bento__item bento__item--lg" data-tone="a">
+            <span class="bento__label">Consultório</span>
+          </figure>
+          <figure class="bento__item" data-tone="b">
+            <span class="bento__label">Atendimento</span>
+          </figure>
+          <figure class="bento__item" data-tone="c">
+            <span class="bento__label">Osteopatia Pediátrica</span>
+          </figure>
+          <figure class="bento__item" data-tone="d">
+            <span class="bento__label">Certificação Internacional</span>
+          </figure>
+          <figure class="bento__item bento__item--wide" data-tone="e">
+            <span class="bento__label">Formação &amp; Especializações</span>
+          </figure>
+          <figure class="bento__item" data-tone="f">
+            <span class="bento__label">Sala de Hipnoterapia</span>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ============ FOOTER / CTA FINAL ============ -->
+      <footer class="site-footer">
+        <div class="site-footer__inner">
+          <p class="site-footer__script">Viva sem dor!</p>
+          <h2>Seu corpo em equilíbrio,<br /><strong>sua vida sem dor.</strong></h2>
+          <a class="footer-cta" href="https://bit.ly/DrPatrycia" target="_blank" rel="noopener">
+            Saiba mais e agende sua consulta <span aria-hidden="true">→</span>
+          </a>
+          <p class="site-footer__link">bit.ly/DrPatrycia</p>
+          <p class="site-footer__meta">Dra. Patricia Rodrigues · Osteopata · Fisioterapeuta · Hipnoterapeuta</p>
+        </div>
+      </footer>
+
+    </main>
+
+    <!-- ============ CTA FLUTUANTE WHATSAPP ============ -->
+    <a class="whatsapp-fab" href="https://bit.ly/DrPatrycia" target="_blank" rel="noopener" aria-label="Agendar consulta pelo WhatsApp">
+      <svg viewBox="0 0 32 32" width="26" height="26" fill="currentColor" aria-hidden="true">
+        <path d="M16.002 3C9.372 3 4 8.373 4 15.002c0 2.325.646 4.497 1.767 6.35L4 29l7.82-1.73a11.94 11.94 0 0 0 4.182.75h.004c6.63 0 12.002-5.373 12.002-12.003C28.008 8.373 22.635 3 16.002 3zm0 21.86h-.003a9.86 9.86 0 0 1-5.02-1.375l-.36-.214-4.64 1.028 1.05-4.523-.235-.372a9.845 9.845 0 0 1-1.52-5.402c0-5.446 4.435-9.878 9.884-9.878 2.64 0 5.122 1.03 6.988 2.897a9.815 9.815 0 0 1 2.892 6.986c-.002 5.447-4.436 9.853-9.036 9.853zm5.41-7.39c-.297-.148-1.755-.866-2.027-.966-.272-.099-.47-.148-.668.15-.198.297-.767.965-.94 1.163-.173.198-.347.223-.644.075-.297-.149-1.255-.462-2.39-1.474-.883-.787-1.48-1.76-1.653-2.058-.173-.297-.019-.458.13-.606.134-.133.297-.347.446-.52.148-.174.198-.298.297-.496.099-.198.05-.372-.025-.52-.074-.149-.668-1.612-.916-2.208-.242-.58-.487-.5-.668-.51-.173-.008-.372-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479s1.065 2.876 1.213 3.074c.148.198 2.096 3.2 5.078 4.487.71.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.755-.718 2.003-1.412.248-.694.248-1.288.173-1.412-.074-.124-.272-.198-.57-.347z"/>
+      </svg>
+      <span>Agendar consulta</span>
+    </a>
+
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
