@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { exigirPainel } from '@/lib/sessao';
 import { supabaseServidor } from '@/lib/supabase';
 import { diaSP, hora, inicioDaSemana, inicioDoDia, somarDias, validarDia } from '@/lib/datas';
-import { preco } from '@/lib/formatar';
+import { preco, precoCurto } from '@/lib/formatar';
 import type { AgendamentoPainel, ProfissionalPainel } from '@/lib/painel-tipos';
 import { Agenda } from './Agenda';
 import s from '@/components/interno/ui.module.css';
@@ -85,7 +85,7 @@ function Resumo({ agendamentos, profissionais }: { agendamentos: AgendamentoPain
         </div>
         <div className={s.stat}>
           <div className={s.statRotulo}>Previsto</div>
-          <div className={s.statValor}>{preco(previsto)}</div>
+          <div className={s.statValor}>{precoCurto(previsto)}</div>
           <div className={`${s.pequeno} ${s.fraco}`}>{preco(realizado)} concluído</div>
         </div>
         <div className={s.stat}>

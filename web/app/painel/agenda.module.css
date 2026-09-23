@@ -180,6 +180,8 @@
   font-size: 0.78rem;
 }
 .badgeCompacto {
+  justify-self: start;
+  margin-top: 3px;
   font-size: 0.66rem;
   padding: 1px 6px;
 }
@@ -190,8 +192,7 @@
     gap: 8px;
   }
   .semana .compacta .cartao {
-    flex-wrap: wrap;
-    row-gap: 4px;
+    align-items: flex-start;
   }
 }
 

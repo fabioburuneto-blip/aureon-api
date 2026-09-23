@@ -96,8 +96,8 @@ export function Equipe({
                 <div className={s.itemTitulo}>
                   {b.motivo || 'Bloqueio'} · <span className={s.suave}>{nome(b.profissional_id)}</span>
                 </div>
-                <div className={s.itemSub} style={{ textTransform: 'capitalize' }}>
-                  {periodo(b)}
+                <div className={s.itemSub}>
+                  {periodo(b).replace(/^./, (c) => c.toUpperCase())}
                 </div>
               </div>
               {apagando === b.id ? (

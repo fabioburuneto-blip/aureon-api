@@ -50,6 +50,7 @@
 /* ---------- Controles ---------- */
 .controles {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-content: start;
   min-width: 0;
@@ -359,12 +360,16 @@
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--borda-forte);
-  transform: translateY(150%);
-  transition: transform 0.2s ease;
+  transform: translateY(16px);
+  opacity: 0;
+  visibility: hidden;
+  transition: transform 0.2s ease, opacity 0.2s ease, visibility 0.2s;
   font-size: 0.88rem;
 }
 .salvar[data-visivel='true'] {
   transform: none;
+  opacity: 1;
+  visibility: visible;
 }
 
 @media (min-width: 900px) {

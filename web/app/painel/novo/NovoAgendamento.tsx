@@ -128,8 +128,8 @@ export function NovoAgendamento(p: Props) {
         <div className={s.campo}>
           <label htmlFor="dia">Data</label>
           <input id="dia" type="date" className={s.entrada} min={p.hoje} value={dia} onChange={(e) => e.target.value && setDia(e.target.value)} style={{ colorScheme: 'dark' }} />
-          <span className={s.dica} style={{ textTransform: 'capitalize' }}>
-            {diaLongo(dia)}
+          <span className={s.dica}>
+            {diaLongo(dia).replace(/^./, (c) => c.toUpperCase())}
           </span>
         </div>
       </div>

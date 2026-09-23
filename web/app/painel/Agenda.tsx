@@ -51,6 +51,7 @@ export function Agenda(p: Props) {
   const cor = (id: string) => CORES_PROFISSIONAIS[Math.max(0, p.profissionais.findIndex((x) => x.id === id)) % CORES_PROFISSIONAIS.length];
   const nomeProf = (id: string) => p.profissionais.find((x) => x.id === id)?.nome ?? '';
 
+  const maiuscula = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
   const titulo =
     p.visao === 'semana'
       ? `Semana de ${diaCurto(p.de).split(', ')[1]} a ${diaCurto(somarDias(p.de, 6)).split(', ')[1]}`
@@ -58,7 +59,7 @@ export function Agenda(p: Props) {
         ? 'Hoje'
         : p.dia === somarDias(p.hoje, 1)
           ? 'Amanhã'
-          : diaLongo(p.dia).split(',')[0];
+          : maiuscula(diaLongo(p.dia).split(',')[0]);
 
   const novoHref = `/painel/novo?data=${p.dia < p.hoje ? p.hoje : p.dia}${p.prof ? `&prof=${p.prof}` : ''}`;
 
@@ -66,9 +67,7 @@ export function Agenda(p: Props) {
     <section aria-label="Agenda">
       <div className={s.cabecalho} style={{ alignItems: 'center' }}>
         <div>
-          <h1 className={s.titulo} style={{ textTransform: 'capitalize' }}>
-            {titulo}
-          </h1>
+          <h1 className={s.titulo}>{titulo}</h1>
           {p.visao === 'dia' && <p className={s.sub}>{diaLongo(p.dia)}</p>}
         </div>
         <Link href={novoHref} className={`${s.botao} ${s.primario}`}>
@@ -208,10 +207,11 @@ function ListaDoDia({
                 {x.servico?.nome}
                 {!compacta && ` · ${nomeProf(x.profissional_id)}`}
               </span>
+              {compacta && x.status !== 'confirmado' && (
+                <span className={`${s.badge} ${s[`st-${x.status}`]} ${a.badgeCompacto}`}>{ROTULO_STATUS[x.status]}</span>
+              )}
             </span>
-            {(!compacta || x.status !== 'confirmado') && (
-              <span className={`${s.badge} ${s[`st-${x.status}`]} ${compacta ? a.badgeCompacto : ''}`}>{ROTULO_STATUS[x.status]}</span>
-            )}
+            {!compacta && <span className={`${s.badge} ${s[`st-${x.status}`]}`}>{ROTULO_STATUS[x.status]}</span>}
           </button>
         </li>
       ))}
@@ -265,8 +265,8 @@ function Detalhes({
       <dl className={a.dados}>
         <div>
           <dt>Quando</dt>
-          <dd style={{ textTransform: 'capitalize' }}>
-            {diaLongo(dia)} · {hora(ag.inicio)}–{hora(ag.fim)}
+          <dd>
+            {diaLongo(dia).replace(/^./, (c) => c.toUpperCase())} · {hora(ag.inicio)}–{hora(ag.fim)}
           </dd>
         </div>
         <div>

@@ -6,6 +6,12 @@ export function preco(valor: number): string {
   return BRL.format(Number(valor));
 }
 
+/** "R$ 375" quando não há centavos (para espaços apertados), senão "R$ 375,50". */
+export function precoCurto(valor: number): string {
+  const v = Number(valor);
+  return Number.isInteger(v) ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }).format(v) : preco(v);
+}
+
 export function duracao(min: number): string {
   if (min < 60) return `${min} min`;
   const h = Math.floor(min / 60);
