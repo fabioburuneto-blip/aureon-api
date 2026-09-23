@@ -1,0 +1,46 @@
+.pagina {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f6f5f2;
+  color: #1c1b19;
+}
+
+.caixa {
+  max-width: 420px;
+  text-align: center;
+}
+
+.icone {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
+
+.titulo {
+  font-size: 1.6rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin-bottom: 12px;
+}
+
+.texto {
+  color: #5f5c57;
+  line-height: 1.6;
+}
+
+@media (prefers-color-scheme: dark) {
+  .pagina {
+    background: #121211;
+    color: #f1efe9;
+  }
+  .texto {
+    color: #a3a09a;
+  }
+}

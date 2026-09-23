@@ -20,6 +20,12 @@ Ou cole os arquivos de `supabase/migrations/` **em ordem** no SQL Editor do pain
 | `…0300_funcoes_publicas.sql` | RPCs `barbearia_publica`, `horarios_livres`, `criar_agendamento_publico` |
 | `…0400_storage.sql` | bucket público `barbearias` e suas políticas |
 
+### Dados de exemplo
+
+`supabase/seed.sql` cria a barbearia fictícia **Navalha & Co.** em 4 versões (`demo`,
+`demo-classico`, `demo-urbano`, `demo-minimalista`), com serviços, equipe e agenda. Cole o arquivo no
+SQL Editor (ou use `supabase db reset` localmente). Ele é idempotente: recria as demos a cada execução.
+
 ### Primeiro superadmin
 
 Crie o usuário em *Authentication → Users* e depois, no SQL Editor:
