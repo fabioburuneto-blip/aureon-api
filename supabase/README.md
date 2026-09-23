@@ -21,6 +21,7 @@ Ou cole os arquivos de `supabase/migrations/` **em ordem** no SQL Editor do pain
 | `…0400_storage.sql` | bucket público `barbearias` e suas políticas |
 | `…0500_dias_disponiveis.sql` | RPC `dias_disponiveis` (calendário de 30 dias do agendamento) |
 | `…0600_area_logada.sql` | slugs reservados, permissões do dono, view `clientes_resumo`, RPC `salvar_disponibilidade` |
+| `…0700_clube_assinatura.sql` | `planos_clube`, `assinaturas_clube`, `configuracao_pagamento` (wallet Asaas) |
 
 ### Dados de exemplo
 
