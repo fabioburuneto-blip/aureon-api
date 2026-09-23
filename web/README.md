@@ -50,8 +50,30 @@ suas para o bucket `barbearias` do Supabase Storage e salvam a URL pública no `
   `og:image` (logo; sem logo, usa a foto de capa), além do favicon e do `theme-color`. O robô do
   WhatsApp recebe as meta tags já no HTML inicial.
   Defina `NEXT_PUBLIC_SITE_URL` em produção para o `og:image` sair com o domínio correto.
-- **`/<slug>/agendar`**: página provisória com o WhatsApp. O agendamento online (RPCs
-  `horarios_livres` / `criar_agendamento_publico`) entra na próxima etapa.
+- **`/<slug>/agendar`**: agendamento online, sem login e sem cadastro, seguindo o tema da barbearia
+  (veja abaixo).
+
+## Agendamento online (`/<slug>/agendar`)
+
+Um passo por tela, com barra de progresso e botão voltar (o "voltar" do celular também funciona):
+
+1. **Serviço**: nome, descrição, duração e preço.
+2. **Profissional** ou "Qualquer profissional". O passo é pulado quando só há 1 profissional ativo.
+3. **Data e horário**: faixa com os próximos 30 dias (RPC `dias_disponiveis`); dias sem vaga
+   ficam desabilitados. Os horários do dia (RPC `horarios_livres`) aparecem agrupados em
+   manhã, tarde e noite.
+4. **Nome e WhatsApp**, com máscara brasileira. Fica salvo neste aparelho para a próxima vez.
+5. **Revisão**. Ao abrir, confere de novo se o horário continua livre; ao confirmar, chama
+   `criar_agendamento_publico`.
+6. **Sucesso**: resumo, "Adicionar ao Google Agenda" e "Falar no WhatsApp", com mensagem pronta.
+
+Se o horário for ocupado por outra pessoa no meio do processo, o cliente volta para a escolha de
+horário com um aviso, e a lista é recarregada sem aquele horário. Os demais erros (ex.: limite de
+agendamentos por telefone) aparecem na revisão, com um link para o WhatsApp da barbearia.
+
+As chamadas ao banco passam por Server Actions (`app/[slug]/agendar/acoes.ts`), que validam a
+entrada e usam só as RPCs públicas. Datas e horas são sempre exibidas no fuso America/Sao_Paulo,
+independentemente do fuso do celular.
 
 ## Observações
 

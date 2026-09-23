@@ -1,6 +1,6 @@
 import 'server-only';
 import { cache } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabasePublico } from './supabase';
 
 export type Layout = 'classico' | 'urbano' | 'luxo' | 'minimalista';
 export type ParFontes = 'elegante' | 'moderna' | 'classica' | 'impacto';
@@ -50,16 +50,7 @@ export type Barbearia = {
   profissionais: Profissional[];
 };
 
-const SLUG_VALIDO = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-
-function supabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) {
-    throw new Error('Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY (veja .env.example).');
-  }
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
-}
+export const SLUG_VALIDO = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /**
  * Busca a barbearia ativa pelo slug (RPC barbearia_publica).
@@ -70,7 +61,7 @@ export const buscarBarbearia = cache(async (slug: string): Promise<Barbearia | n
   const s = decodeURIComponent(slug).trim().toLowerCase();
   if (!SLUG_VALIDO.test(s)) return null;
 
-  const { data, error } = await supabase().rpc('barbearia_publica', { p_slug: s });
+  const { data, error } = await supabasePublico().rpc('barbearia_publica', { p_slug: s });
   if (error) throw new Error(`Erro ao buscar barbearia "${s}": ${error.message}`);
   return (data as Barbearia | null) ?? null;
 });

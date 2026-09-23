@@ -19,6 +19,7 @@ Ou cole os arquivos de `supabase/migrations/` **em ordem** no SQL Editor do pain
 | `…0200_seguranca_rls.sql` | funções auxiliares, RLS e grants |
 | `…0300_funcoes_publicas.sql` | RPCs `barbearia_publica`, `horarios_livres`, `criar_agendamento_publico` |
 | `…0400_storage.sql` | bucket público `barbearias` e suas políticas |
+| `…0500_dias_disponiveis.sql` | RPC `dias_disponiveis` (calendário de 30 dias do agendamento) |
 
 ### Dados de exemplo
 
@@ -83,6 +84,12 @@ supabase.rpc('criar_agendamento_publico', {
 // → { ok: true, agendamento: { id, data, hora, preco, moeda: 'BRL', ... },
 //     barbearia, servico, profissional, cliente }
 // → { ok: false, codigo: 'horario_indisponivel', mensagem: 'Poxa, esse horário acabou de ser ocupado...' }
+```
+
+```js
+// dias com vaga nos próximos 30 dias (mesmas regras de horarios_livres)
+supabase.rpc('dias_disponiveis', { p_slug, p_servico_id, p_profissional_id: null, p_dias: 30 })
+// → [{ data: '2026-09-24', horarios: 38 }, { data: '2026-09-27', horarios: 0 }, ...]
 ```
 
 Códigos de erro de `criar_agendamento_publico`: `nome_invalido`, `telefone_invalido`,

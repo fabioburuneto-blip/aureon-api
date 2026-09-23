@@ -64,3 +64,39 @@ export function IconeSeta({ tamanho = 20, className }: P) {
     </svg>
   );
 }
+
+export function IconeVoltar({ tamanho = 20, className }: P) {
+  return (
+    <svg {...base(tamanho)} className={className}>
+      <path d="M15 5l-7 7 7 7" />
+    </svg>
+  );
+}
+
+export function IconeCheck({ tamanho = 20, className }: P) {
+  return (
+    <svg {...base(tamanho)} className={className}>
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
+  );
+}
+
+export function IconeGrupo({ tamanho = 20, className }: P) {
+  return (
+    <svg {...base(tamanho)} className={className}>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5" />
+      <circle cx="17" cy="9" r="2.4" />
+      <path d="M16.5 14c2.4.2 4 1.7 4.5 4.5" />
+    </svg>
+  );
+}
+
+export function IconeAlerta({ tamanho = 20, className }: P) {
+  return (
+    <svg {...base(tamanho)} className={className}>
+      <path d="M12 3.5 2.8 19.5h18.4L12 3.5Z" />
+      <path d="M12 10v4.2M12 17.2v.1" />
+    </svg>
+  );
+}
