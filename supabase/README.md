@@ -20,6 +20,7 @@ Ou cole os arquivos de `supabase/migrations/` **em ordem** no SQL Editor do pain
 | `…0300_funcoes_publicas.sql` | RPCs `barbearia_publica`, `horarios_livres`, `criar_agendamento_publico` |
 | `…0400_storage.sql` | bucket público `barbearias` e suas políticas |
 | `…0500_dias_disponiveis.sql` | RPC `dias_disponiveis` (calendário de 30 dias do agendamento) |
+| `…0600_area_logada.sql` | slugs reservados, permissões do dono, view `clientes_resumo`, RPC `salvar_disponibilidade` |
 
 ### Dados de exemplo
 
@@ -67,6 +68,15 @@ ou pelo backend com a `service_role`.
 - **Excluir serviço, profissional ou cliente com histórico** é bloqueado. Nesses casos,
   use `ativo = false`.
 - **Telefone** é salvo só com dígitos (10 a 13), e o cliente é único por barbearia e telefone.
+- **Profissionais e horários de trabalho** (`disponibilidade`): a equipe lê, mas só o **dono**
+  (ou o superadmin) cria e edita. Bloqueios continuam editáveis por dono e barbeiro.
+- **Slugs reservados**: `entrar`, `painel`, `admin`, `api` etc. não podem ser usados como
+  endereço de barbearia (são rotas do sistema).
+- **`clientes_resumo`** (view, só para usuários logados): cliente + `visitas` (atendimentos
+  concluídos), `ultima_visita`, `proximo_agendamento` e `faltas`. Usa `security_invoker`, então
+  cada equipe vê só os próprios clientes.
+- **`salvar_disponibilidade(profissional_id, itens)`**: regrava a grade semanal de um profissional
+  numa única transação, recusando intervalos sobrepostos no mesmo dia.
 
 ## RPCs
 

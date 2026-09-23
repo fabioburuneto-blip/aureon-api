@@ -1,0 +1,29 @@
+.pagina {
+  display: grid;
+  place-items: center;
+  padding: 24px 20px;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgb(139 156 255 / 0.12), transparent 60%),
+    #0b0d10;
+}
+
+.caixa {
+  width: 100%;
+  max-width: 380px;
+}
+
+.logo {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 20px;
+  border-radius: 14px;
+  background: #1b2027;
+  border: 1px solid #333b47;
+  color: #8b9cff;
+}
+
+.form {
+  margin-top: 24px;
+}

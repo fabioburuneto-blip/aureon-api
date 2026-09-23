@@ -75,8 +75,56 @@ As chamadas ao banco passam por Server Actions (`app/[slug]/agendar/acoes.ts`), 
 entrada e usam só as RPCs públicas. Datas e horas são sempre exibidas no fuso America/Sao_Paulo,
 independentemente do fuso do celular.
 
+## Área logada
+
+Login em **`/entrar`** (e-mail e senha, Supabase Auth). Depois do login, o superadmin vai para
+`/admin` e dono ou barbeiro para `/painel`. A interface é escura, a mesma para todas as barbearias:
+o tema personalizado vale só para o site público.
+
+### Painel (`/painel`): dono e barbeiro, só dados da própria barbearia
+
+| Tela | O que faz |
+|---|---|
+| **Agenda** (início) | Resumo de hoje: quantidade de agendamentos, faturamento previsto e próximos horários. Visão de dia ou semana, filtro por profissional. Tocar num agendamento abre os detalhes, com Concluído, Faltou, Cancelar e Chamar no WhatsApp. |
+| **Novo agendamento** | Marca um horário manualmente (origem `manual`), oferecendo só horários livres (`horarios_livres`). Pelo telefone, reconhece o cliente e preenche o nome. |
+| **Serviços** | Criar, editar, ativar/desativar e reordenar. "Adicionar do catálogo": marca vários serviços, digita os preços e adiciona todos de uma vez. |
+| **Equipe** (só dono) | Profissionais com foto (enviada ao Storage), grade semanal com vários intervalos por dia e bloqueios (folga, almoço, férias ou outro motivo). |
+| **Clientes** | Busca por nome ou telefone, com total de visitas, última visita, faltas e próximo horário. |
+| **Meu link** | Link público com botões de copiar e compartilhar, QR Code em PNG e cartaz pronto para imprimir no balcão. |
+| **Minha conta** | Troca da senha provisória. |
+
+### Admin (`/admin`): só superadmin
+
+- Lista de barbearias com busca, filtro e botão de ativar/desativar (uma inativa mostra "não encontrada" no site).
+- Nova barbearia: o slug é gerado do nome e checado na hora (formato, reservados e duplicados).
+- Detalhes: dados de contato e usuários. **Criar usuário do dono** gera o login no Supabase Auth
+  com senha provisória e exibe os dados de acesso para enviar a ele.
+- **Editor de tema** com pré-visualização ao vivo, em celular ou computador: layout, paletas prontas
+  ou cores livres (com alerta de pouco contraste), par de fontes com amostra, upload de logo, capa
+  e galeria, e textos do hero e do sobre. A prévia roda o site real num iframe
+  (`/admin/previa/[id]`) e recebe o rascunho por `postMessage`; nada vai para o site antes de salvar.
+
+### Segurança
+
+- As páginas e Server Actions leem a sessão via `@supabase/ssr` (cookies) e conferem o papel
+  (`lib/sessao.ts`). Todas as consultas usam o cliente com a sessão do usuário, então o **RLS do
+  banco** garante o isolamento entre barbearias.
+- `proxy.ts` renova a sessão e manda para `/entrar` quem não está logado.
+- A `SUPABASE_SERVICE_ROLE_KEY` fica só no servidor. Ela é usada apenas pelo superadmin para
+  criar usuários no Auth e ler os e-mails deles.
+- Uploads vão do navegador direto para o bucket `barbearias/<barbearia_id>/…`, e as políticas do
+  bucket só aceitam a pasta da própria barbearia. As fotos são reduzidas no celular antes do envio.
+
+### Primeiros passos em produção
+
+1. Aplique as migrations e crie o primeiro superadmin (veja `../supabase/README.md`).
+2. Configure as variáveis do `.env.example`, incluindo `SUPABASE_SERVICE_ROLE_KEY`.
+3. Em `/admin`: crie a barbearia, ajuste o tema e crie o usuário do dono.
+4. O dono entra em `/painel`, adiciona os serviços pelo catálogo, cadastra a equipe com os
+   horários e compartilha o link.
+
 ## Observações
 
-- Rotas fixas que forem criadas no futuro (ex.: `/admin`, `/login`) têm prioridade sobre um slug
-  de mesmo nome. Evite cadastrar barbearias com esses slugs.
-- Deploy na Vercel: defina o *Root Directory* como `web` e configure as 3 variáveis do `.env.example`.
+- Rotas do sistema (`/entrar`, `/painel`, `/admin`…) têm prioridade sobre slugs; por isso esses nomes
+  são reservados no banco (constraint `barbearias_slug_reservado`) e no formulário do admin.
+- Deploy na Vercel: defina o *Root Directory* como `web` e configure as 4 variáveis do `.env.example`.

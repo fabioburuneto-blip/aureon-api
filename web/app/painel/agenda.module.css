@@ -1,0 +1,233 @@
+.barra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.navegacao {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.data {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+  max-width: 170px;
+  min-height: 40px;
+  color-scheme: dark;
+}
+
+.segmentado {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--borda);
+}
+.segmentado a {
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  border-radius: 7px;
+  color: var(--suave);
+  font-weight: 600;
+  font-size: 0.86rem;
+  text-decoration: none;
+}
+.segmentado a[aria-current='true'] {
+  background: var(--card-2);
+  color: var(--texto);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+}
+
+.ponto {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* ---------- Cartões ---------- */
+.lista {
+  display: grid;
+  gap: 8px;
+}
+
+.cartao {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px 12px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--borda);
+  border-left: 3px solid var(--cor);
+  background: var(--card);
+  color: var(--texto);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s;
+}
+.cartao:active {
+  background: var(--card-2);
+}
+@media (hover: hover) {
+  .cartao:hover {
+    background: var(--card-2);
+  }
+}
+
+.cancelado {
+  opacity: 0.5;
+}
+.cancelado .cliente {
+  text-decoration: line-through;
+}
+
+.horas {
+  display: grid;
+  flex: none;
+  width: 48px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+.horas strong {
+  font-size: 1rem;
+}
+.horas span {
+  font-size: 0.78rem;
+  color: var(--fraco);
+}
+
+.corpo {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+
+.cliente {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detalhe {
+  font-size: 0.84rem;
+  color: var(--suave);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Semana ---------- */
+.semana {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.diaColuna {
+  min-width: 0;
+}
+
+.diaTitulo {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--borda);
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--suave);
+  text-decoration: none;
+}
+.diaHoje .diaTitulo {
+  color: var(--acento);
+  border-bottom-color: var(--acento);
+}
+
+.diaVazio {
+  padding: 4px 2px;
+}
+
+.compacta {
+  gap: 6px;
+}
+.compacta .cartao {
+  padding: 8px 10px 8px 9px;
+  gap: 8px;
+}
+.compacta .horas {
+  width: 40px;
+}
+.compacta .horas strong {
+  font-size: 0.86rem;
+}
+.compacta .cliente {
+  font-size: 0.88rem;
+}
+.compacta .detalhe {
+  font-size: 0.78rem;
+}
+.badgeCompacto {
+  font-size: 0.66rem;
+  padding: 1px 6px;
+}
+
+@media (min-width: 1100px) {
+  .semana {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .semana .compacta .cartao {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+}
+
+/* ---------- Detalhes ---------- */
+.dados {
+  margin: 0;
+  display: grid;
+  border: 1px solid var(--borda);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.dados div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+}
+.dados div + div {
+  border-top: 1px solid var(--borda);
+}
+.dados dt {
+  color: var(--suave);
+  font-size: 0.86rem;
+  flex: none;
+}
+.dados dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 500;
+}
+
+.acoes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.acoes > :last-child {
+  grid-column: 1 / -1;
+}
