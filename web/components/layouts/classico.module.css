@@ -1,0 +1,483 @@
+/* CLÁSSICO — barbearia vintage: molduras, ornamentos discretos e textura de papel */
+
+.site {
+  --suave: color-mix(in srgb, var(--texto) 72%, transparent);
+  --linha: color-mix(in srgb, var(--texto) 28%, transparent);
+  padding-bottom: 88px;
+  background-color: var(--fundo);
+  background-image:
+    radial-gradient(color-mix(in srgb, var(--texto) 7%, transparent) 0.6px, transparent 0.8px),
+    radial-gradient(color-mix(in srgb, var(--texto) 5%, transparent) 0.6px, transparent 0.8px),
+    radial-gradient(ellipse at 50% 0%, transparent 55%, color-mix(in srgb, var(--primaria) 14%, transparent));
+  background-size: 7px 7px, 11px 11px, 100% 100%;
+  background-position: 0 0, 3px 5px, 0 0;
+}
+
+/* Faixa listrada de "poste de barbeiro" com as cores do tema */
+.listras {
+  height: 10px;
+  background: repeating-linear-gradient(-45deg,
+      var(--destaque) 0 12px,
+      var(--fundo) 12px 20px,
+      var(--primaria) 20px 32px,
+      var(--fundo) 32px 40px);
+}
+
+/* ---------- Hero ---------- */
+.hero {
+  padding: 48px 20px 16px;
+  display: grid;
+  gap: 40px;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.heroTexto {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.logo {
+  width: 116px;
+  height: 116px;
+  object-fit: contain;
+  border-radius: 50%;
+  margin-bottom: 20px;
+  box-shadow: 0 0 0 4px var(--fundo), 0 0 0 5px var(--linha);
+}
+
+.sobrelinha {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--fonte-titulo);
+  font-size: 0.78rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--destaque);
+  margin-bottom: 16px;
+}
+
+.estrela {
+  width: 9px;
+  height: 9px;
+  fill: currentColor;
+}
+
+.titulo {
+  font-family: var(--fonte-titulo);
+  font-weight: 700;
+  font-size: clamp(2rem, 9vw, 3.8rem);
+  line-height: 1.12;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-wrap: balance;
+  color: var(--primaria-legivel);
+}
+
+.ornamento {
+  width: 150px;
+  height: 16px;
+  margin: 18px auto;
+  fill: none;
+  stroke: var(--destaque);
+  stroke-width: 1.2;
+  display: block;
+}
+.ornamento circle {
+  fill: var(--destaque);
+  stroke: none;
+}
+
+.subtitulo {
+  max-width: 36ch;
+  font-style: italic;
+  font-size: 1.1rem;
+  color: var(--suave);
+  text-wrap: pretty;
+}
+
+.botao,
+.botaoSecundario {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 0 32px;
+  font-family: var(--fonte-titulo);
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+  border-radius: 3px;
+  transition: transform 0.2s, filter 0.2s;
+}
+
+.botao {
+  background: var(--destaque);
+  color: var(--sobre-destaque);
+  box-shadow:
+    inset 0 0 0 3px var(--destaque),
+    inset 0 0 0 4px color-mix(in srgb, var(--sobre-destaque) 55%, transparent),
+    0 3px 0 color-mix(in srgb, var(--destaque) 60%, #000);
+}
+.botao:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.botaoSecundario {
+  color: var(--primaria-legivel);
+  border: 1px solid var(--primaria-legivel);
+  box-shadow: inset 0 0 0 3px var(--fundo), inset 0 0 0 4px var(--linha);
+}
+
+.heroTexto .botao {
+  margin-top: 28px;
+  min-height: 60px;
+  padding: 0 40px;
+  font-size: 0.95rem;
+}
+
+/* Foto de capa em moldura dupla */
+.moldura {
+  position: relative;
+  padding: 10px;
+  background: var(--primaria);
+  box-shadow: 0 18px 40px -18px color-mix(in srgb, var(--primaria) 70%, transparent);
+}
+.moldura::after {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border: 1px solid color-mix(in srgb, var(--destaque) 70%, transparent);
+  pointer-events: none;
+}
+.moldura img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  filter: sepia(0.18) contrast(1.04);
+}
+
+/* ---------- Seções ---------- */
+.secao {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 72px 20px 0;
+}
+
+.cabecalho {
+  text-align: center;
+  margin-bottom: 32px;
+}
+.cabecalho .ornamento {
+  margin-bottom: 0;
+}
+
+.tituloSecao {
+  font-family: var(--fonte-titulo);
+  font-weight: 700;
+  font-size: clamp(1.6rem, 6.5vw, 2.4rem);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--primaria-legivel);
+}
+
+/* Serviços como quadro de preços */
+.quadro {
+  position: relative;
+  padding: 36px 22px;
+  background: var(--primaria);
+  color: var(--sobre-primaria);
+  border-radius: 4px;
+  box-shadow: 0 20px 40px -24px color-mix(in srgb, var(--primaria) 80%, transparent);
+}
+.quadro::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border: 1px solid color-mix(in srgb, var(--sobre-primaria) 30%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--sobre-primaria) 18%, transparent);
+  outline-offset: 3px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.servicos {
+  display: grid;
+  gap: 22px;
+}
+
+.servicoLinha {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.servicoNome {
+  font-family: var(--fonte-titulo);
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pontilhado {
+  flex: 1;
+  min-width: 16px;
+  border-bottom: 2px dotted color-mix(in srgb, var(--sobre-primaria) 40%, transparent);
+  transform: translateY(-4px);
+}
+
+.servicoPreco {
+  font-family: var(--fonte-titulo);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.servicoInfo {
+  margin-top: 4px;
+  font-size: 0.9rem;
+  font-style: italic;
+  color: color-mix(in srgb, var(--sobre-primaria) 75%, transparent);
+}
+
+/* Equipe em medalhões */
+.equipe {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 32px 24px;
+}
+
+.membro {
+  width: calc(50% - 12px);
+  max-width: 200px;
+  text-align: center;
+}
+
+.medalhao {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--primaria);
+  box-shadow: 0 0 0 4px var(--fundo), 0 0 0 6px var(--destaque), 0 0 0 10px var(--fundo), 0 0 0 11px var(--linha);
+  margin: 12px;
+}
+.medalhao img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: sepia(0.15);
+}
+.medalhao span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--fonte-titulo);
+  font-size: 2rem;
+  color: var(--sobre-primaria);
+}
+
+.membroNome {
+  margin-top: 12px;
+  font-family: var(--fonte-titulo);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* Sobre com capitular */
+.sobre {
+  display: grid;
+  gap: 16px;
+  font-size: 1.05rem;
+  line-height: 1.8;
+  max-width: 660px;
+  margin: 0 auto;
+}
+.sobre p:first-child::first-letter {
+  float: left;
+  font-family: var(--fonte-titulo);
+  font-weight: 700;
+  font-size: 3.6em;
+  line-height: 0.9;
+  padding: 6px 10px 0 0;
+  color: var(--destaque);
+}
+
+/* Galeria como fotos impressas */
+.galeria {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+  padding: 8px;
+}
+.galeria li {
+  padding: 7px 7px 22px;
+  background: color-mix(in srgb, var(--fundo) 70%, #fff);
+  box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--texto) 55%, transparent);
+  transform: rotate(-1.2deg);
+  transition: transform 0.3s;
+}
+.galeria li:nth-child(even) {
+  transform: rotate(1.4deg);
+}
+.galeria li:nth-child(3n) {
+  transform: rotate(-0.4deg);
+}
+.galeria li:hover {
+  transform: rotate(0) scale(1.03);
+}
+.galeria img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  filter: sepia(0.2) contrast(1.05);
+}
+
+/* Cartão de contato */
+.cartao {
+  position: relative;
+  padding: 36px 24px;
+  border: 1px solid var(--linha);
+  outline: 1px solid var(--linha);
+  outline-offset: 5px;
+  display: grid;
+  gap: 32px;
+  text-align: center;
+  margin: 6px;
+}
+
+.cartaoBloco h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--fonte-titulo);
+  font-size: 0.95rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--destaque);
+  margin-bottom: 10px;
+}
+
+.link {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--destaque);
+  font-weight: 700;
+  text-underline-offset: 4px;
+}
+
+.horarios {
+  margin: 0 auto;
+  max-width: 280px;
+  display: grid;
+  gap: 4px;
+}
+.horarios div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px dashed var(--linha);
+  padding-bottom: 4px;
+}
+.horarios dt {
+  font-weight: 700;
+}
+.horarios dd {
+  margin: 0;
+  color: var(--suave);
+}
+
+.cartaoBotoes {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+}
+.cartaoBotoes a {
+  width: 100%;
+  max-width: 320px;
+}
+
+/* Rodapé */
+.rodape {
+  padding: 72px 20px 32px;
+  text-align: center;
+  font-family: var(--fonte-titulo);
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--suave);
+}
+
+/* CTA fixo no celular */
+.ctaFixo {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 50;
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  background: var(--fundo);
+  border-top: 3px double var(--linha);
+}
+.ctaFixo .botao {
+  width: 100%;
+}
+
+/* ---------- Telas maiores ---------- */
+@media (min-width: 720px) {
+  .quadro {
+    padding: 48px 44px;
+  }
+  .servicos {
+    grid-template-columns: 1fr 1fr;
+    gap: 26px 48px;
+  }
+  .galeria {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 26px;
+  }
+  .membro {
+    width: 200px;
+  }
+  .cartao {
+    grid-template-columns: 1fr 1fr;
+    text-align: left;
+    padding: 44px;
+  }
+  .cartaoBloco h3 {
+    display: flex;
+  }
+  .horarios {
+    margin: 0;
+  }
+  .cartaoBotoes {
+    grid-column: 1 / -1;
+    grid-auto-flow: column;
+    justify-content: center;
+  }
+}
+
+@media (min-width: 900px) {
+  .site {
+    padding-bottom: 0;
+  }
+  .ctaFixo {
+    display: none;
+  }
+  .hero {
+    grid-template-columns: 1fr 1.1fr;
+    align-items: center;
+    gap: 56px;
+    padding: 72px 32px 24px;
+  }
+  .secao {
+    padding-top: 104px;
+  }
+}

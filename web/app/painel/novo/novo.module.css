@@ -1,0 +1,46 @@
+.form {
+  max-width: 720px;
+}
+
+.periodos {
+  display: grid;
+  gap: 8px;
+}
+
+.horarios {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+}
+
+.hora {
+  min-height: 44px;
+  border-radius: 9px;
+  border: 1px solid var(--borda-forte);
+  background: var(--card);
+  color: var(--texto);
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.hora[aria-pressed='true'] {
+  background: var(--acento);
+  border-color: var(--acento);
+  color: var(--sobre-acento);
+}
+
+.rodape {
+  position: sticky;
+  bottom: calc(72px + env(safe-area-inset-bottom));
+  padding: 10px 0;
+  background: linear-gradient(transparent, var(--bg) 30%);
+}
+
+@media (min-width: 900px) {
+  .rodape {
+    position: static;
+    background: none;
+  }
+}

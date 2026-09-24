@@ -1,0 +1,80 @@
+.ordem {
+  display: grid;
+  margin: -6px 0 -6px -8px;
+}
+.seta {
+  min-height: 26px;
+  width: 30px;
+  padding: 0;
+}
+
+.dupla {
+  grid-template-columns: 1fr 1fr;
+}
+
+.catalogo {
+  display: grid;
+  gap: 8px;
+}
+
+.catItem {
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  padding: 4px 12px;
+}
+.catMarcado {
+  border-color: var(--acento);
+  background: color-mix(in srgb, var(--acento) 7%, transparent);
+}
+.catJa {
+  opacity: 0.5;
+}
+
+.catRotulo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.catRotulo input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--acento);
+  flex: none;
+}
+
+.catCampos {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 8px;
+  padding: 0 0 10px 32px;
+}
+.catCampos label {
+  position: relative;
+  display: block;
+}
+.catCampos input {
+  min-height: 42px;
+}
+.catCampos label:first-child input {
+  padding-left: 36px;
+}
+.catCampos label:last-child input {
+  padding-right: 42px;
+}
+.prefixo,
+.sufixo {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fraco);
+  font-size: 0.86rem;
+  pointer-events: none;
+}
+.prefixo {
+  left: 12px;
+}
+.sufixo {
+  right: 12px;
+}
