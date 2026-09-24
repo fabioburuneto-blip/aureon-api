@@ -23,6 +23,7 @@ Ou cole os arquivos de `supabase/migrations/` **em ordem** no SQL Editor do pain
 | `…0600_area_logada.sql` | slugs reservados, permissões do dono, view `clientes_resumo`, RPC `salvar_disponibilidade` |
 | `…0700_clube_assinatura.sql` | `planos_clube`, `assinaturas_clube`, `configuracao_pagamento` (wallet Asaas) |
 | `…0800_financeiro.sql` | `comissao_percentual` em profissionais, RPC `financeiro_resumo` |
+| `…0900_clube_site_publico.sql` | `barbearia_publica` passa a incluir os planos ativos do clube |
 
 ### Dados de exemplo
 
