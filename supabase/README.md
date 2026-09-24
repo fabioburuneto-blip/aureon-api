@@ -24,6 +24,7 @@ Ou cole os arquivos de `supabase/migrations/` **em ordem** no SQL Editor do pain
 | `…0700_clube_assinatura.sql` | `planos_clube`, `assinaturas_clube`, `configuracao_pagamento` (wallet Asaas) |
 | `…0800_financeiro.sql` | `comissao_percentual` em profissionais, RPC `financeiro_resumo` |
 | `…0900_clube_site_publico.sql` | `barbearia_publica` passa a incluir os planos ativos do clube |
+| `…1000_dominio_proprio.sql` | `dominio_proprio` em barbearias, RPC `barbearia_por_dominio` |
 
 ### Dados de exemplo
 
@@ -80,6 +81,10 @@ ou pelo backend com a `service_role`.
   cada equipe vê só os próprios clientes.
 - **`salvar_disponibilidade(profissional_id, itens)`**: regrava a grade semanal de um profissional
   numa única transação, recusando intervalos sobrepostos no mesmo dia.
+- **Domínio próprio** (`dominio_proprio`, upgrade pago): o superadmin cadastra o domínio na
+  barbearia; o middleware (`proxy.ts`) resolve o host pela RPC `barbearia_por_dominio` e reescreve
+  a URL para `/<slug>`, sem o visitante notar a troca. O dono ainda precisa apontar o DNS do
+  domínio para a Vercel e o superadmin adicionar o domínio no projeto (isso não é automático).
 
 ## RPCs
 
