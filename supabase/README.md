@@ -25,6 +25,7 @@ Ou cole os arquivos de `supabase/migrations/` **em ordem** no SQL Editor do pain
 | `…0800_financeiro.sql` | `comissao_percentual` em profissionais, RPC `financeiro_resumo` |
 | `…0900_clube_site_publico.sql` | `barbearia_publica` passa a incluir os planos ativos do clube |
 | `…1000_dominio_proprio.sql` | `dominio_proprio` em barbearias, RPC `barbearia_por_dominio` |
+| `…1100_solicitacoes_cadastro.sql` | `solicitacoes_cadastro` (onboarding self-service via `/comecar`) |
 
 ### Dados de exemplo
 
@@ -85,6 +86,9 @@ ou pelo backend com a `service_role`.
   barbearia; o middleware (`proxy.ts`) resolve o host pela RPC `barbearia_por_dominio` e reescreve
   a URL para `/<slug>`, sem o visitante notar a troca. O dono ainda precisa apontar o DNS do
   domínio para a Vercel e o superadmin adicionar o domínio no projeto (isso não é automático).
+- **`solicitacoes_cadastro`**: pedidos do formulário público `/comecar`. Qualquer um insere
+  (status sempre `pendente`, um e-mail só pode ter um pedido pendente por vez); só o superadmin
+  lê, aprova (`/admin/solicitacoes`, cria a barbearia e o usuário do dono) ou recusa.
 
 ## RPCs
 
