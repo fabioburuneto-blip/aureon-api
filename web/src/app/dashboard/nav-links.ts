@@ -8,5 +8,6 @@ export const navLinks = [
   { href: "/dashboard/hours", label: "Horários" },
   { href: "/dashboard/blocked-times", label: "Bloqueios" },
   { href: "/dashboard/customization", label: "Personalização" },
+  { href: "/dashboard/plano", label: "Plano" },
   { href: "/dashboard/settings", label: "Configurações" },
 ] as const;

@@ -23,6 +23,13 @@ aplicadas nesta ordem (o prefixo numérico garante isso):
    trigger `notify_appointment_event()` que gera notificação in-app +
    enfileira envios a cada criação/confirmação/cancelamento/reagendamento/
    conclusão/no-show. Veja [`docs/NOTIFICATIONS.md`](./NOTIFICATIONS.md).
+8. `20250924120008_billing.sql` — `subscriptions` ganha `provider`,
+   `provider_customer_id`, `provider_subscription_id`, `plan_id` (renomeada
+   de `plan`, agora texto livre validado contra `src/lib/plans/config.ts`),
+   `current_period_start`, `cancel_at_period_end`, status `incomplete`;
+   nova tabela `billing_webhook_events` (idempotência do webhook);
+   `create_business()` passa a semear a assinatura em modo `local`/trial.
+   Veja [`docs/BILLING.md`](./BILLING.md).
 
 Todas foram validadas rodando de fato contra um Postgres 16 local (schema
 `auth`/`storage` mínimos simulando o que o Supabase já fornece), incluindo
@@ -48,7 +55,8 @@ e prevenção de overbooking — não é só leitura de código.
 | `themes`                | Cores/layout da página pública.                                                          |
 | `notifications`         | Notificações in-app, escopadas a `recipient_user_id`. Ver [`NOTIFICATIONS.md`](./NOTIFICATIONS.md). |
 | `notification_deliveries` | Fila de envio para e-mail/WhatsApp (`pending`/`sent`/`failed`/`retrying`), drenada por uma Edge Function. |
-| `subscriptions`         | Placeholder de billing (`plan`, `status`) para integrar um gateway depois.               |
+| `subscriptions`         | Plano/status/período por empresa. Só escrita por `create_business()` e pelo webhook de billing. Ver [`BILLING.md`](./BILLING.md). |
+| `billing_webhook_events` | Ledger de idempotência do webhook de billing (`unique(provider, provider_event_id)`). |
 
 Todas usam UUID (`gen_random_uuid()`), têm `created_at`/`updated_at` (com
 trigger automática), e toda entidade pertencente a uma empresa tem

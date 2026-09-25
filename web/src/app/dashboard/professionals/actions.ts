@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
 import { professionalSchema } from "@/lib/validations";
+import { canAddProfessional } from "@/lib/plans/limits";
 
 export type ProfessionalFormState = { error?: string } | undefined;
 
@@ -27,6 +28,11 @@ export async function createProfessional(
   }
 
   const { supabase, business } = await getCurrentBusiness();
+
+  const limit = await canAddProfessional(supabase, business.id);
+  if (!limit.allowed) {
+    return { error: limit.reason };
+  }
 
   const { data: professional, error } = await supabase
     .from("professionals")

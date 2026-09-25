@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
 import { serviceSchema } from "@/lib/validations";
+import { canAddService } from "@/lib/plans/limits";
 
 export type ServiceFormState = { error?: string } | undefined;
 
@@ -24,6 +25,11 @@ export async function createService(
   }
 
   const { supabase, business } = await getCurrentBusiness();
+
+  const limit = await canAddService(supabase, business.id);
+  if (!limit.allowed) {
+    return { error: limit.reason };
+  }
 
   const { error } = await supabase.from("services").insert({
     business_id: business.id,

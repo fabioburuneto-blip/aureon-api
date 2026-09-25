@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentBusiness, requireOwner } from "@/lib/auth";
 import { businessSettingsSchema, notificationSettingsSchema } from "@/lib/validations";
+import { canUseFeature } from "@/lib/plans/limits";
 
 export type SettingsFormState =
   { error?: string; success?: boolean } | undefined;
@@ -73,6 +74,13 @@ export async function updateNotificationSettings(
 
   const { supabase, business, role } = await getCurrentBusiness();
   requireOwner(role);
+
+  if (parsed.data.whatsapp_enabled || parsed.data.notify_email_enabled) {
+    const limit = await canUseFeature(supabase, business.id, "advanced_notifications");
+    if (!limit.allowed) {
+      return { error: limit.reason };
+    }
+  }
 
   const { error } = await supabase
     .from("business_settings")

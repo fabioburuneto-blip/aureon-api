@@ -74,11 +74,16 @@ Abra [http://localhost:3000](http://localhost:3000).
 - `/dashboard/hours`, `/dashboard/blocked-times`, `/dashboard/customization`,
   `/dashboard/settings` — horários, bloqueios, personalização da página
   pública e configurações da empresa
+- `/dashboard/plano` — plano atual, status da assinatura e comparação de planos
 - `/{slug-da-empresa}` — página pública de agendamento de cada empresa
 
 Quando um cliente agenda, cancela ou reagenda, o empresário é avisado no
 sininho do dashboard na hora, e por WhatsApp/e-mail quando configurado em
 `/dashboard/settings` — veja [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md).
+
+Toda empresa nasce com um período de teste (modo local, sem cobrança real)
+e pode ativar planos pagos quando um provedor de cobrança for configurado
+— veja [`docs/BILLING.md`](./docs/BILLING.md).
 
 ## Scripts
 
@@ -111,3 +116,4 @@ sininho do dashboard na hora, e por WhatsApp/e-mail quando configurado em
 - [`docs/SECURITY.md`](./docs/SECURITY.md) — modelo de multi-tenancy e RLS
 - [`docs/SETUP.md`](./docs/SETUP.md) — passo a passo de configuração local e deploy
 - [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md) — arquitetura de notificações (in-app/e-mail/WhatsApp), onde colocar credenciais, cron dos lembretes
+- [`docs/BILLING.md`](./docs/BILLING.md) — planos e assinaturas, abstração de provedor de cobrança, modo local, ativando cobrança real

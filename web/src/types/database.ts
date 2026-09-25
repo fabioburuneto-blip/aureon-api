@@ -28,9 +28,13 @@ export type AppointmentStatus =
 
 export type ThemeLayout = "classic" | "minimal";
 
-export type SubscriptionPlan = "free" | "basic" | "pro";
+// Kept in sync with src/lib/plans/config.ts PLAN_IDS -- plan_id is plain
+// text in the database (see supabase/migrations/20250924120008_billing.sql
+// for why), this alias just gives the app a typed view of it.
+export type SubscriptionPlan = "start" | "pro" | "business";
 export type SubscriptionStatus =
-  "active" | "trialing" | "past_due" | "canceled";
+  "trialing" | "active" | "past_due" | "canceled" | "incomplete";
+export type BillingProviderName = "local" | "mercadopago" | "asaas" | "stripe";
 
 export type NotificationEventType =
   | "appointment.created"
@@ -425,13 +429,46 @@ export interface Database {
         Row: {
           id: string;
           business_id: string;
-          plan: SubscriptionPlan;
+          provider: BillingProviderName;
+          provider_customer_id: string | null;
+          provider_subscription_id: string | null;
+          plan_id: SubscriptionPlan;
           status: SubscriptionStatus;
+          current_period_start: string | null;
           current_period_end: string | null;
+          cancel_at_period_end: boolean;
           created_at: string;
           updated_at: string;
         };
+        // Seeded only by create_business(). Every later change (plan,
+        // status, period, provider ids) is only ever written through
+        // src/lib/supabase/admin.ts's service-role client -- there is no
+        // RLS UPDATE grant for the regular (cookie-bound) client at all,
+        // so this Update type describes what the admin client is allowed
+        // to write, not what a request acting as a signed-in user can.
         Insert: never;
+        Update: Partial<
+          Omit<
+            Database["public"]["Tables"]["subscriptions"]["Row"],
+            "id" | "business_id" | "created_at" | "updated_at"
+          >
+        >;
+        Relationships: [];
+      };
+      billing_webhook_events: {
+        Row: {
+          id: string;
+          provider: BillingProviderName;
+          provider_event_id: string;
+          event_type: string;
+          received_at: string;
+        };
+        // Only src/lib/billing/apply-event.ts (service-role client) ever
+        // inserts here -- see the note on subscriptions.Update above.
+        Insert: Omit<
+          Database["public"]["Tables"]["billing_webhook_events"]["Row"],
+          "id" | "received_at"
+        >;
         Update: never;
         Relationships: [];
       };

@@ -27,7 +27,10 @@ src/app/
 │   ├── hours/                    # horário de funcionamento (semanal)
 │   ├── blocked-times/             # bloqueios/folgas
 │   ├── customization/              # logo, capa, cores, layout
-│   └── settings/                    # dados da empresa, publicação
+│   ├── notifications/               # histórico de notificações in-app
+│   ├── plano/                        # plano atual, status, comparação de planos
+│   └── settings/                      # dados da empresa, publicação, notificações
+├── api/webhooks/billing/[provider]/   # webhook de cobrança (Mercado Pago/Stripe/Asaas)
 └── [slug]/
     ├── page.tsx               # página pública (dados via RLS pública)
     └── booking-widget.tsx     # fluxo de agendamento (client component)
