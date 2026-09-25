@@ -44,8 +44,13 @@ export default async function ServicesPage(props: {
           </p>
         ) : (
           <ul className="divide-y divide-zinc-100">
-            {services.map((service) => (
-              <ServiceRow key={service.id} service={service} />
+            {services.map((service, index) => (
+              <ServiceRow
+                key={service.id}
+                service={service}
+                isFirst={index === 0}
+                isLast={index === services.length - 1}
+              />
             ))}
           </ul>
         )}

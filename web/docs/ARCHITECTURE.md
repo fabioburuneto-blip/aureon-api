@@ -18,11 +18,12 @@ src/app/
 ├── onboarding/               # criação da empresa (primeiro acesso)
 ├── dashboard/
 │   ├── layout.tsx            # resolve a empresa do usuário logado, sidebar
-│   ├── page.tsx               # visão geral
-│   ├── appointments/          # agenda (lista por dia + ações de status)
-│   ├── services/               # CRUD de serviços
+│   ├── page.tsx               # visão geral (métricas do dia, ocupação)
+│   ├── agenda/                # calendário dia/semana/mês
+│   ├── appointments/          # lista filtrável + [id]/ detalhe e reagendar
+│   ├── services/               # CRUD de serviços + reordenar (position)
 │   ├── professionals/          # CRUD de profissionais + vínculo com serviços
-│   ├── customers/               # CRUD de clientes
+│   ├── customers/               # lista com histórico resumido + [id]/ detalhe
 │   ├── hours/                    # horário de funcionamento (semanal)
 │   ├── blocked-times/             # bloqueios/folgas
 │   ├── customization/              # logo, capa, cores, layout

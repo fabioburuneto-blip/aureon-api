@@ -93,3 +93,40 @@ export async function deleteService(formData: FormData) {
 
   revalidatePath("/dashboard/services");
 }
+
+export async function moveService(formData: FormData) {
+  const id = z.string().uuid().parse(formData.get("id"));
+  const direction = z.enum(["up", "down"]).parse(formData.get("direction"));
+  const { supabase, business } = await getCurrentBusiness();
+
+  const { data: services } = await supabase
+    .from("services")
+    .select("id")
+    .eq("business_id", business.id)
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  const ids = (services ?? []).map((s) => s.id);
+  const index = ids.indexOf(id);
+  if (index === -1) return;
+
+  const swapIndex = direction === "up" ? index - 1 : index + 1;
+  if (swapIndex < 0 || swapIndex >= ids.length) return;
+
+  [ids[index], ids[swapIndex]] = [ids[swapIndex], ids[index]];
+
+  // Rewrite every row's position to its new sequential index -- normalizes
+  // stale/duplicate positions (e.g. every service still defaulting to 0)
+  // instead of only swapping two possibly-equal values.
+  await Promise.all(
+    ids.map((serviceId, position) =>
+      supabase
+        .from("services")
+        .update({ position })
+        .eq("id", serviceId)
+        .eq("business_id", business.id),
+    ),
+  );
+
+  revalidatePath("/dashboard/services");
+}

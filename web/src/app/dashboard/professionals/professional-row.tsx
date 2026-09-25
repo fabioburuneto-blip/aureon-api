@@ -6,7 +6,9 @@ import {
   deleteProfessional,
   type ProfessionalFormState,
 } from "./actions";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-submit-button";
 import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
 import { ServiceCheckboxes } from "./service-checkboxes";
 import type { Database } from "@/types/database";
@@ -46,6 +48,12 @@ export function ProfessionalRow({
           )}
         </div>
         <div className="flex items-center gap-3">
+          <Link
+            href={`/dashboard/agenda?professional=${professional.id}`}
+            className="text-sm font-medium text-zinc-600 hover:text-zinc-900"
+          >
+            Ver agenda
+          </Link>
           <button
             type="button"
             onClick={() => setEditing(true)}
@@ -55,12 +63,11 @@ export function ProfessionalRow({
           </button>
           <form action={deleteProfessional}>
             <input type="hidden" name="id" value={professional.id} />
-            <button
-              type="submit"
-              className="text-sm font-medium text-red-600 hover:text-red-700"
+            <ConfirmSubmitButton
+              confirmMessage={`Remover o profissional "${professional.name}"? Se ele já tiver agendamentos, será apenas desativado.`}
             >
               Remover
-            </button>
+            </ConfirmSubmitButton>
           </form>
         </div>
       </li>

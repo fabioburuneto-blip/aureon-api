@@ -1,30 +1,31 @@
 import Link from "next/link";
 import { getCurrentBusiness } from "@/lib/auth";
+import { fetchAppointmentsWithRelations } from "@/lib/appointments-data";
 import { Card } from "@/components/ui/card";
-import { formatDateTime, formatPriceCents } from "@/lib/format";
+import { StatusBadge } from "./appointments/status-badge";
+import { formatDateTime, formatTime, formatPriceCents } from "@/lib/format";
+import { dayRangeISO, toDateKey } from "@/lib/date-utils";
+
+function parseTimeToMinutes(time: string): number {
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+}
 
 export default async function DashboardOverviewPage() {
   const { supabase, business } = await getCurrentBusiness();
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date();
-  todayEnd.setHours(23, 59, 59, 999);
+  const todayKey = toDateKey(new Date());
+  const { fromISO: todayStart, toISO: todayEnd } = dayRangeISO(todayKey);
+  const todayWeekday = new Date(`${todayKey}T12:00:00`).getDay();
 
   const [
-    todayCountRes,
     pendingCountRes,
     customersCountRes,
     servicesCountRes,
-    upcomingRes,
+    upcoming,
+    todayAppointments,
+    { data: todayHours },
   ] = await Promise.all([
-    supabase
-      .from("appointments")
-      .select("id", { count: "exact", head: true })
-      .eq("business_id", business.id)
-      .gte("starts_at", todayStart.toISOString())
-      .lte("starts_at", todayEnd.toISOString())
-      .neq("status", "cancelled"),
     supabase
       .from("appointments")
       .select("id", { count: "exact", head: true })
@@ -39,43 +40,51 @@ export default async function DashboardOverviewPage() {
       .select("id", { count: "exact", head: true })
       .eq("business_id", business.id)
       .eq("is_active", true),
+    fetchAppointmentsWithRelations(supabase, business.id, {
+      fromISO: new Date().toISOString(),
+      excludeStatuses: ["cancelled"],
+      limit: 5,
+    }),
+    fetchAppointmentsWithRelations(supabase, business.id, {
+      fromISO: todayStart,
+      toISO: todayEnd,
+    }),
     supabase
-      .from("appointments")
-      .select("id, starts_at, status, customer_id, service_id")
+      .from("business_hours")
+      .select("*")
       .eq("business_id", business.id)
-      .neq("status", "cancelled")
-      .gte("starts_at", new Date().toISOString())
-      .order("starts_at", { ascending: true })
-      .limit(5),
+      .eq("day_of_week", todayWeekday)
+      .maybeSingle(),
   ]);
 
-  const upcoming = upcomingRes.data ?? [];
-  const customerIds = [...new Set(upcoming.map((a) => a.customer_id))];
-  const serviceIds = [...new Set(upcoming.map((a) => a.service_id))];
+  const todayActive = todayAppointments.filter((a) => a.status !== "cancelled");
+  const cancelledToday = todayAppointments.filter(
+    (a) => a.status === "cancelled",
+  ).length;
 
-  const [{ data: upcomingCustomers }, { data: upcomingServices }] =
-    await Promise.all([
-      customerIds.length
-        ? supabase.from("customers").select("id, name").in("id", customerIds)
-        : Promise.resolve({ data: [] as { id: string; name: string }[] }),
-      serviceIds.length
-        ? supabase
-            .from("services")
-            .select("id, name, price_cents")
-            .in("id", serviceIds)
-        : Promise.resolve({
-            data: [] as { id: string; name: string; price_cents: number }[],
-          }),
-    ]);
-
-  const customerById = new Map((upcomingCustomers ?? []).map((c) => [c.id, c]));
-  const serviceById = new Map((upcomingServices ?? []).map((s) => [s.id, s]));
+  let occupancyLabel = "Sem horário definido";
+  if (todayHours?.is_closed) {
+    occupancyLabel = "Fechado hoje";
+  } else if (todayHours) {
+    const openMinutes =
+      parseTimeToMinutes(todayHours.end_time) -
+      parseTimeToMinutes(todayHours.start_time);
+    if (openMinutes > 0) {
+      const bookedMinutes = todayActive.reduce(
+        (sum, a) => sum + (a.service?.duration_minutes ?? 0),
+        0,
+      );
+      occupancyLabel = `${Math.min(100, Math.round((bookedMinutes / openMinutes) * 100))}%`;
+    }
+  }
 
   const stats = [
-    { label: "Agendamentos hoje", value: todayCountRes.count ?? 0 },
-    { label: "Pendentes de confirmação", value: pendingCountRes.count ?? 0 },
-    { label: "Clientes cadastrados", value: customersCountRes.count ?? 0 },
-    { label: "Serviços ativos", value: servicesCountRes.count ?? 0 },
+    { label: "Agendamentos hoje", value: String(todayActive.length) },
+    { label: "Pendentes de confirmação", value: String(pendingCountRes.count ?? 0) },
+    { label: "Cancelamentos hoje", value: String(cancelledToday) },
+    { label: "Clientes cadastrados", value: String(customersCountRes.count ?? 0) },
+    { label: "Serviços ativos", value: String(servicesCountRes.count ?? 0) },
+    { label: "Ocupação hoje", value: occupancyLabel },
   ];
 
   return (
@@ -94,7 +103,7 @@ export default async function DashboardOverviewPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {stats.map((stat) => (
           <Card key={stat.label}>
             <p className="text-sm text-zinc-500">{stat.label}</p>
@@ -105,39 +114,82 @@ export default async function DashboardOverviewPage() {
         ))}
       </div>
 
-      <Card>
-        <h2 className="font-medium text-zinc-900">Próximos agendamentos</h2>
-        {upcoming.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-500">
-            Nenhum agendamento futuro ainda.
-          </p>
-        ) : (
-          <ul className="mt-3 divide-y divide-zinc-100">
-            {upcoming.map((appt) => {
-              const customer = customerById.get(appt.customer_id);
-              const service = serviceById.get(appt.service_id);
-              return (
-                <li
-                  key={appt.id}
-                  className="flex items-center justify-between py-3 text-sm"
-                >
-                  <div>
-                    <p className="font-medium text-zinc-900">
-                      {customer?.name ?? "Cliente"} — {service?.name}
-                    </p>
-                    <p className="text-zinc-500">
-                      {formatDateTime(appt.starts_at, business.timezone)}
-                    </p>
-                  </div>
-                  <span className="text-zinc-500">
-                    {formatPriceCents(service?.price_cents ?? 0)}
-                  </span>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-medium text-zinc-900">Agenda de hoje</h2>
+            <Link
+              href="/dashboard/agenda"
+              className="text-sm text-zinc-500 hover:underline"
+            >
+              Ver agenda completa
+            </Link>
+          </div>
+          {todayAppointments.length === 0 ? (
+            <p className="text-sm text-zinc-500">
+              Nenhum agendamento para hoje. Compartilhe o link da sua{" "}
+              <Link href={`/${business.slug}`} target="_blank" className="underline">
+                página pública
+              </Link>{" "}
+              para receber agendamentos.
+            </p>
+          ) : (
+            <ul className="divide-y divide-zinc-100">
+              {todayAppointments.map((appt) => (
+                <li key={appt.id}>
+                  <Link
+                    href={`/dashboard/appointments/${appt.id}`}
+                    className="-mx-2 flex items-center justify-between gap-3 rounded-lg px-2 py-3 text-sm hover:bg-zinc-50"
+                  >
+                    <div>
+                      <p className="font-medium text-zinc-900">
+                        {formatTime(appt.starts_at, business.timezone)} ·{" "}
+                        {appt.customer?.name ?? "Cliente"}
+                      </p>
+                      <p className="text-zinc-500">
+                        {appt.service?.name} · {appt.professional?.name}
+                      </p>
+                    </div>
+                    <StatusBadge status={appt.status} />
+                  </Link>
                 </li>
-              );
-            })}
-          </ul>
-        )}
-      </Card>
+              ))}
+            </ul>
+          )}
+        </Card>
+
+        <Card>
+          <h2 className="font-medium text-zinc-900">Próximos agendamentos</h2>
+          {upcoming.length === 0 ? (
+            <p className="mt-3 text-sm text-zinc-500">
+              Nenhum agendamento futuro ainda.
+            </p>
+          ) : (
+            <ul className="mt-3 divide-y divide-zinc-100">
+              {upcoming.map((appt) => (
+                <li key={appt.id}>
+                  <Link
+                    href={`/dashboard/appointments/${appt.id}`}
+                    className="-mx-2 flex items-center justify-between py-3 text-sm hover:bg-zinc-50 rounded-lg px-2"
+                  >
+                    <div>
+                      <p className="font-medium text-zinc-900">
+                        {appt.customer?.name ?? "Cliente"} — {appt.service?.name}
+                      </p>
+                      <p className="text-zinc-500">
+                        {formatDateTime(appt.starts_at, business.timezone)}
+                      </p>
+                    </div>
+                    <span className="text-zinc-500">
+                      {formatPriceCents(appt.service?.price_cents ?? 0)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

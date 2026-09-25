@@ -62,8 +62,18 @@ Abra [http://localhost:3000](http://localhost:3000).
 - `/` — site institucional
 - `/signup`, `/login` — cadastro e login do empresário
 - `/onboarding` — criação da empresa (primeiro acesso)
-- `/dashboard` — painel do empresário (agenda, serviços, profissionais,
-  clientes, horários, bloqueios, personalização, configurações)
+- `/dashboard` — visão geral (métricas do dia, ocupação, próximos agendamentos)
+- `/dashboard/agenda` — calendário por dia/semana/mês, com filtro por profissional
+- `/dashboard/appointments` — lista de agendamentos com filtros e busca;
+  `/dashboard/appointments/[id]` é o detalhe (confirmar, concluir, cancelar,
+  marcar não compareceu, reagendar)
+- `/dashboard/services`, `/dashboard/professionals` — CRUD + ativar/desativar;
+  serviços podem ser reordenados, profissionais têm link para ver a própria agenda
+- `/dashboard/customers` — lista com histórico resumido;
+  `/dashboard/customers/[id]` é o histórico completo do cliente
+- `/dashboard/hours`, `/dashboard/blocked-times`, `/dashboard/customization`,
+  `/dashboard/settings` — horários, bloqueios, personalização da página
+  pública e configurações da empresa
 - `/{slug-da-empresa}` — página pública de agendamento de cada empresa
 
 ## Scripts

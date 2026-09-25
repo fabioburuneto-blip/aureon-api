@@ -6,11 +6,47 @@ import { CustomerRow } from "./customer-row";
 export default async function CustomersPage() {
   const { supabase, business } = await getCurrentBusiness();
 
-  const { data: customers } = await supabase
-    .from("customers")
-    .select("*")
-    .eq("business_id", business.id)
-    .order("name", { ascending: true });
+  const [{ data: customers }, { data: appointments }] = await Promise.all([
+    supabase
+      .from("customers")
+      .select("*")
+      .eq("business_id", business.id)
+      .order("name", { ascending: true }),
+    supabase
+      .from("appointments")
+      .select("customer_id, status, starts_at")
+      .eq("business_id", business.id),
+  ]);
+
+  const now = new Date().getTime();
+  const statsByCustomer = new Map<
+    string,
+    { completedCount: number; lastCompletedAt: string | null; upcomingCount: number }
+  >();
+
+  for (const appointment of appointments ?? []) {
+    const stats = statsByCustomer.get(appointment.customer_id) ?? {
+      completedCount: 0,
+      lastCompletedAt: null,
+      upcomingCount: 0,
+    };
+
+    if (appointment.status === "completed") {
+      stats.completedCount += 1;
+      if (!stats.lastCompletedAt || appointment.starts_at > stats.lastCompletedAt) {
+        stats.lastCompletedAt = appointment.starts_at;
+      }
+    }
+
+    if (
+      (appointment.status === "pending" || appointment.status === "confirmed") &&
+      new Date(appointment.starts_at).getTime() > now
+    ) {
+      stats.upcomingCount += 1;
+    }
+
+    statsByCustomer.set(appointment.customer_id, stats);
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -38,7 +74,18 @@ export default async function CustomersPage() {
         ) : (
           <ul className="divide-y divide-zinc-100">
             {customers.map((customer) => (
-              <CustomerRow key={customer.id} customer={customer} />
+              <CustomerRow
+                key={customer.id}
+                customer={customer}
+                stats={
+                  statsByCustomer.get(customer.id) ?? {
+                    completedCount: 0,
+                    lastCompletedAt: null,
+                    upcomingCount: 0,
+                  }
+                }
+                timezone={business.timezone}
+              />
             ))}
           </ul>
         )}

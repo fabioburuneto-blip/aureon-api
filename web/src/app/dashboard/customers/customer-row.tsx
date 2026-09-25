@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState, useState } from "react";
 import {
   updateCustomer,
@@ -7,12 +8,27 @@ import {
   type CustomerFormState,
 } from "./actions";
 import { Button } from "@/components/ui/button";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-submit-button";
 import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
+import { formatDateTime } from "@/lib/format";
 import type { Database } from "@/types/database";
 
 type Customer = Database["public"]["Tables"]["customers"]["Row"];
+type CustomerStats = {
+  completedCount: number;
+  lastCompletedAt: string | null;
+  upcomingCount: number;
+};
 
-export function CustomerRow({ customer }: { customer: Customer }) {
+export function CustomerRow({
+  customer,
+  stats,
+  timezone,
+}: {
+  customer: Customer;
+  stats: CustomerStats;
+  timezone: string;
+}) {
   const [editing, setEditing] = useState(false);
   const [state, formAction, pending] = useActionState<
     CustomerFormState,
@@ -21,9 +37,14 @@ export function CustomerRow({ customer }: { customer: Customer }) {
 
   if (!editing) {
     return (
-      <li className="flex items-center justify-between gap-4 py-4">
+      <li className="flex flex-wrap items-center justify-between gap-4 py-4">
         <div>
-          <p className="font-medium text-zinc-900">{customer.name}</p>
+          <Link
+            href={`/dashboard/customers/${customer.id}`}
+            className="font-medium text-zinc-900 hover:underline"
+          >
+            {customer.name}
+          </Link>
           <p className="text-sm text-zinc-500">
             {[customer.phone, customer.email].filter(Boolean).join(" · ") ||
               "Sem contato"}
@@ -31,8 +52,22 @@ export function CustomerRow({ customer }: { customer: Customer }) {
           {customer.notes && (
             <p className="mt-1 text-sm text-zinc-500">{customer.notes}</p>
           )}
+          <p className="mt-1 text-xs text-zinc-400">
+            {stats.completedCount} atendimento
+            {stats.completedCount === 1 ? "" : "s"}
+            {stats.lastCompletedAt &&
+              ` · último em ${formatDateTime(stats.lastCompletedAt, timezone)}`}
+            {stats.upcomingCount > 0 &&
+              ` · ${stats.upcomingCount} próximo${stats.upcomingCount === 1 ? "" : "s"} agendamento${stats.upcomingCount === 1 ? "" : "s"}`}
+          </p>
         </div>
         <div className="flex items-center gap-3">
+          <Link
+            href={`/dashboard/customers/${customer.id}`}
+            className="text-sm font-medium text-zinc-600 hover:text-zinc-900"
+          >
+            Histórico
+          </Link>
           <button
             type="button"
             onClick={() => setEditing(true)}
@@ -42,12 +77,11 @@ export function CustomerRow({ customer }: { customer: Customer }) {
           </button>
           <form action={deleteCustomer}>
             <input type="hidden" name="id" value={customer.id} />
-            <button
-              type="submit"
-              className="text-sm font-medium text-red-600 hover:text-red-700"
+            <ConfirmSubmitButton
+              confirmMessage={`Excluir o cliente "${customer.name}"? Essa ação não pode ser desfeita.`}
             >
               Excluir
-            </button>
+            </ConfirmSubmitButton>
           </form>
         </div>
       </li>

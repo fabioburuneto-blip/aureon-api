@@ -1,5 +1,6 @@
 import { getCurrentBusiness } from "@/lib/auth";
 import { Card } from "@/components/ui/card";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-submit-button";
 import { formatDateTime } from "@/lib/format";
 import { NewBlockedTimeForm } from "./new-blocked-time-form";
 import { deleteBlockedTime } from "./actions";
@@ -67,12 +68,9 @@ export default async function BlockedTimesPage() {
                 </div>
                 <form action={deleteBlockedTime}>
                   <input type="hidden" name="id" value={bt.id} />
-                  <button
-                    type="submit"
-                    className="text-sm font-medium text-red-600 hover:text-red-700"
-                  >
+                  <ConfirmSubmitButton confirmMessage="Remover este bloqueio? O horário volta a ficar disponível.">
                     Remover
-                  </button>
+                  </ConfirmSubmitButton>
                 </form>
               </li>
             ))}

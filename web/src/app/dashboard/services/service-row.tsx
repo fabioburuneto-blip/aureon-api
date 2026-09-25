@@ -1,15 +1,29 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { updateService, deleteService, type ServiceFormState } from "./actions";
+import {
+  updateService,
+  deleteService,
+  moveService,
+  type ServiceFormState,
+} from "./actions";
 import { Button } from "@/components/ui/button";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-submit-button";
 import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
 import { formatPriceCents } from "@/lib/format";
 import type { Database } from "@/types/database";
 
 type Service = Database["public"]["Tables"]["services"]["Row"];
 
-export function ServiceRow({ service }: { service: Service }) {
+export function ServiceRow({
+  service,
+  isFirst,
+  isLast,
+}: {
+  service: Service;
+  isFirst: boolean;
+  isLast: boolean;
+}) {
   const [editing, setEditing] = useState(false);
   const [state, formAction, pending] = useActionState<
     ServiceFormState,
@@ -19,19 +33,49 @@ export function ServiceRow({ service }: { service: Service }) {
   if (!editing) {
     return (
       <li className="flex items-center justify-between gap-4 py-4">
-        <div>
-          <p className="font-medium text-zinc-900">
-            {service.name}
-            {!service.is_active && (
-              <span className="ml-2 rounded bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500">
-                inativo
-              </span>
-            )}
-          </p>
-          <p className="text-sm text-zinc-500">
-            {service.duration_minutes} min ·{" "}
-            {formatPriceCents(service.price_cents)}
-          </p>
+        <div className="flex items-center gap-3">
+          <div className="flex flex-col">
+            <form action={moveService}>
+              <input type="hidden" name="id" value={service.id} />
+              <input type="hidden" name="direction" value="up" />
+              <button
+                type="submit"
+                disabled={isFirst}
+                aria-label="Mover para cima"
+                title="Mover para cima"
+                className="flex h-5 w-5 items-center justify-center text-zinc-400 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                ▲
+              </button>
+            </form>
+            <form action={moveService}>
+              <input type="hidden" name="id" value={service.id} />
+              <input type="hidden" name="direction" value="down" />
+              <button
+                type="submit"
+                disabled={isLast}
+                aria-label="Mover para baixo"
+                title="Mover para baixo"
+                className="flex h-5 w-5 items-center justify-center text-zinc-400 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                ▼
+              </button>
+            </form>
+          </div>
+          <div>
+            <p className="font-medium text-zinc-900">
+              {service.name}
+              {!service.is_active && (
+                <span className="ml-2 rounded bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500">
+                  inativo
+                </span>
+              )}
+            </p>
+            <p className="text-sm text-zinc-500">
+              {service.duration_minutes} min ·{" "}
+              {formatPriceCents(service.price_cents)}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -43,12 +87,11 @@ export function ServiceRow({ service }: { service: Service }) {
           </button>
           <form action={deleteService}>
             <input type="hidden" name="id" value={service.id} />
-            <button
-              type="submit"
-              className="text-sm font-medium text-red-600 hover:text-red-700"
+            <ConfirmSubmitButton
+              confirmMessage={`Excluir o serviço "${service.name}"? Essa ação não pode ser desfeita.`}
             >
               Excluir
-            </button>
+            </ConfirmSubmitButton>
           </form>
         </div>
       </li>

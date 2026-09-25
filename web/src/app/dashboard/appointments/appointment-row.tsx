@@ -1,6 +1,8 @@
+import Link from "next/link";
 import { updateAppointmentStatus } from "./actions";
 import { StatusBadge } from "./status-badge";
-import { formatTime, formatPriceCents } from "@/lib/format";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-submit-button";
+import { formatDateTime, formatPriceCents } from "@/lib/format";
 import type { AppointmentStatus } from "@/types/database";
 
 type AppointmentRowData = {
@@ -9,23 +11,23 @@ type AppointmentRowData = {
   ends_at: string;
   status: AppointmentStatus;
   notes: string | null;
-  customers: { name: string; phone: string | null } | null;
-  professionals: { name: string } | null;
-  services: { name: string; price_cents: number } | null;
+  customer: { name: string; phone: string | null } | null;
+  professional: { name: string } | null;
+  service: { name: string; price_cents: number } | null;
 };
 
 const actionsByStatus: Record<
   AppointmentStatus,
-  { status: AppointmentStatus; label: string; variant: "confirm" | "danger" }[]
+  { status: AppointmentStatus; label: string; danger?: boolean }[]
 > = {
   pending: [
-    { status: "confirmed", label: "Confirmar", variant: "confirm" },
-    { status: "cancelled", label: "Cancelar", variant: "danger" },
+    { status: "confirmed", label: "Confirmar" },
+    { status: "cancelled", label: "Cancelar", danger: true },
   ],
   confirmed: [
-    { status: "completed", label: "Concluir", variant: "confirm" },
-    { status: "no_show", label: "Não compareceu", variant: "danger" },
-    { status: "cancelled", label: "Cancelar", variant: "danger" },
+    { status: "completed", label: "Concluir" },
+    { status: "no_show", label: "Não compareceu", danger: true },
+    { status: "cancelled", label: "Cancelar", danger: true },
   ],
   cancelled: [],
   completed: [],
@@ -43,42 +45,48 @@ export function AppointmentRow({
 
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 py-4">
-      <div className="flex items-center gap-4">
+      <Link
+        href={`/dashboard/appointments/${appointment.id}`}
+        className="flex flex-1 items-center gap-4 rounded-lg -mx-2 px-2 py-1 hover:bg-zinc-50"
+      >
         <div className="text-sm font-medium text-zinc-900">
-          {formatTime(appointment.starts_at, timezone)}–
-          {formatTime(appointment.ends_at, timezone)}
+          {formatDateTime(appointment.starts_at, timezone)}
         </div>
         <div>
           <p className="font-medium text-zinc-900">
-            {appointment.customers?.name ?? "Cliente"}
+            {appointment.customer?.name ?? "Cliente"}
           </p>
           <p className="text-sm text-zinc-500">
-            {appointment.services?.name} · {appointment.professionals?.name}
-            {appointment.customers?.phone
-              ? ` · ${appointment.customers.phone}`
+            {appointment.service?.name} · {appointment.professional?.name}
+            {appointment.customer?.phone
+              ? ` · ${appointment.customer.phone}`
               : ""}
           </p>
         </div>
-      </div>
+      </Link>
       <div className="flex items-center gap-3">
         <span className="text-sm text-zinc-500">
-          {formatPriceCents(appointment.services?.price_cents ?? 0)}
+          {formatPriceCents(appointment.service?.price_cents ?? 0)}
         </span>
         <StatusBadge status={appointment.status} />
         {actions.map((action) => (
           <form key={action.status} action={updateAppointmentStatus}>
             <input type="hidden" name="id" value={appointment.id} />
             <input type="hidden" name="status" value={action.status} />
-            <button
-              type="submit"
-              className={
-                action.variant === "danger"
-                  ? "text-sm font-medium text-red-600 hover:text-red-700"
-                  : "text-sm font-medium text-emerald-600 hover:text-emerald-700"
-              }
-            >
-              {action.label}
-            </button>
+            {action.danger ? (
+              <ConfirmSubmitButton
+                confirmMessage={`${action.label} este agendamento?`}
+              >
+                {action.label}
+              </ConfirmSubmitButton>
+            ) : (
+              <button
+                type="submit"
+                className="text-sm font-medium text-emerald-600 hover:text-emerald-700"
+              >
+                {action.label}
+              </button>
+            )}
           </form>
         ))}
       </div>

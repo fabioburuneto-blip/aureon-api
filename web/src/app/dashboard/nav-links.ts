@@ -1,6 +1,7 @@
 export const navLinks = [
   { href: "/dashboard", label: "Visão geral" },
-  { href: "/dashboard/appointments", label: "Agenda" },
+  { href: "/dashboard/agenda", label: "Agenda" },
+  { href: "/dashboard/appointments", label: "Agendamentos" },
   { href: "/dashboard/services", label: "Serviços" },
   { href: "/dashboard/professionals", label: "Profissionais" },
   { href: "/dashboard/customers", label: "Clientes" },
