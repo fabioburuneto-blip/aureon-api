@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
 import { zonedDateTimeToUtcISO } from "@/lib/date-utils";
+import { logError } from "@/lib/logger";
 
 const statusSchema = z.enum([
   "pending",
@@ -26,11 +27,19 @@ export async function updateAppointmentStatus(formData: FormData) {
 
   const { supabase, business } = await getCurrentBusiness();
 
-  await supabase
+  const { error } = await supabase
     .from("appointments")
     .update({ status })
     .eq("id", id)
     .eq("business_id", business.id);
+
+  if (error) {
+    logError(
+      "appointment.status_update_failed",
+      { business_id: business.id, appointment_id: id, status, code: error.code },
+      error,
+    );
+  }
 
   revalidateAppointmentPaths(id);
 }
@@ -102,6 +111,11 @@ export async function rescheduleAppointment(
     .eq("business_id", business.id);
 
   if (error) {
+    logError(
+      "appointment.reschedule_failed",
+      { business_id: business.id, appointment_id: id, code: error.code },
+      error,
+    );
     if (error.code === "23P01") {
       return {
         error:

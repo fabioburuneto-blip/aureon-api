@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
 import { blockedTimeSchema } from "@/lib/validations";
+import { logError } from "@/lib/logger";
 
 export type BlockedTimeFormState = { error?: string } | undefined;
 
@@ -35,6 +36,7 @@ export async function createBlockedTime(
   });
 
   if (error) {
+    logError("blocked_time.create_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível salvar o bloqueio." };
   }
 

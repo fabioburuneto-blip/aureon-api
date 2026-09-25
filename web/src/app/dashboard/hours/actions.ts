@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentBusiness } from "@/lib/auth";
 import { businessHoursSchema } from "@/lib/validations";
+import { logError } from "@/lib/logger";
 
 export type HoursFormState = { error?: string; success?: boolean } | undefined;
 
@@ -44,6 +45,7 @@ export async function saveBusinessHours(
     .upsert(rows, { onConflict: "business_id,day_of_week" });
 
   if (error) {
+    logError("business_hours.save_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível salvar os horários." };
   }
 

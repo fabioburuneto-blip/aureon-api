@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
 import { serviceSchema } from "@/lib/validations";
 import { canAddService } from "@/lib/plans/limits";
+import { logError } from "@/lib/logger";
 
 export type ServiceFormState = { error?: string } | undefined;
 
@@ -41,6 +42,7 @@ export async function createService(
   });
 
   if (error) {
+    logError("service.create_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível salvar o serviço." };
   }
 
@@ -81,6 +83,7 @@ export async function updateService(
     .eq("business_id", business.id);
 
   if (error) {
+    logError("service.update_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível atualizar o serviço." };
   }
 

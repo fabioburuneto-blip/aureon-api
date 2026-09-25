@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getCurrentBusiness, requireOwner } from "@/lib/auth";
 import { businessSettingsSchema, notificationSettingsSchema } from "@/lib/validations";
 import { canUseFeature } from "@/lib/plans/limits";
+import { logError } from "@/lib/logger";
 
 export type SettingsFormState =
   { error?: string; success?: boolean } | undefined;
@@ -41,6 +42,7 @@ export async function updateBusinessSettings(
     .eq("id", business.id);
 
   if (error) {
+    logError("business_settings.save_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível salvar as configurações." };
   }
 
@@ -98,6 +100,7 @@ export async function updateNotificationSettings(
     .eq("business_id", business.id);
 
   if (error) {
+    logError("notification_settings.save_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível salvar as preferências de notificação." };
   }
 

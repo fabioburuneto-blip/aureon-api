@@ -67,7 +67,6 @@ export function ImageUploader({
           alt={label}
           width={160}
           height={90}
-          unoptimized
           className="mb-2 h-20 w-36 rounded-lg border border-zinc-200 object-cover"
         />
       )}

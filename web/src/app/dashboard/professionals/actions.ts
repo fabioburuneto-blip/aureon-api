@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
 import { professionalSchema } from "@/lib/validations";
 import { canAddProfessional } from "@/lib/plans/limits";
+import { logError } from "@/lib/logger";
 
 export type ProfessionalFormState = { error?: string } | undefined;
 
@@ -46,6 +47,7 @@ export async function createProfessional(
     .single();
 
   if (error || !professional) {
+    logError("professional.create_failed", { business_id: business.id, code: error?.code }, error);
     return { error: "Não foi possível salvar o profissional." };
   }
 
@@ -92,6 +94,7 @@ export async function updateProfessional(
     .eq("business_id", business.id);
 
   if (error) {
+    logError("professional.update_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível atualizar o profissional." };
   }
 
@@ -126,6 +129,7 @@ export async function deleteProfessional(formData: FormData) {
 
   if (error) {
     // Likely blocked by existing appointments (ON DELETE RESTRICT).
+    logError("professional.hard_delete_blocked", { business_id: business.id, code: error.code }, error);
     await supabase
       .from("professionals")
       .update({ is_active: false })

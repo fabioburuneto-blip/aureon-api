@@ -34,8 +34,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=sua-anon-key
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` só é necessária para scripts administrativos
-fora do app — a aplicação em si nunca a utiliza.
+`SUPABASE_SERVICE_ROLE_KEY` é necessária para rodar o app completo:
+usada pelo webhook de billing e pelo provedor de billing local (nunca
+pelo navegador) — ver [`SECURITY.md`](./SECURITY.md#segredos) para os
+três pontos exatos que a leem. Deixe em branco em dev se você não for
+mexer em billing; o resto do app funciona sem ela.
 
 ## 4. Rodar as migrations
 
@@ -52,16 +55,12 @@ Isso aplica, em ordem, todos os arquivos em `supabase/migrations/`.
 ### Opção B — `psql` direto
 
 ```bash
-psql "$(supabase status -o env | grep DB_URL | cut -d= -f2)" \
-  -f supabase/migrations/20250924120001_extensions_and_helpers.sql \
-  -f supabase/migrations/20250924120002_schema.sql \
-  -f supabase/migrations/20250924120003_membership_functions.sql \
-  -f supabase/migrations/20250924120004_rls.sql \
-  -f supabase/migrations/20250924120005_functions.sql \
-  -f supabase/migrations/20250924120006_storage.sql \
-  -f supabase/migrations/20250924120007_notifications.sql \
-  -f supabase/migrations/20250924120008_billing.sql
+for f in supabase/migrations/*.sql; do
+  psql "$(supabase status -o env | grep DB_URL | cut -d= -f2)" -f "$f"
+done
 ```
+
+(em ordem alfabética/numérica — os nomes dos arquivos já garantem isso.)
 
 Ou cole o conteúdo de cada arquivo, na mesma ordem numérica, no
 **SQL Editor** do dashboard do Supabase.
@@ -85,6 +84,21 @@ Acesse [http://localhost:3000](http://localhost:3000), crie uma conta em
 `/signup`, confirme o email (verifique o link no email enviado pelo
 Supabase) e conclua o onboarding em `/onboarding`.
 
+### Dados de exemplo (opcional)
+
+Para não começar com um dashboard vazio, `supabase/seed/demo.sql` cria uma
+empresa de demonstração completa (serviços, profissionais, horários,
+página pública publicada):
+
+```bash
+psql "$(supabase status -o env | grep DB_URL | cut -d= -f2)" \
+  -f supabase/seed/demo.sql
+```
+
+Seguro rodar mais de uma vez (idempotente). **Nunca** rode isto contra um
+projeto de produção — ver o cabeçalho do próprio arquivo e
+[`DEPLOY.md`](./DEPLOY.md#1-supabase-projeto-de-produção).
+
 ## 7. Testes e qualidade
 
 ```bash
@@ -94,18 +108,10 @@ npm run test
 npm run build
 ```
 
-## 8. Deploy na Vercel
+## 8. Deploy em produção
 
-1. [vercel.com/new](https://vercel.com/new) → importe o repositório.
-2. **Root Directory**: `web`.
-3. Adicione as mesmas variáveis de ambiente do passo 3 (para Production e
-   Preview).
-4. Deploy.
-5. Atualize **Site URL** / **Redirect URLs** no Supabase com o domínio de
-   produção (e o preview, se for usar).
-6. As migrations do Supabase **não** rodam automaticamente no deploy da
-   Vercel — aplique-as manualmente (passo 4) antes ou depois do primeiro
-   deploy.
+Guia completo (GitHub → Vercel → Supabase, incluindo domínio e
+observabilidade) em [`DEPLOY.md`](./DEPLOY.md).
 
 ## Regenerar tipos TypeScript do banco (opcional)
 

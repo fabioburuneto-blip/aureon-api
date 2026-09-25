@@ -1,11 +1,20 @@
 import { notFound } from "next/navigation";
 import Image from "next/image";
-import { createClient } from "@/lib/supabase/server";
+import { createPublicClient } from "@/lib/supabase/public";
 import { formatPriceCents, WEEKDAY_LABELS } from "@/lib/format";
 import { segmentLabels } from "@/lib/validations";
 import { BookingWidget } from "./booking-widget";
 import type { Metadata } from "next";
 import type { Database } from "@/types/database";
+
+// Data here only changes when the owner edits it in the dashboard, and
+// every action that does so already calls revalidatePath(`/${slug}`) --
+// this is a traffic-driven safety-net TTL on top of that on-demand
+// invalidation, not the only thing keeping this page fresh. Only possible
+// because getBusinessPageData() below never touches cookies()/headers()
+// (see src/lib/supabase/public.ts) -- a route that does either is forced
+// into fully dynamic, uncached rendering regardless of this export.
+export const revalidate = 60;
 
 // The exact column subset anon has SELECT grant on (see
 // supabase/migrations/20250924120009_audit_hardening.sql) -- owner_id/
@@ -31,7 +40,7 @@ type PublicBusinessRow = Pick<
 >;
 
 async function getBusinessPageData(slug: string) {
-  const supabase = await createClient();
+  const supabase = createPublicClient();
 
   const { data: business } = await supabase
     .from("businesses")
@@ -166,7 +175,6 @@ export default async function BusinessPublicPage(props: {
               alt={business.name}
               width={80}
               height={80}
-              unoptimized
               className="h-20 w-20 rounded-xl border-4 border-white bg-white object-cover shadow-sm"
             />
           ) : (
@@ -210,7 +218,6 @@ export default async function BusinessPublicPage(props: {
                           alt={professional.name}
                           width={32}
                           height={32}
-                          unoptimized
                           className="h-8 w-8 rounded-full object-cover"
                         />
                       ) : (

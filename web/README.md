@@ -100,20 +100,24 @@ e pode ativar planos pagos quando um provedor de cobrança for configurado
 | `npm run format`       | Formata com Prettier                     |
 | `npm run format:check` | Verifica formatação sem alterar arquivos |
 
-## Deploy (Vercel)
+## Deploy (GitHub → Vercel → Supabase)
 
-1. Importe o repositório na Vercel, apontando o **Root Directory** para
-   `web`.
-2. Configure as mesmas variáveis de `.env.example` em
-   Project Settings → Environment Variables.
-3. Deploy. As migrations do Supabase são aplicadas separadamente (via
-   Supabase CLI/dashboard), não fazem parte do build da Vercel.
+Guia completo em [`docs/DEPLOY.md`](./docs/DEPLOY.md). Resumo: importe o
+repositório na Vercel com **Root Directory** = `web`, configure as
+variáveis de `.env.example` em Project Settings → Environment Variables
+e faça deploy — as migrations do Supabase são aplicadas separadamente
+(`supabase db push`), nunca como parte do build da Vercel. O app roda
+hoje num domínio só; está preparado (não obrigatório) para separar em
+`app.`/`agenda.`/`www.` — ver
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md#subdomínios).
 
 ## Documentação
 
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — visão geral do produto e das rotas
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — visão geral do produto, das rotas e dos subdomínios
 - [`docs/DATABASE.md`](./docs/DATABASE.md) — schema, relacionamentos, RPCs
 - [`docs/SECURITY.md`](./docs/SECURITY.md) — modelo de multi-tenancy e RLS
-- [`docs/SETUP.md`](./docs/SETUP.md) — passo a passo de configuração local e deploy
+- [`docs/SETUP.md`](./docs/SETUP.md) — passo a passo de configuração local
+- [`docs/DEPLOY.md`](./docs/DEPLOY.md) — deploy em produção (GitHub → Vercel → Supabase), domínio, observabilidade
 - [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md) — arquitetura de notificações (in-app/e-mail/WhatsApp), onde colocar credenciais, cron dos lembretes
 - [`docs/BILLING.md`](./docs/BILLING.md) — planos e assinaturas, abstração de provedor de cobrança, modo local, ativando cobrança real
+- [`docs/AUDIT.md`](./docs/AUDIT.md) — auditoria de segurança/correção mais recente

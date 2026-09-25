@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
+import { logError } from "@/lib/logger";
 
 const customerSchema = z.object({
   name: z.string().trim().min(2, "Informe o nome do cliente").max(120),
@@ -39,6 +40,11 @@ export async function createCustomer(
   });
 
   if (error) {
+    // 23505 (duplicate phone) is expected user-facing validation, not a
+    // system fault -- only log the unexpected case.
+    if (error.code !== "23505") {
+      logError("customer.create_failed", { business_id: business.id, code: error.code }, error);
+    }
     return {
       error:
         error.code === "23505"
@@ -82,6 +88,7 @@ export async function updateCustomer(
     .eq("business_id", business.id);
 
   if (error) {
+    logError("customer.update_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível atualizar o cliente." };
   }
 

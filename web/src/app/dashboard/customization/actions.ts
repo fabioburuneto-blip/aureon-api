@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentBusiness, requireOwner } from "@/lib/auth";
 import { themeSchema, businessImageSchema } from "@/lib/validations";
+import { logError } from "@/lib/logger";
 
 export type CustomizationFormState =
   { error?: string; success?: boolean } | undefined;
@@ -30,6 +31,7 @@ export async function updateTheme(
     .eq("business_id", business.id);
 
   if (error) {
+    logError("theme.update_failed", { business_id: business.id, code: error.code }, error);
     return { error: "Não foi possível salvar a personalização." };
   }
 
@@ -63,6 +65,7 @@ export async function updateBusinessImage(kind: "logo" | "cover", url: string) {
     .eq("id", business.id);
 
   if (error) {
+    logError("business_image.update_failed", { business_id: business.id, kind, code: error.code }, error);
     return { error: "Não foi possível salvar a imagem." };
   }
 

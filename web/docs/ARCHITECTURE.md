@@ -31,10 +31,21 @@ src/app/
 │   ├── plano/                        # plano atual, status, comparação de planos
 │   └── settings/                      # dados da empresa, publicação, notificações
 ├── api/webhooks/billing/[provider]/   # webhook de cobrança (Mercado Pago/Stripe/Asaas)
+├── robots.ts / sitemap.ts             # convenções do App Router para SEO
+├── error.tsx / global-error.tsx        # error boundaries (ver "Tratamento de erros")
+├── not-found.tsx                       # 404 (também o que /[slug] usa via notFound())
 └── [slug]/
-    ├── page.tsx               # página pública (dados via RLS pública)
+    ├── page.tsx               # página pública (dados via RLS pública, cache de 60s)
     └── booking-widget.tsx     # fluxo de agendamento (client component)
 ```
+
+Suporte compartilhado relevante em `src/lib/`: `auth.ts` (guards),
+`logger.ts` (`logError`, log estruturado sem PII — ver
+[`DEPLOY.md`](./DEPLOY.md#observabilidade)), `subdomain-routing.ts` (ver
+"Subdomínios" abaixo), `supabase/server.ts` (client autenticado, ligado a
+cookies) vs. `supabase/public.ts` (client anônimo, sem cookies, usado
+pela página pública para poder ser cacheada) vs. `supabase/admin.ts`
+(service role, bypassa RLS).
 
 ## Por que não há `/[slug]` nas rotas do dashboard
 
@@ -87,6 +98,53 @@ agendamento chama diretamente, do navegador, as RPCs públicas
 empresa do slug, respeitar horários/bloqueios/antecedência mínima, impedir
 overbooking) é resolvido no Postgres, nunca confiando em nada que o cliente
 tenha enviado além do slug + ids escolhidos na UI.
+
+## Subdomínios
+
+O produto tem três públicos claramente diferentes, hoje todos servidos por
+um único domínio (como neste repositório): o site institucional (`/`), o
+produto autenticado (`/dashboard`, `/login`, `/signup`, `/onboarding`,
+`/auth/confirm`) e as páginas públicas de agendamento de cada empresa
+(`/{slug}`). A arquitetura já está preparada para separá-los em três
+subdomínios da plataforma:
+
+- `app.seusite.com` — produto autenticado
+- `agenda.seusite.com/{slug}` — páginas públicas de agendamento
+- `www.seusite.com` (ou o apex) — site institucional
+
+Isto é separação de domínios **da plataforma**, não domínio customizado
+por cliente/tenant — nenhuma empresa tem ou terá (ainda) um domínio
+próprio; todas continuam vivendo em `agenda.seusite.com/{slug}`.
+
+A ativação é opcional e não muda nada até ser configurada: `src/proxy.ts`
+lê três variáveis de ambiente opcionais (`NEXT_PUBLIC_APP_URL`,
+`NEXT_PUBLIC_AGENDA_URL`, `NEXT_PUBLIC_MARKETING_URL`) via
+`getSubdomainConfig()` em `src/lib/subdomain-routing.ts`. Enquanto menos
+de duas delas apontarem para hosts distintos (o caso padrão — nenhuma
+configurada), essa função retorna `null` e o middleware não redireciona
+nada, exatamente o comportamento de hoje. Assim que duas ou mais
+estiverem configuradas, `resolveSubdomainRedirect()` (função pura,
+testada em `subdomain-routing.test.ts`) decide, por host + path, para
+onde redirecionar: uma rota do produto acessada em `agenda.*` ou `www.*`
+vai para `app.*`; um slug de empresa acessado em `app.*` ou `www.*` vai
+para `agenda.*`; a raiz acessada fora de `www.*` vai para lá. `/api/*`
+nunca é redirecionado — um provedor de webhook bate numa URL fixa, e
+redirecionar essa chamada tende a quebrar a entrega, não ajudar. Passo a
+passo de DNS/Vercel para ativar: [`DEPLOY.md`](./DEPLOY.md#4-domínio).
+
+## Tratamento de erros
+
+Três limites de erro (`error.tsx` da App Router, ver
+`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md`
+para a convenção exata desta versão — ela usa a prop `retry`, não
+`reset`): `src/app/error.tsx` cobre tudo sob o layout raiz (site
+institucional, auth, página pública), `src/app/dashboard/error.tsx`
+isola uma falha de renderização a uma única página do painel sem derrubar
+o resto do app, e `src/app/global-error.tsx` é o último recurso (falha no
+próprio layout raiz) — só ele define `<html>`/`<body>` próprios, já que
+substitui o layout raiz inteiro quando ativo. `src/app/not-found.tsx` é o
+404 global, reaproveitado por `notFound()` em `/[slug]` quando o slug não
+existe ou a empresa está despublicada.
 
 ## Multi-tenant, hoje e amanhã
 

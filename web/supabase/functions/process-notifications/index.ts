@@ -67,6 +67,12 @@ Deno.serve(async (req) => {
     .limit(BATCH_SIZE);
 
   if (fetchError) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "notification_queue.fetch_failed",
+      error_message: fetchError.message,
+      error_code: fetchError.code,
+    }));
     return Response.json({ error: "failed to fetch queue" }, { status: 500 });
   }
 
@@ -96,10 +102,18 @@ Deno.serve(async (req) => {
           sent_at: outcome.sentAt ? outcome.sentAt.toISOString() : null,
         })
         .eq("id", row.id);
-    } catch {
+    } catch (err) {
       // A single row's unexpected failure (e.g. a transient DB error on the
       // update itself) must never stop the rest of the batch from being
-      // processed -- log-and-continue.
+      // processed -- log-and-continue. Never log row.recipient (a phone
+      // number or email address) or row.payload (customer name/etc).
+      console.error(JSON.stringify({
+        level: "error",
+        event: "notification_delivery.dispatch_failed",
+        delivery_id: row.id,
+        channel: row.channel,
+        error_message: err instanceof Error ? err.message : String(err),
+      }));
       summary.failed += 1;
     }
   }

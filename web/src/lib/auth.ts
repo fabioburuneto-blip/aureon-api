@@ -2,6 +2,7 @@ import "server-only";
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { logError } from "@/lib/logger";
 import type { MemberRole } from "@/types/database";
 
 /**
@@ -80,7 +81,7 @@ export async function requireBusinessAccess(
 export const getCurrentBusiness = cache(async () => {
   const { supabase, user } = await requireUser();
 
-  const { data: membership } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("business_members")
     .select("role, business_id")
     .eq("user_id", user.id)
@@ -88,15 +89,30 @@ export const getCurrentBusiness = cache(async () => {
     .limit(1)
     .maybeSingle();
 
+  if (membershipError) {
+    // A real DB error here (vs. a legitimate "no membership yet") would
+    // otherwise silently redirect an existing owner to onboarding with no
+    // trace of why -- log before falling through to the same redirect.
+    logError("auth.membership_lookup_failed", { user_id: user.id, code: membershipError.code }, membershipError);
+  }
+
   if (!membership) {
     redirect("/onboarding");
   }
 
-  const { data: business } = await supabase
+  const { data: business, error: businessError } = await supabase
     .from("businesses")
     .select("*")
     .eq("id", membership.business_id)
     .single();
+
+  if (businessError) {
+    logError(
+      "auth.business_lookup_failed",
+      { user_id: user.id, business_id: membership.business_id, code: businessError.code },
+      businessError,
+    );
+  }
 
   if (!business) {
     redirect("/onboarding");

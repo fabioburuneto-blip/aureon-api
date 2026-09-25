@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getBillingProviderByName } from "@/lib/billing";
 import { applyBillingWebhookEvent } from "@/lib/billing/apply-event";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { logError } from "@/lib/logger";
 
 /**
  * Billing webhook endpoint: POST /api/webhooks/billing/{provider}
@@ -43,7 +44,7 @@ export async function POST(
     // A provider-side follow-up call failed (e.g. Mercado Pago's
     // preapproval lookup) -- ask the provider to retry rather than
     // silently swallowing the event.
-    console.error(`billing webhook (${providerName}): failed to parse event`, error);
+    logError("billing_webhook.parse_failed", { provider: providerName }, error);
     return NextResponse.json({ error: "failed to process event" }, { status: 502 });
   }
 
@@ -58,7 +59,7 @@ export async function POST(
     const outcome = await applyBillingWebhookEvent(supabase, billingProvider.provider, event);
     return NextResponse.json({ received: true, outcome });
   } catch (error) {
-    console.error(`billing webhook (${providerName}): failed to apply event`, error);
+    logError("billing_webhook.apply_failed", { provider: providerName }, error);
     return NextResponse.json({ error: "failed to apply event" }, { status: 500 });
   }
 }

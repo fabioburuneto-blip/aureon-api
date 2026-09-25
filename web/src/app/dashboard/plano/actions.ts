@@ -6,6 +6,7 @@ import { getCurrentBusiness, requireOwner } from "@/lib/auth";
 import { getBillingProvider } from "@/lib/billing";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isValidPlanId } from "@/lib/plans/config";
+import { logError } from "@/lib/logger";
 
 export async function startCheckoutAction(formData: FormData) {
   const planId = String(formData.get("plan_id") ?? "");
@@ -19,13 +20,23 @@ export async function startCheckoutAction(formData: FormData) {
   const provider = getBillingProvider();
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
-  const result = await provider.createCheckoutSession({
-    businessId: business.id,
-    planId,
-    customerEmail: business.email ?? user.email ?? "",
-    customerName: business.name,
-    returnUrl: `${siteUrl}/dashboard/plano`,
-  });
+  let result;
+  try {
+    result = await provider.createCheckoutSession({
+      businessId: business.id,
+      planId,
+      customerEmail: business.email ?? user.email ?? "",
+      customerName: business.name,
+      returnUrl: `${siteUrl}/dashboard/plano`,
+    });
+  } catch (err) {
+    logError(
+      "billing.checkout_session_failed",
+      { business_id: business.id, provider: provider.provider, plan_id: planId },
+      err,
+    );
+    throw err;
+  }
 
   // Some providers (Mercado Pago, Asaas) return a real subscription/
   // customer id synchronously, before any webhook fires. Link it now so
@@ -60,10 +71,19 @@ export async function cancelSubscriptionAction() {
     .maybeSingle();
 
   const provider = getBillingProvider();
-  await provider.cancelSubscription({
-    businessId: business.id,
-    providerSubscriptionId: subscription?.provider_subscription_id ?? null,
-  });
+  try {
+    await provider.cancelSubscription({
+      businessId: business.id,
+      providerSubscriptionId: subscription?.provider_subscription_id ?? null,
+    });
+  } catch (err) {
+    logError(
+      "billing.cancel_subscription_failed",
+      { business_id: business.id, provider: provider.provider },
+      err,
+    );
+    throw err;
+  }
 
   revalidatePath("/dashboard/plano");
 }

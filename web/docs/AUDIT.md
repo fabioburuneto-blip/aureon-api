@@ -189,9 +189,12 @@ testes, incluindo DST).
   `idx_notification_deliveries_business_id`,
   `idx_billing_webhook_events_received_at`,
   `idx_subscriptions_provider_subscription_id`,
-  `idx_business_members_user_id`). Exceção: `blocked_times` não tem
-  índice além da PK — hoje é uma tabela pequena por empresa, então não é
-  urgente, mas listado em recomendações.
+  `idx_business_members_user_id`, `idx_blocked_times_business_id`,
+  `idx_blocked_times_professional_id`). Correção em relação a uma versão
+  anterior deste relatório: `blocked_times` **já tinha** índice em
+  `business_id` e `professional_id` desde `20250924120002_schema.sql` —
+  a afirmação de que só tinha a PK estava errada; confirmado consultando
+  `pg_indexes` contra uma migração real, não por leitura de código.
 - **Dados carregados desnecessariamente**: a página pública usa agora
   select explícito em `businesses` (efeito colateral do fix de
   segurança); as demais queries do dashboard já usavam `.select()` com
@@ -269,11 +272,6 @@ risco/custo de correção desproporcional:
    uso de `FieldError` (gerar `id` no erro e referenciá-lo em
    `aria-describedby`/`aria-invalid` no `Input` correspondente),
    escopo maior que os fixes mecânicos de foco desta auditoria.
-7. **`blocked_times` sem índice dedicado.** Só a PK. Não é urgente hoje
-   (tabela pequena por empresa), mas se o volume crescer, um índice em
-   `(business_id, professional_id)` reduziria custo na checagem de
-   overlap em `create_public_appointment()`.
-
 ## Recomendações
 
 1. Aplicar o mesmo tratamento de grant de coluna do item 1 (Problemas
@@ -294,11 +292,11 @@ risco/custo de correção desproporcional:
    erro de formulário na próxima vez que os componentes de formulário
    forem tocados por outro motivo (não vale um PR dedicado só para
    isso).
-6. Se o volume de `blocked_times` crescer, adicionar índice em
-   `(business_id, professional_id)`.
-7. Rodar `supabase/tests/db.sql` como parte do CI (hoje é rodado
-   manualmente contra um Postgres descartável) — automatizar a
-   inicialização de um Postgres efêmero em CI é a única peça que falta.
+6. Rodar `supabase/tests/db.sql` como parte do CI — agora que
+   `supabase/tests/fixtures/local-stub.sql` está commitado (ver
+   docs/DEPLOY.md "Testes de banco"), a única peça que falta é um step de
+   CI que suba um Postgres efêmero, aplique o stub + as migrations, e
+   rode a suíte.
 
 ## Gate de qualidade
 

@@ -59,9 +59,18 @@ Deno.serve(async (req) => {
       try {
         await enqueueReminder(supabase, appt, eventType, settingsColumn, sentColumn);
         summary[kind] += 1;
-      } catch {
+      } catch (err) {
         // One appointment's failure (missing related row, transient DB
-        // error) must never stop the rest of the sweep.
+        // error) must never stop the rest of the sweep. Never log
+        // customer/business names -- only ids and the error message.
+        console.error(JSON.stringify({
+          level: "error",
+          event: "appointment_reminder.enqueue_failed",
+          appointment_id: appt.id,
+          business_id: appt.business_id,
+          kind,
+          error_message: err instanceof Error ? err.message : String(err),
+        }));
       }
     }
   }

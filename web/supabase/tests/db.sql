@@ -7,9 +7,14 @@
 --
 -- Run against a scratch database (never production):
 --   createdb aureon_test
---   psql aureon_test -f <stub auth/storage schema + roles, see docs/AUDIT.md>
+--   psql aureon_test -f supabase/tests/fixtures/local-stub.sql
 --   for f in supabase/migrations/*.sql; do psql aureon_test -f "$f"; done
 --   psql aureon_test -f supabase/tests/db.sql
+--
+-- local-stub.sql stands in for the slice of Supabase's real auth/storage
+-- schemas and default anon/authenticated/service_role grants that the
+-- migrations and this suite depend on -- a real Supabase project already
+-- provides the real versions, so it's never applied there.
 --
 -- Exits non-zero (via ON_ERROR_STOP) on the first failed assertion or
 -- unexpected error, with a message identifying which check failed.
