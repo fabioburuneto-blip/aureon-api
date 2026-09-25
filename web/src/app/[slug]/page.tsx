@@ -5,15 +5,42 @@ import { formatPriceCents, WEEKDAY_LABELS } from "@/lib/format";
 import { segmentLabels } from "@/lib/validations";
 import { BookingWidget } from "./booking-widget";
 import type { Metadata } from "next";
+import type { Database } from "@/types/database";
+
+// The exact column subset anon has SELECT grant on (see
+// supabase/migrations/20250924120009_audit_hardening.sql) -- owner_id/
+// phone/email are never readable by an anonymous visitor at the database
+// layer, not just because this page happens not to render them. Typing
+// the query with .returns<PublicBusinessRow>() instead of trusting the
+// (untyped-for-select-strings) hand-written Database type means adding a
+// reference to business.email here later is a compile error, not a
+// silent runtime undefined.
+type PublicBusinessRow = Pick<
+  Database["public"]["Tables"]["businesses"]["Row"],
+  | "id"
+  | "name"
+  | "slug"
+  | "segment"
+  | "description"
+  | "timezone"
+  | "logo_url"
+  | "cover_url"
+  | "is_published"
+  | "created_at"
+  | "updated_at"
+>;
 
 async function getBusinessPageData(slug: string) {
   const supabase = await createClient();
 
   const { data: business } = await supabase
     .from("businesses")
-    .select("*")
+    .select(
+      "id, name, slug, segment, description, timezone, logo_url, cover_url, is_published, created_at, updated_at",
+    )
     .eq("slug", slug)
     .eq("is_published", true)
+    .returns<PublicBusinessRow[]>()
     .maybeSingle();
 
   if (!business) return null;
@@ -70,13 +97,30 @@ export async function generateMetadata(props: {
 }): Promise<Metadata> {
   const { slug } = await props.params;
   const data = await getBusinessPageData(slug);
-  if (!data) return {};
+  if (!data) return { robots: { index: false, follow: false } };
+
+  const description =
+    data.business.description ??
+    `Agende um horário com ${data.business.name}.`;
+  const images = data.business.cover_url ? [data.business.cover_url] : [];
 
   return {
     title: data.business.name,
-    description:
-      data.business.description ??
-      `Agende um horário com ${data.business.name}.`,
+    description,
+    alternates: { canonical: `/${data.business.slug}` },
+    openGraph: {
+      title: data.business.name,
+      description,
+      url: `/${data.business.slug}`,
+      type: "website",
+      images,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: data.business.name,
+      description,
+      images,
+    },
   };
 }
 

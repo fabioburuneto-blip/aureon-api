@@ -12,7 +12,7 @@ import {
   rangeISO,
   startOfMonthKey,
   startOfWeekKey,
-  toDateKey,
+  todayKeyInTimeZone,
 } from "@/lib/date-utils";
 import { DayView } from "./day-view";
 import { WeekView } from "./week-view";
@@ -49,12 +49,13 @@ export default async function AgendaPage(props: {
     searchParams.view === "week" || searchParams.view === "month"
       ? searchParams.view
       : "day";
-  const dateKey = isValidDateKey(searchParams.date)
-    ? searchParams.date
-    : toDateKey(new Date());
   const professionalId = searchParams.professional || undefined;
 
   const { supabase, business } = await getCurrentBusiness();
+
+  const dateKey = isValidDateKey(searchParams.date)
+    ? searchParams.date
+    : todayKeyInTimeZone(business.timezone);
 
   const { data: professionals } = await supabase
     .from("professionals")
@@ -76,7 +77,11 @@ export default async function AgendaPage(props: {
     rangeEndKey = addDays(rangeStartKey, daysInMonth(dateKey) - 1);
   }
 
-  const { fromISO, toISO } = rangeISO(rangeStartKey, rangeEndKey);
+  const { fromISO, toISO } = rangeISO(
+    rangeStartKey,
+    rangeEndKey,
+    business.timezone,
+  );
 
   const appointments = await fetchAppointmentsWithRelations(
     supabase,
@@ -104,7 +109,7 @@ export default async function AgendaPage(props: {
       : view === "week"
         ? addDays(dateKey, 7)
         : addMonths(dateKey, 1);
-  const todayKey = toDateKey(new Date());
+  const todayKey = todayKeyInTimeZone(business.timezone);
 
   const rangeLabel =
     view === "month"

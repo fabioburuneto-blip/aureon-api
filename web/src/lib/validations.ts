@@ -32,7 +32,7 @@ export const createBusinessSchema = z.object({
     .toLowerCase()
     .refine(isValidSlug, "Use apenas letras minúsculas, números e hífens"),
   segment: z.enum(businessSegments),
-  timezone: z.string().default("America/Sao_Paulo"),
+  timezone: z.string().max(60).default("America/Sao_Paulo"),
 });
 
 export const serviceSchema = z.object({
@@ -64,8 +64,8 @@ export const businessHoursSchema = z.object({
 export const blockedTimeSchema = z
   .object({
     professional_id: z.string().uuid().nullable(),
-    starts_at: z.string().min(1, "Informe a data/hora de início"),
-    ends_at: z.string().min(1, "Informe a data/hora de término"),
+    starts_at: z.string().min(1, "Informe a data/hora de início").max(40),
+    ends_at: z.string().min(1, "Informe a data/hora de término").max(40),
     reason: z.string().trim().max(200).optional().or(z.literal("")),
   })
   .refine((data) => new Date(data.ends_at) > new Date(data.starts_at), {
@@ -77,8 +77,8 @@ export const businessSettingsSchema = z.object({
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().max(500).optional().or(z.literal("")),
   phone: z.string().trim().max(30).optional().or(z.literal("")),
-  email: z.string().trim().email().optional().or(z.literal("")),
-  timezone: z.string().min(1),
+  email: z.string().trim().max(254).email().optional().or(z.literal("")),
+  timezone: z.string().min(1).max(60),
   is_published: z.coerce.boolean(),
 });
 
@@ -100,6 +100,7 @@ export const notificationSettingsSchema = z
     notify_email_address: z
       .string()
       .trim()
+      .max(254)
       .email()
       .optional()
       .or(z.literal("")),
@@ -126,15 +127,25 @@ export const notificationSettingsSchema = z
 
 export const businessImageSchema = z.object({
   kind: z.enum(["logo", "cover"]),
-  url: z.string().trim().url(),
+  url: z.string().trim().max(2048).url(),
 });
 
 export const publicBookingSchema = z.object({
   service_id: z.string().uuid(),
   professional_id: z.string().uuid(),
-  starts_at: z.string().min(1),
-  customer_name: z.string().trim().min(2, "Informe seu nome"),
-  customer_phone: z.string().trim().min(8, "Informe um telefone válido"),
-  customer_email: z.string().trim().email().optional().or(z.literal("")),
+  starts_at: z.string().min(1).max(40),
+  customer_name: z.string().trim().min(2, "Informe seu nome").max(120),
+  customer_phone: z
+    .string()
+    .trim()
+    .min(8, "Informe um telefone válido")
+    .max(30),
+  customer_email: z
+    .string()
+    .trim()
+    .max(254)
+    .email()
+    .optional()
+    .or(z.literal("")),
   notes: z.string().trim().max(500).optional().or(z.literal("")),
 });

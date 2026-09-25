@@ -7,7 +7,7 @@ import { getCurrentBusiness } from "@/lib/auth";
 const customerSchema = z.object({
   name: z.string().trim().min(2, "Informe o nome do cliente").max(120),
   phone: z.string().trim().max(30).optional().or(z.literal("")),
-  email: z.string().trim().email().optional().or(z.literal("")),
+  email: z.string().trim().max(254).email().optional().or(z.literal("")),
   notes: z.string().trim().max(1000).optional().or(z.literal("")),
 });
 

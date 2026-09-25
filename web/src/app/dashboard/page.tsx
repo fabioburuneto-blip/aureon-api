@@ -4,7 +4,7 @@ import { fetchAppointmentsWithRelations } from "@/lib/appointments-data";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "./appointments/status-badge";
 import { formatDateTime, formatTime, formatPriceCents } from "@/lib/format";
-import { dayRangeISO, toDateKey } from "@/lib/date-utils";
+import { dayRangeISO, parseDateKey, todayKeyInTimeZone } from "@/lib/date-utils";
 
 function parseTimeToMinutes(time: string): number {
   const [hours, minutes] = time.split(":").map(Number);
@@ -14,9 +14,16 @@ function parseTimeToMinutes(time: string): number {
 export default async function DashboardOverviewPage() {
   const { supabase, business } = await getCurrentBusiness();
 
-  const todayKey = toDateKey(new Date());
-  const { fromISO: todayStart, toISO: todayEnd } = dayRangeISO(todayKey);
-  const todayWeekday = new Date(`${todayKey}T12:00:00`).getDay();
+  const todayKey = todayKeyInTimeZone(business.timezone);
+  const { fromISO: todayStart, toISO: todayEnd } = dayRangeISO(
+    todayKey,
+    business.timezone,
+  );
+  // parseDateKey()/.getDay() both operate in the same (server-local) frame
+  // with no explicit timezone involved, so this round-trip can't roll over
+  // to a different calendar day -- the timezone-sensitive part already
+  // happened above, resolving todayKey correctly for the business.
+  const todayWeekday = parseDateKey(todayKey).getDay();
 
   const [
     pendingCountRes,

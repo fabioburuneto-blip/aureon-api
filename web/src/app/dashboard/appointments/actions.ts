@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getCurrentBusiness } from "@/lib/auth";
+import { zonedDateTimeToUtcISO } from "@/lib/date-utils";
 
 const statusSchema = z.enum([
   "pending",
@@ -79,7 +80,13 @@ export async function rescheduleAppointment(
     .maybeSingle();
 
   const durationMinutes = service?.duration_minutes ?? 30;
-  const startsAt = new Date(`${date}T${time}:00`);
+  // The owner picks date/time as wall-clock in the business's own
+  // timezone (that's what the form is prefilled with and what the rest of
+  // the page displays) -- converting via the server's local zone instead
+  // would silently shift the appointment by whatever offset separates the
+  // two (e.g. 3h off for an America/Sao_Paulo business on a UTC server).
+  const startsAtISO = zonedDateTimeToUtcISO(date, time, business.timezone);
+  const startsAt = new Date(startsAtISO);
   if (Number.isNaN(startsAt.getTime())) {
     return { error: "Data ou horário inválido." };
   }
@@ -88,7 +95,7 @@ export async function rescheduleAppointment(
   const { error } = await supabase
     .from("appointments")
     .update({
-      starts_at: startsAt.toISOString(),
+      starts_at: startsAtISO,
       ends_at: endsAt.toISOString(),
     })
     .eq("id", id)
