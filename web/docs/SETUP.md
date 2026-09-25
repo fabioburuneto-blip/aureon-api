@@ -58,7 +58,8 @@ psql "$(supabase status -o env | grep DB_URL | cut -d= -f2)" \
   -f supabase/migrations/20250924120003_membership_functions.sql \
   -f supabase/migrations/20250924120004_rls.sql \
   -f supabase/migrations/20250924120005_functions.sql \
-  -f supabase/migrations/20250924120006_storage.sql
+  -f supabase/migrations/20250924120006_storage.sql \
+  -f supabase/migrations/20250924120007_notifications.sql
 ```
 
 Ou cole o conteúdo de cada arquivo, na mesma ordem numérica, no

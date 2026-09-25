@@ -15,6 +15,14 @@ aplicadas nesta ordem (o prefixo numérico garante isso):
    `create_public_appointment()`.
 6. `20250924120006_storage.sql` — bucket público `business-assets` (logo/
    capa) e suas policies.
+7. `20250924120007_notifications.sql` — `notifications` ganha
+   `recipient_user_id`/`appointment_id`; nova tabela
+   `notification_deliveries` (fila de envio e-mail/WhatsApp);
+   `business_settings` ganha as colunas de preferência de notificação;
+   `appointments` ganha `reminder_24h_sent_at`/`reminder_2h_sent_at`;
+   trigger `notify_appointment_event()` que gera notificação in-app +
+   enfileira envios a cada criação/confirmação/cancelamento/reagendamento/
+   conclusão/no-show. Veja [`docs/NOTIFICATIONS.md`](./NOTIFICATIONS.md).
 
 Todas foram validadas rodando de fato contra um Postgres 16 local (schema
 `auth`/`storage` mínimos simulando o que o Supabase já fornece), incluindo
@@ -38,7 +46,8 @@ e prevenção de overbooking — não é só leitura de código.
 | `customers`             | Clientes, escopados por empresa (nunca compartilhados entre tenants).                    |
 | `appointments`          | Agendamentos. `status`: `pending`, `confirmed`, `cancelled`, `completed`, `no_show`.     |
 | `themes`                | Cores/layout da página pública.                                                          |
-| `notifications`         | Notificações internas do painel (ex: novo agendamento).                                  |
+| `notifications`         | Notificações in-app, escopadas a `recipient_user_id`. Ver [`NOTIFICATIONS.md`](./NOTIFICATIONS.md). |
+| `notification_deliveries` | Fila de envio para e-mail/WhatsApp (`pending`/`sent`/`failed`/`retrying`), drenada por uma Edge Function. |
 | `subscriptions`         | Placeholder de billing (`plan`, `status`) para integrar um gateway depois.               |
 
 Todas usam UUID (`gen_random_uuid()`), têm `created_at`/`updated_at` (com

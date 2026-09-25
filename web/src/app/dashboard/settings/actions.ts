@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentBusiness, requireOwner } from "@/lib/auth";
-import { businessSettingsSchema } from "@/lib/validations";
+import { businessSettingsSchema, notificationSettingsSchema } from "@/lib/validations";
 
 export type SettingsFormState =
   { error?: string; success?: boolean } | undefined;
@@ -45,5 +45,54 @@ export async function updateBusinessSettings(
 
   revalidatePath("/dashboard/settings");
   revalidatePath(`/${business.slug}`);
+  return { success: true };
+}
+
+export type NotificationSettingsFormState =
+  { error?: string; success?: boolean } | undefined;
+
+export async function updateNotificationSettings(
+  _prevState: NotificationSettingsFormState,
+  formData: FormData,
+): Promise<NotificationSettingsFormState> {
+  const parsed = notificationSettingsSchema.safeParse({
+    whatsapp_enabled: formData.get("whatsapp_enabled") === "on",
+    whatsapp_phone: formData.get("whatsapp_phone"),
+    notify_email_enabled: formData.get("notify_email_enabled") === "on",
+    notify_email_address: formData.get("notify_email_address"),
+    notify_new_appointment: formData.get("notify_new_appointment") === "on",
+    notify_cancellation: formData.get("notify_cancellation") === "on",
+    notify_reschedule: formData.get("notify_reschedule") === "on",
+    notify_reminder_24h: formData.get("notify_reminder_24h") === "on",
+    notify_reminder_2h: formData.get("notify_reminder_2h") === "on",
+  });
+
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Dados inválidos" };
+  }
+
+  const { supabase, business, role } = await getCurrentBusiness();
+  requireOwner(role);
+
+  const { error } = await supabase
+    .from("business_settings")
+    .update({
+      whatsapp_enabled: parsed.data.whatsapp_enabled,
+      whatsapp_phone: parsed.data.whatsapp_phone || null,
+      notify_email_enabled: parsed.data.notify_email_enabled,
+      notify_email_address: parsed.data.notify_email_address || null,
+      notify_new_appointment: parsed.data.notify_new_appointment,
+      notify_cancellation: parsed.data.notify_cancellation,
+      notify_reschedule: parsed.data.notify_reschedule,
+      notify_reminder_24h: parsed.data.notify_reminder_24h,
+      notify_reminder_2h: parsed.data.notify_reminder_2h,
+    })
+    .eq("business_id", business.id);
+
+  if (error) {
+    return { error: "Não foi possível salvar as preferências de notificação." };
+  }
+
+  revalidatePath("/dashboard/settings");
   return { success: true };
 }

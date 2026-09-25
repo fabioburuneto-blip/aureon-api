@@ -32,6 +32,20 @@ export type SubscriptionPlan = "free" | "basic" | "pro";
 export type SubscriptionStatus =
   "active" | "trialing" | "past_due" | "canceled";
 
+export type NotificationEventType =
+  | "appointment.created"
+  | "appointment.confirmed"
+  | "appointment.cancelled"
+  | "appointment.rescheduled"
+  | "appointment.completed"
+  | "appointment.no_show"
+  | "appointment.reminder_24h"
+  | "appointment.reminder_2h";
+
+export type NotificationChannel = "email" | "whatsapp";
+export type NotificationDeliveryStatus =
+  "pending" | "sent" | "failed" | "retrying";
+
 export interface Database {
   public: {
     Tables: {
@@ -91,6 +105,15 @@ export interface Database {
           slot_interval_minutes: number;
           require_customer_phone: boolean;
           allow_same_day_booking: boolean;
+          whatsapp_enabled: boolean;
+          whatsapp_phone: string | null;
+          notify_email_enabled: boolean;
+          notify_email_address: string | null;
+          notify_new_appointment: boolean;
+          notify_cancellation: boolean;
+          notify_reschedule: boolean;
+          notify_reminder_24h: boolean;
+          notify_reminder_2h: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -298,12 +321,20 @@ export interface Database {
           ends_at: string;
           status: AppointmentStatus;
           notes: string | null;
+          reminder_24h_sent_at: string | null;
+          reminder_2h_sent_at: string | null;
           created_at: string;
           updated_at: string;
         };
         Insert: Omit<
           Database["public"]["Tables"]["appointments"]["Row"],
-          "id" | "created_at" | "updated_at" | "status" | "notes"
+          | "id"
+          | "created_at"
+          | "updated_at"
+          | "status"
+          | "notes"
+          | "reminder_24h_sent_at"
+          | "reminder_2h_sent_at"
         > &
           Partial<
             Pick<
@@ -314,7 +345,13 @@ export interface Database {
         Update: Partial<
           Pick<
             Database["public"]["Tables"]["appointments"]["Row"],
-            "status" | "notes" | "starts_at" | "ends_at" | "professional_id"
+            | "status"
+            | "notes"
+            | "starts_at"
+            | "ends_at"
+            | "professional_id"
+            | "reminder_24h_sent_at"
+            | "reminder_2h_sent_at"
           >
         >;
         Relationships: [];
@@ -342,16 +379,46 @@ export interface Database {
         Row: {
           id: string;
           business_id: string;
-          type: string;
+          recipient_user_id: string;
+          appointment_id: string | null;
+          type: NotificationEventType;
           title: string;
           body: string | null;
           read_at: string | null;
           created_at: string;
         };
+        // Only ever written by the trg_appointments_notify trigger
+        // (SECURITY DEFINER) -- the app never inserts a notification row.
         Insert: never;
         Update: Partial<
           Pick<Database["public"]["Tables"]["notifications"]["Row"], "read_at">
         >;
+        Relationships: [];
+      };
+      notification_deliveries: {
+        Row: {
+          id: string;
+          business_id: string;
+          appointment_id: string | null;
+          notification_id: string | null;
+          channel: NotificationChannel;
+          event_type: NotificationEventType;
+          recipient: string;
+          payload: Record<string, string>;
+          status: NotificationDeliveryStatus;
+          attempts: number;
+          last_error: string | null;
+          next_attempt_at: string;
+          sent_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        // Only ever written by trg_appointments_notify (enqueue) and the
+        // process-notifications Edge Function (status updates), both using
+        // elevated privileges -- the dashboard app only ever reads this
+        // table (see notification_deliveries_select_owner policy).
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
       subscriptions: {

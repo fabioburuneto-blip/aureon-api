@@ -92,6 +92,38 @@ export const themeSchema = z.object({
   layout: z.enum(["classic", "minimal"]),
 });
 
+export const notificationSettingsSchema = z
+  .object({
+    whatsapp_enabled: z.coerce.boolean().default(false),
+    whatsapp_phone: z.string().trim().max(30).optional().or(z.literal("")),
+    notify_email_enabled: z.coerce.boolean().default(false),
+    notify_email_address: z
+      .string()
+      .trim()
+      .email()
+      .optional()
+      .or(z.literal("")),
+    notify_new_appointment: z.coerce.boolean().default(true),
+    notify_cancellation: z.coerce.boolean().default(true),
+    notify_reschedule: z.coerce.boolean().default(true),
+    notify_reminder_24h: z.coerce.boolean().default(true),
+    notify_reminder_2h: z.coerce.boolean().default(true),
+  })
+  .refine(
+    (data) => !data.whatsapp_enabled || !!data.whatsapp_phone,
+    {
+      message: "Informe o número de WhatsApp para ativar o envio",
+      path: ["whatsapp_phone"],
+    },
+  )
+  .refine(
+    (data) => !data.notify_email_enabled || !!data.notify_email_address,
+    {
+      message: "Informe o e-mail para ativar o envio",
+      path: ["notify_email_address"],
+    },
+  );
+
 export const businessImageSchema = z.object({
   kind: z.enum(["logo", "cover"]),
   url: z.string().trim().url(),

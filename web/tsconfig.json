@@ -11,6 +11,7 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "incremental": true,
     "plugins": [
@@ -30,5 +31,13 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // Deno Edge Function entrypoints -- Deno.serve/Deno.env and the
+    // `npm:` specifier are only valid under `deno check`, not tsc. The
+    // portable logic they depend on (supabase/functions/_shared/**) has
+    // no Deno-specific syntax and stays in the normal typecheck.
+    "supabase/functions/process-notifications/**",
+    "supabase/functions/appointment-reminders/**"
+  ]
 }

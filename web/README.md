@@ -76,6 +76,10 @@ Abra [http://localhost:3000](http://localhost:3000).
   pública e configurações da empresa
 - `/{slug-da-empresa}` — página pública de agendamento de cada empresa
 
+Quando um cliente agenda, cancela ou reagenda, o empresário é avisado no
+sininho do dashboard na hora, e por WhatsApp/e-mail quando configurado em
+`/dashboard/settings` — veja [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md).
+
 ## Scripts
 
 | Script                 | Descrição                                |
@@ -106,3 +110,4 @@ Abra [http://localhost:3000](http://localhost:3000).
 - [`docs/DATABASE.md`](./docs/DATABASE.md) — schema, relacionamentos, RPCs
 - [`docs/SECURITY.md`](./docs/SECURITY.md) — modelo de multi-tenancy e RLS
 - [`docs/SETUP.md`](./docs/SETUP.md) — passo a passo de configuração local e deploy
+- [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md) — arquitetura de notificações (in-app/e-mail/WhatsApp), onde colocar credenciais, cron dos lembretes

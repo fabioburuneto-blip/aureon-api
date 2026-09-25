@@ -2,13 +2,29 @@ import Link from "next/link";
 import { getCurrentBusiness } from "@/lib/auth";
 import { signOut } from "@/app/auth/actions";
 import { DashboardNav } from "./nav";
+import { NotificationBell } from "./notification-bell";
 
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const { business, role } = await getCurrentBusiness();
+  const { supabase, user, business, role } = await getCurrentBusiness();
+
+  const [{ data: recentNotifications }, { count: unreadCount }] =
+    await Promise.all([
+      supabase
+        .from("notifications")
+        .select("*")
+        .eq("recipient_user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(8),
+      supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("recipient_user_id", user.id)
+        .is("read_at", null),
+    ]);
 
   return (
     <div className="flex flex-1 bg-zinc-50">
@@ -42,16 +58,30 @@ export default async function DashboardLayout({
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
+        <header className="hidden items-center justify-end border-b border-zinc-200 bg-white px-8 py-3 sm:flex">
+          <NotificationBell
+            notifications={recentNotifications ?? []}
+            unreadCount={unreadCount ?? 0}
+            timezone={business.timezone}
+          />
+        </header>
         <header className="border-b border-zinc-200 bg-white sm:hidden">
           <div className="flex items-center justify-between px-4 py-3">
             <p className="truncate text-sm font-semibold text-zinc-900">
               {business.name}
             </p>
-            <form action={signOut}>
-              <button type="submit" className="text-sm text-zinc-500">
-                Sair
-              </button>
-            </form>
+            <div className="flex items-center gap-2">
+              <NotificationBell
+                notifications={recentNotifications ?? []}
+                unreadCount={unreadCount ?? 0}
+                timezone={business.timezone}
+              />
+              <form action={signOut}>
+                <button type="submit" className="text-sm text-zinc-500">
+                  Sair
+                </button>
+              </form>
+            </div>
           </div>
           <div className="overflow-x-auto px-4 pb-3">
             <DashboardNav orientation="horizontal" />
