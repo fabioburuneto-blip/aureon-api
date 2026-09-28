@@ -33,7 +33,23 @@ export const createBusinessSchema = z.object({
     .refine(isValidSlug, "Use apenas letras minúsculas, números e hífens"),
   segment: z.enum(businessSegments),
   timezone: z.string().max(60).default("America/Sao_Paulo"),
+  whatsapp: z.string().trim().max(30).optional().or(z.literal("")),
+  instagram: z
+    .string()
+    .trim()
+    .max(60)
+    .optional()
+    .or(z.literal(""))
+    .transform((value) => normalizeInstagramHandle(value)),
 });
+
+/** Accepts a bare handle, an "@handle", or a full profile URL and always
+ * stores just the handle -- the public page builds the link from that. */
+function normalizeInstagramHandle(value: string | undefined): string {
+  if (!value) return "";
+  const withoutUrl = value.replace(/^https?:\/\/(www\.)?instagram\.com\//i, "");
+  return withoutUrl.replace(/^@/, "").replace(/\/+$/, "").trim();
+}
 
 export const serviceSchema = z.object({
   name: z.string().trim().min(2, "Informe o nome do serviço").max(120),

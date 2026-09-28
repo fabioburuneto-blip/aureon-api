@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 
 /**
  * Catches an uncaught render/server error anywhere under the root layout
- * (marketing site, /login, /signup, /[slug] public pages) and shows a
+ * (marketing site, /login, /criar-conta, /[slug] public pages) and shows a
  * branded fallback instead of Next.js's default error screen. Runs in the
  * browser (error boundaries are always Client Components), so this
  * console.error is a devtools trace for whoever is looking, not a server

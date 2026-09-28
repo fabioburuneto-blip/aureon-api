@@ -81,7 +81,7 @@ npm run dev
 ```
 
 Acesse [http://localhost:3000](http://localhost:3000), crie uma conta em
-`/signup`, confirme o email (verifique o link no email enviado pelo
+`/criar-conta`, confirme o email (verifique o link no email enviado pelo
 Supabase) e conclua o onboarding em `/onboarding`.
 
 ### Dados de exemplo (opcional)

@@ -20,7 +20,7 @@ export type SubdomainRedirect = { host: string; pathname: string };
 // Routes that belong to the authenticated product, wherever it's hosted.
 // Kept in sync with src/lib/slug.ts RESERVED_SLUGS by construction: a
 // business slug can never collide with a top-level app route.
-const APP_PREFIXES = ["/dashboard", "/login", "/signup", "/onboarding", "/auth"];
+const APP_PREFIXES = ["/dashboard", "/login", "/criar-conta", "/onboarding", "/auth"];
 
 function hostOf(url: string | undefined): string | null {
   if (!url) return null;

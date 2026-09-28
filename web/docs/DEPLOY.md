@@ -141,7 +141,7 @@ em toda navegação, e cada página do dashboard resolve a própria proteção
 via `getCurrentBusiness()`/`requireUser()` (redireciona para `/login` sem
 sessão, para `/onboarding` sem empresa) — ver
 [`ARCHITECTURE.md`](./ARCHITECTURE.md#autenticação). `/`, `/login`,
-`/signup`, `/[slug]` são públicas por natureza; `/dashboard/*` nunca é.
+`/criar-conta`, `/[slug]` são públicas por natureza; `/dashboard/*` nunca é.
 
 ## 4. Domínio
 
@@ -167,7 +167,7 @@ completo. Para ativar:
    `NEXT_PUBLIC_AGENDA_URL`, `NEXT_PUBLIC_MARKETING_URL` com essas URLs.
 4. Redeploy. O middleware (`src/proxy.ts` +
    `src/lib/subdomain-routing.ts`) passa a redirecionar cada host para a
-   parte certa do app automaticamente: `/dashboard`, `/login`, `/signup`,
+   parte certa do app automaticamente: `/dashboard`, `/login`, `/criar-conta`,
    `/onboarding` e `/auth/*` só respondem em `app.*` (redirecionando de
    volta se acessados em outro host); `/{slug}` só em `agenda.*`; `/` só
    em `www.*`. `/api/*` nunca é redirecionado (webhooks batem numa URL

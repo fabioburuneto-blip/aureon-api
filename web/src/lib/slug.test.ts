@@ -40,4 +40,8 @@ describe("isValidSlug", () => {
     expect(isValidSlug("dashboard")).toBe(false);
     expect(isValidSlug("login")).toBe(false);
   });
+
+  it("rejects the criar-conta route", () => {
+    expect(isValidSlug("criar-conta")).toBe(false);
+  });
 });

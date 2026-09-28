@@ -80,11 +80,27 @@ quebrar nada, já que o schema já suporta N:N entre `profiles` e
 
 Supabase Auth (email + senha, com confirmação por email). O fluxo:
 
-1. `/signup` → `supabase.auth.signUp()` → email de confirmação.
+1. `/criar-conta` → `supabase.auth.signUp()` → email de confirmação.
 2. Link do email → `/auth/confirm` (Route Handler) → `verifyOtp()` → sessão
    criada → redireciona para `/onboarding`.
-3. `/onboarding` → RPC `create_business()` cria a empresa, o vínculo de
-   owner, as configurações e o tema padrão numa única transação.
+3. `/onboarding` é um assistente de 5 passos (negócio → serviços →
+   horários → aparência → publicar), resumível a qualquer momento:
+   - **Negócio**: nome, segmento, WhatsApp, Instagram e slug (com
+     checagem de disponibilidade ao vivo via `is_slug_available()`).
+     Ao enviar, a RPC `create_business()` cria a empresa, o vínculo de
+     owner, as configurações, o tema padrão e a assinatura trial numa
+     única transação.
+   - **Serviços**: sugestões pré-preenchidas por segmento
+     (`src/lib/onboarding-suggestions.ts`), totalmente editáveis.
+   - **Horários**: mesmo formulário/validação de `/dashboard/hours`.
+   - **Aparência**: logo, capa e tema reaproveitam os componentes de
+     `/dashboard/customization`; descrição é salva à parte.
+   - **Publicar**: define `is_published = true` e mostra o link público
+     com opção de copiar/visualizar/ir para o painel.
+   - O progresso fica em `businesses.onboarding_step` (nunca regride,
+     só avança — `greatest_onboarding_step()`), então recarregar a
+     página ou voltar mais tarde retoma de onde parou, sem criar uma
+     segunda empresa.
 4. `src/proxy.ts` (Next.js 16 renomeou `middleware.ts` → `proxy.ts`) mantém
    a sessão viva em toda navegação.
 
@@ -103,7 +119,7 @@ tenha enviado além do slug + ids escolhidos na UI.
 
 O produto tem três públicos claramente diferentes, hoje todos servidos por
 um único domínio (como neste repositório): o site institucional (`/`), o
-produto autenticado (`/dashboard`, `/login`, `/signup`, `/onboarding`,
+produto autenticado (`/dashboard`, `/login`, `/criar-conta`, `/onboarding`,
 `/auth/confirm`) e as páginas públicas de agendamento de cada empresa
 (`/{slug}`). A arquitetura já está preparada para separá-los em três
 subdomínios da plataforma:

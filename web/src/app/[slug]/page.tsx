@@ -37,6 +37,8 @@ type PublicBusinessRow = Pick<
   | "is_published"
   | "created_at"
   | "updated_at"
+  | "whatsapp"
+  | "instagram"
 >;
 
 async function getBusinessPageData(slug: string) {
@@ -45,7 +47,7 @@ async function getBusinessPageData(slug: string) {
   const { data: business } = await supabase
     .from("businesses")
     .select(
-      "id, name, slug, segment, description, timezone, logo_url, cover_url, is_published, created_at, updated_at",
+      "id, name, slug, segment, description, timezone, logo_url, cover_url, is_published, created_at, updated_at, whatsapp, instagram",
     )
     .eq("slug", slug)
     .eq("is_published", true)
@@ -197,6 +199,31 @@ export default async function BusinessPublicPage(props: {
 
         {business.description && (
           <p className="mt-4 text-sm text-zinc-600">{business.description}</p>
+        )}
+
+        {(business.whatsapp || business.instagram) && (
+          <div className="mt-3 flex flex-wrap gap-4 text-sm">
+            {business.whatsapp && (
+              <a
+                href={`https://wa.me/${business.whatsapp.replace(/\D/g, "")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-emerald-700 hover:underline"
+              >
+                WhatsApp
+              </a>
+            )}
+            {business.instagram && (
+              <a
+                href={`https://instagram.com/${business.instagram}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-zinc-700 hover:underline"
+              >
+                @{business.instagram}
+              </a>
+            )}
+          </div>
         )}
 
         <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">

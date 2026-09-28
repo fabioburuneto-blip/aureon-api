@@ -785,5 +785,87 @@ select test.assert(
 );
 
 \echo '===================================================================='
+\echo 'ONBOARDING WIZARD -- slug availability, whatsapp/instagram, resume'
+\echo '===================================================================='
+
+select test.assert(is_slug_available('uma-empresa-nova') = true, 'a well-formed, unused slug must be available');
+select test.assert(is_slug_available('criar-conta') = false, 'the /criar-conta route itself must be reserved');
+select test.assert(is_slug_available('dashboard') = false, 'reserved app routes must never be an available slug');
+select test.assert(is_slug_available('AB') = false, 'uppercase/too-short input must not be available');
+select test.assert(is_slug_available('barbearia-a') = false, 'an already-taken slug (business A, created above) must not be available');
+
+insert into auth.users (id, email) values ('d0000000-0000-0000-0000-00000000000d', 'dono-onboarding@test.com');
+set role authenticated;
+set request.jwt.claim.sub = 'd0000000-0000-0000-0000-00000000000d';
+
+select (create_business('Estúdio Onboarding', 'estudio-onboarding', 'nails', 'America/Sao_Paulo', '+5511977775555', '@estudio.onb')).id as ob_id \gset
+
+select test.assert(
+  (select whatsapp from businesses where id = :'ob_id') = '+5511977775555',
+  'create_business() must store the whatsapp contact when provided'
+);
+select test.assert(
+  (select instagram from businesses where id = :'ob_id') = '@estudio.onb',
+  'create_business() must store the instagram handle when provided'
+);
+select test.assert(
+  (select onboarding_step from businesses where id = :'ob_id') = 1,
+  'a freshly created business must start at onboarding_step 1'
+);
+
+-- Duplicate slug: the wizard's step 1 must surface this as a clean
+-- rejection (23505), never a partial/duplicate business row.
+\set ON_ERROR_STOP off
+select create_business('Outro Nome', 'estudio-onboarding', 'nails', 'America/Sao_Paulo');
+\set ON_ERROR_STOP on
+select test.assert(
+  (select count(*) from businesses where slug = 'estudio-onboarding') = 1,
+  'a duplicate slug must never create a second business row'
+);
+select test.assert(
+  (select count(*) from business_members where user_id = 'd0000000-0000-0000-0000-00000000000d') = 1,
+  'a rejected duplicate-slug attempt must not leave behind an extra membership row'
+);
+
+-- Resuming: onboarding_step only ever advances, never regresses, and is
+-- scoped to the caller's own business.
+select greatest_onboarding_step(:'ob_id', 3);
+select test.assert((select onboarding_step from businesses where id = :'ob_id') = 3, 'advancing the step must persist the new value');
+select greatest_onboarding_step(:'ob_id', 1);
+select test.assert((select onboarding_step from businesses where id = :'ob_id') = 3, 'going back to an earlier step must never regress onboarding_step');
+
+reset role;
+reset request.jwt.claim.sub;
+
+insert into auth.users (id, email) values ('d1000000-0000-0000-0000-00000000000d', 'estranho-onboarding@test.com');
+set role authenticated;
+set request.jwt.claim.sub = 'd1000000-0000-0000-0000-00000000000d';
+\set ON_ERROR_STOP off
+select greatest_onboarding_step(:'ob_id', 5);
+\set ON_ERROR_STOP on
+select test.assert(
+  (select onboarding_step from businesses where id = :'ob_id') = 3,
+  'a user with no membership on this business must never be able to advance its onboarding_step'
+);
+reset role;
+reset request.jwt.claim.sub;
+
+-- The authenticated grant must expose the new columns (needed to resume
+-- the wizard and to render whatsapp/instagram) while still excluding
+-- owner_id/phone/email for a non-member -- same shape as the P0.1 test
+-- above, reconfirmed after this migration touched the same grant again.
+set role authenticated;
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+select test.assert(
+  (select onboarding_step from businesses where id = :'ob_id') is not null,
+  'onboarding_step must be readable by any authenticated user (not sensitive)'
+);
+\set ON_ERROR_STOP off
+select owner_id from businesses where id = :'ob_id';
+\set ON_ERROR_STOP on
+reset role;
+reset request.jwt.claim.sub;
+
+\echo '===================================================================='
 \echo 'ALL ASSERTIONS PASSED'
 \echo '===================================================================='

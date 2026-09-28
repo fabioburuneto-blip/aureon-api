@@ -82,6 +82,9 @@ export interface Database {
           logo_url: string | null;
           cover_url: string | null;
           is_published: boolean;
+          whatsapp: string | null;
+          instagram: string | null;
+          onboarding_step: number;
           created_at: string;
           updated_at: string;
         };
@@ -97,6 +100,9 @@ export interface Database {
             | "logo_url"
             | "cover_url"
             | "is_published"
+            | "whatsapp"
+            | "instagram"
+            | "onboarding_step"
           >
         >;
         Relationships: [];
@@ -481,8 +487,23 @@ export interface Database {
           p_slug: string;
           p_segment: BusinessSegment;
           p_timezone?: string;
+          p_whatsapp?: string | null;
+          p_instagram?: string | null;
         };
         Returns: Database["public"]["Tables"]["businesses"]["Row"];
+      };
+      is_slug_available: {
+        Args: {
+          p_slug: string;
+        };
+        Returns: boolean;
+      };
+      greatest_onboarding_step: {
+        Args: {
+          p_business_id: string;
+          p_step: number;
+        };
+        Returns: undefined;
       };
       get_available_slots: {
         Args: {

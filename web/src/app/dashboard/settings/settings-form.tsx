@@ -6,14 +6,21 @@ import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
 import type { Database } from "@/types/database";
 
-// owner_id is never read here (or displayed anywhere in the dashboard) --
-// the caller passes the safe columns from getCurrentBusiness() plus
+// Only the columns this form actually reads -- owner_id is never
+// displayed anywhere in the dashboard, and whatsapp/instagram/
+// onboarding_step belong to the onboarding wizard, not this screen. The
+// caller passes the safe columns from getCurrentBusiness() plus
 // phone/email fetched separately via get_business_contact(), see
 // settings/page.tsx for why those two can't come from the same query
 // anymore.
-type Business = Omit<
+type Business = Pick<
   Database["public"]["Tables"]["businesses"]["Row"],
-  "owner_id"
+  | "name"
+  | "description"
+  | "phone"
+  | "email"
+  | "timezone"
+  | "is_published"
 >;
 
 export function SettingsForm({ business }: { business: Business }) {

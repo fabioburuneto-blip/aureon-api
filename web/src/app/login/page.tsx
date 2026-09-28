@@ -63,7 +63,7 @@ function LoginForm() {
         <p className="mt-6 text-center text-sm text-zinc-500">
           Ainda não tem uma conta?{" "}
           <Link
-            href="/signup"
+            href="/criar-conta"
             className="font-medium text-zinc-900 hover:underline"
           >
             Criar conta

@@ -34,7 +34,7 @@ export default function Home() {
             >
               Entrar
             </Link>
-            <Link href="/signup">
+            <Link href="/criar-conta">
               <Button>Criar conta grátis</Button>
             </Link>
           </nav>
@@ -52,7 +52,7 @@ export default function Home() {
             um link só seu.
           </p>
           <div className="mt-8 flex items-center justify-center gap-3">
-            <Link href="/signup">
+            <Link href="/criar-conta">
               <Button className="h-12 px-6 text-base">Começar agora</Button>
             </Link>
           </div>

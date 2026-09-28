@@ -35,6 +35,58 @@ describe("createBusinessSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("accepts a payload with no whatsapp/instagram (both optional)", () => {
+    const result = createBusinessSchema.safeParse({
+      name: "Barbearia",
+      slug: "barbearia",
+      segment: "barbershop",
+      timezone: "America/Sao_Paulo",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("normalizes an instagram handle typed with an @", () => {
+    const result = createBusinessSchema.safeParse({
+      name: "Barbearia",
+      slug: "barbearia",
+      segment: "barbershop",
+      timezone: "America/Sao_Paulo",
+      instagram: "@barbearia.oficial",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.instagram).toBe("barbearia.oficial");
+    }
+  });
+
+  it("normalizes a full instagram profile URL down to the handle", () => {
+    const result = createBusinessSchema.safeParse({
+      name: "Barbearia",
+      slug: "barbearia",
+      segment: "barbershop",
+      timezone: "America/Sao_Paulo",
+      instagram: "https://www.instagram.com/barbearia.oficial/",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.instagram).toBe("barbearia.oficial");
+    }
+  });
+
+  it("keeps a whatsapp number as-is", () => {
+    const result = createBusinessSchema.safeParse({
+      name: "Barbearia",
+      slug: "barbearia",
+      segment: "barbershop",
+      timezone: "America/Sao_Paulo",
+      whatsapp: "+55 11 99999-9999",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.whatsapp).toBe("+55 11 99999-9999");
+    }
+  });
 });
 
 describe("serviceSchema", () => {
