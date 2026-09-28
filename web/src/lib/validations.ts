@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { isValidSlug } from "@/lib/slug";
+import { THEME_PRESET_KEYS } from "@/lib/theme-presets";
+import { SECTION_KEYS } from "@/lib/sections";
 
 export const businessSegments = [
   "barbershop",
@@ -105,8 +107,40 @@ export const themeSchema = z.object({
   secondary_color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, "Use um código hexadecimal, ex: #6366f1"),
-  layout: z.enum(["classic", "minimal"]),
 });
+
+export const themePresetSchema = z.object({
+  preset: z.enum(THEME_PRESET_KEYS),
+});
+
+export const businessSocialSchema = z.object({
+  whatsapp: z.string().trim().max(30).optional().or(z.literal("")),
+  instagram: z
+    .string()
+    .trim()
+    .max(60)
+    .optional()
+    .or(z.literal(""))
+    .transform((value) => normalizeInstagramHandle(value)),
+});
+
+export const businessLocationSchema = z.object({
+  address: z.string().trim().max(200).optional().or(z.literal("")),
+  city: z.string().trim().max(120).optional().or(z.literal("")),
+});
+
+export const businessGalleryImageSchema = z.object({
+  url: z.string().trim().max(2048).url(),
+});
+
+const sectionKeySchema = z.enum(SECTION_KEYS);
+
+export const sectionsConfigSchema = z.array(
+  z.object({
+    key: sectionKeySchema,
+    visible: z.boolean(),
+  }),
+);
 
 export const notificationSettingsSchema = z
   .object({

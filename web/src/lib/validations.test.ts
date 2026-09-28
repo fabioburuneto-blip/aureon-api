@@ -3,6 +3,11 @@ import {
   createBusinessSchema,
   serviceSchema,
   publicBookingSchema,
+  themeSchema,
+  themePresetSchema,
+  businessSocialSchema,
+  businessLocationSchema,
+  sectionsConfigSchema,
 } from "./validations";
 
 describe("createBusinessSchema", () => {
@@ -135,5 +140,90 @@ describe("publicBookingSchema", () => {
       customer_phone: "11999999999",
     });
     expect(result.success).toBe(true);
+  });
+});
+
+describe("themeSchema (Etapa 2: no longer takes 'layout')", () => {
+  it("accepts just the two colors", () => {
+    const result = themeSchema.safeParse({
+      primary_color: "#111827",
+      secondary_color: "#6366f1",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-hex color", () => {
+    const result = themeSchema.safeParse({
+      primary_color: "blue",
+      secondary_color: "#6366f1",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("themePresetSchema", () => {
+  it("accepts each of the 5 named presets", () => {
+    for (const preset of ["premium", "moderno", "minimalista", "barbearia", "elegante"]) {
+      expect(themePresetSchema.safeParse({ preset }).success).toBe(true);
+    }
+  });
+
+  it("rejects an unknown preset", () => {
+    expect(themePresetSchema.safeParse({ preset: "cyberpunk" }).success).toBe(false);
+  });
+});
+
+describe("businessSocialSchema", () => {
+  it("normalizes an instagram handle the same way createBusinessSchema does", () => {
+    const result = businessSocialSchema.safeParse({
+      whatsapp: "11999999999",
+      instagram: "@minha.loja",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.instagram).toBe("minha.loja");
+    }
+  });
+
+  it("accepts both fields empty", () => {
+    expect(businessSocialSchema.safeParse({}).success).toBe(true);
+  });
+});
+
+describe("businessLocationSchema", () => {
+  it("accepts address and city", () => {
+    const result = businessLocationSchema.safeParse({
+      address: "Rua Exemplo, 123",
+      city: "São Paulo, SP",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts both fields empty", () => {
+    expect(businessLocationSchema.safeParse({}).success).toBe(true);
+  });
+});
+
+describe("sectionsConfigSchema", () => {
+  it("accepts a valid section list", () => {
+    const result = sectionsConfigSchema.safeParse([
+      { key: "hero", visible: true },
+      { key: "services", visible: false },
+    ]);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an unknown section key", () => {
+    const result = sectionsConfigSchema.safeParse([
+      { key: "not-a-section", visible: true },
+    ]);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a non-boolean visible field", () => {
+    const result = sectionsConfigSchema.safeParse([
+      { key: "hero", visible: "yes" },
+    ]);
+    expect(result.success).toBe(false);
   });
 });

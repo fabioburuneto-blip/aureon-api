@@ -71,9 +71,10 @@ Abra [http://localhost:3000](http://localhost:3000).
   serviços podem ser reordenados, profissionais têm link para ver a própria agenda
 - `/dashboard/customers` — lista com histórico resumido;
   `/dashboard/customers/[id]` é o histórico completo do cliente
-- `/dashboard/hours`, `/dashboard/blocked-times`, `/dashboard/customization`,
-  `/dashboard/settings` — horários, bloqueios, personalização da página
-  pública e configurações da empresa
+- `/dashboard/hours`, `/dashboard/blocked-times`, `/dashboard/personalizacao`,
+  `/dashboard/preview`, `/dashboard/settings` — horários, bloqueios,
+  personalização da página pública (temas, seções, galeria, redes,
+  localização), pré-visualização autenticada e configurações da empresa
 - `/dashboard/plano` — plano atual, status da assinatura e comparação de planos
 - `/{slug-da-empresa}` — página pública de agendamento de cada empresa
 

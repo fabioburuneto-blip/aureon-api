@@ -4,8 +4,8 @@ import { useActionState } from "react";
 import { saveOnboardingAppearance } from "../actions";
 import { Button } from "@/components/ui/button";
 import { Label, Textarea, FieldError } from "@/components/ui/input";
-import { ImageUploader } from "@/app/dashboard/customization/image-uploader";
-import { ThemeForm } from "@/app/dashboard/customization/theme-form";
+import { ImageUploader } from "@/app/dashboard/personalizacao/image-uploader";
+import { ColorsForm } from "@/app/dashboard/personalizacao/colors-form";
 import type { Database } from "@/types/database";
 
 type Business = Pick<
@@ -49,7 +49,7 @@ export function StepAppearance({
           />
         </div>
 
-        {theme && <ThemeForm theme={theme} />}
+        {theme && <ColorsForm theme={theme} />}
 
         <form action={formAction} className="flex flex-col gap-4 border-t border-zinc-100 pt-4">
           <div>

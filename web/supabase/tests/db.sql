@@ -867,5 +867,172 @@ reset role;
 reset request.jwt.claim.sub;
 
 \echo '===================================================================='
+\echo 'PUBLIC PAGE ENGINE (Etapa 2) -- theme preset/sections, gallery, address/city'
+\echo '===================================================================='
+
+-- themes: preset defaults to 'moderno' and sections defaults to all 9,
+-- hero first / footer last, all visible.
+select test.assert(
+  (select preset from themes where business_id = :'a_id') = 'moderno',
+  'a freshly created theme must default to the moderno preset'
+);
+select test.assert(
+  jsonb_array_length((select sections from themes where business_id = :'a_id')) = 9,
+  'a freshly created theme must default to all 9 sections configured'
+);
+select test.assert(
+  (select sections -> 0 ->> 'key' from themes where business_id = :'a_id') = 'hero',
+  'the default sections config must have hero first'
+);
+select test.assert(
+  (select sections -> 8 ->> 'key' from themes where business_id = :'a_id') = 'footer',
+  'the default sections config must have footer last'
+);
+
+-- owner A can set their own preset and sections config; a stranger cannot.
+set role authenticated;
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+update themes set preset = 'barbearia' where business_id = :'a_id';
+update themes set sections = '[
+  {"key": "hero", "visible": true},
+  {"key": "services", "visible": true},
+  {"key": "about", "visible": false},
+  {"key": "team", "visible": true},
+  {"key": "gallery", "visible": true},
+  {"key": "booking", "visible": true},
+  {"key": "location", "visible": true},
+  {"key": "social", "visible": true},
+  {"key": "footer", "visible": true}
+]'::jsonb where business_id = :'a_id';
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select preset from themes where business_id = :'a_id') = 'barbearia',
+  'the owner must be able to change their own theme preset'
+);
+
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+update themes set preset = 'elegante' where business_id = :'a_id';
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select preset from themes where business_id = :'a_id') = 'barbearia',
+  'a different owner must never be able to change business A''s theme preset (RLS)'
+);
+
+-- preset is constrained to the 5 named presets at the database level, not
+-- just by the Zod schema in the app.
+\set ON_ERROR_STOP off
+update themes set preset = 'cyberpunk' where business_id = :'a_id';
+\set ON_ERROR_STOP on
+select test.assert(
+  (select preset from themes where business_id = :'a_id') = 'barbearia',
+  'an invalid preset value must be rejected by the check constraint'
+);
+
+-- business_gallery: owner can add/remove photos on their own business;
+-- another owner can neither add to nor delete from it (RLS), and an
+-- anonymous visitor can read a published business's gallery but not
+-- write to it.
+set role authenticated;
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+insert into business_gallery (business_id, image_url, position)
+values (:'a_id', 'https://example.com/gallery/a1.jpg', 0)
+returning id as ga_id \gset
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select count(*) from business_gallery where business_id = :'a_id') = 1,
+  'the owner must be able to add a photo to their own gallery'
+);
+
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+\set ON_ERROR_STOP off
+insert into business_gallery (business_id, image_url, position)
+values (:'a_id', 'https://evil.example.com/x.jpg', 1);
+\set ON_ERROR_STOP on
+select test.assert(
+  (select count(*) from business_gallery where business_id = :'a_id') = 1,
+  'a different owner must never be able to insert a photo into business A''s gallery (cross-tenant)'
+);
+delete from business_gallery where id = :'ga_id';
+select test.assert(
+  (select count(*) from business_gallery where id = :'ga_id') = 1,
+  'a different owner must never be able to delete business A''s gallery photo (cross-tenant)'
+);
+reset role;
+reset request.jwt.claim.sub;
+
+set role anon;
+select test.assert(
+  (select count(*) from business_gallery where business_id = :'a_id') = 1,
+  'anon must be able to read a published business''s gallery'
+);
+\set ON_ERROR_STOP off
+insert into business_gallery (business_id, image_url) values (:'a_id', 'https://x/y.jpg');
+\set ON_ERROR_STOP on
+select test.assert(
+  (select count(*) from business_gallery where business_id = :'a_id') = 1,
+  'anon must never be able to write to any business''s gallery'
+);
+reset role;
+
+-- Unpublish A and confirm its gallery becomes invisible to anon (same
+-- "unpublished == doesn't exist" rule as businesses/services/themes).
+update businesses set is_published = false where id = :'a_id';
+set role anon;
+select test.assert(
+  (select count(*) from business_gallery where business_id = :'a_id') = 0,
+  'anon must not see a gallery photo of an unpublished business'
+);
+reset role;
+-- The owner can still see it (needed for /dashboard/preview before first publish).
+set role authenticated;
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+select test.assert(
+  (select count(*) from business_gallery where business_id = :'a_id') = 1,
+  'the owner must still see their own gallery even while unpublished'
+);
+reset role;
+reset request.jwt.claim.sub;
+update businesses set is_published = true where id = :'a_id';
+
+delete from business_gallery where business_id = :'a_id';
+
+-- businesses.address/city: readable by anon/authenticated (public-facing,
+-- like whatsapp/instagram), owner_id/phone/email still excluded from both.
+update businesses set address = 'Rua Teste, 100', city = 'São Paulo' where id = :'a_id';
+set role anon;
+select test.assert(
+  (select address from businesses where id = :'a_id') = 'Rua Teste, 100',
+  'anon must be able to read address (public-facing storefront field)'
+);
+select test.assert(
+  (select city from businesses where id = :'a_id') = 'São Paulo',
+  'anon must be able to read city (public-facing storefront field)'
+);
+\set ON_ERROR_STOP off
+select owner_id from businesses where id = :'a_id';
+\set ON_ERROR_STOP on
+\set ON_ERROR_STOP off
+select phone from businesses where id = :'a_id';
+\set ON_ERROR_STOP on
+reset role;
+
+set role authenticated;
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+select test.assert(
+  (select address from businesses where id = :'a_id') = 'Rua Teste, 100',
+  'authenticated must be able to read address on their own business'
+);
+\set ON_ERROR_STOP off
+select owner_id from businesses where id = :'a_id';
+\set ON_ERROR_STOP on
+reset role;
+reset request.jwt.claim.sub;
+
+\echo '===================================================================='
 \echo 'ALL ASSERTIONS PASSED'
 \echo '===================================================================='

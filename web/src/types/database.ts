@@ -28,6 +28,31 @@ export type AppointmentStatus =
 
 export type ThemeLayout = "classic" | "minimal";
 
+// Kept in sync with src/lib/theme-presets.ts THEME_PRESET_KEYS.
+export type ThemePreset =
+  | "premium"
+  | "moderno"
+  | "minimalista"
+  | "barbearia"
+  | "elegante";
+
+// Kept in sync with src/lib/sections.ts SECTION_KEYS.
+export type PublicPageSectionKey =
+  | "hero"
+  | "about"
+  | "services"
+  | "team"
+  | "gallery"
+  | "booking"
+  | "location"
+  | "social"
+  | "footer";
+
+export interface PublicPageSectionConfig {
+  key: PublicPageSectionKey;
+  visible: boolean;
+}
+
 // Kept in sync with src/lib/plans/config.ts PLAN_IDS -- plan_id is plain
 // text in the database (see supabase/migrations/20250924120008_billing.sql
 // for why), this alias just gives the app a typed view of it.
@@ -84,6 +109,8 @@ export interface Database {
           is_published: boolean;
           whatsapp: string | null;
           instagram: string | null;
+          address: string | null;
+          city: string | null;
           onboarding_step: number;
           created_at: string;
           updated_at: string;
@@ -102,6 +129,8 @@ export interface Database {
             | "is_published"
             | "whatsapp"
             | "instagram"
+            | "address"
+            | "city"
             | "onboarding_step"
           >
         >;
@@ -373,6 +402,8 @@ export interface Database {
           secondary_color: string;
           font: string;
           layout: ThemeLayout;
+          preset: ThemePreset;
+          sections: PublicPageSectionConfig[];
           created_at: string;
           updated_at: string;
         };
@@ -380,7 +411,32 @@ export interface Database {
         Update: Partial<
           Pick<
             Database["public"]["Tables"]["themes"]["Row"],
-            "primary_color" | "secondary_color" | "font" | "layout"
+            | "primary_color"
+            | "secondary_color"
+            | "font"
+            | "layout"
+            | "preset"
+            | "sections"
+          >
+        >;
+        Relationships: [];
+      };
+      business_gallery: {
+        Row: {
+          id: string;
+          business_id: string;
+          image_url: string;
+          position: number;
+          created_at: string;
+        };
+        Insert: Omit<
+          Database["public"]["Tables"]["business_gallery"]["Row"],
+          "id" | "created_at"
+        >;
+        Update: Partial<
+          Pick<
+            Database["public"]["Tables"]["business_gallery"]["Row"],
+            "image_url" | "position"
           >
         >;
         Relationships: [];

@@ -26,7 +26,8 @@ src/app/
 │   ├── customers/               # lista com histórico resumido + [id]/ detalhe
 │   ├── hours/                    # horário de funcionamento (semanal)
 │   ├── blocked-times/             # bloqueios/folgas
-│   ├── customization/              # logo, capa, cores, layout
+│   ├── personalizacao/             # identidade, cores, tema, galeria, redes, seções
+│   ├── preview/                     # pré-visualização autenticada da página pública
 │   ├── notifications/               # histórico de notificações in-app
 │   ├── plano/                        # plano atual, status, comparação de planos
 │   └── settings/                      # dados da empresa, publicação, notificações
@@ -93,8 +94,8 @@ Supabase Auth (email + senha, com confirmação por email). O fluxo:
    - **Serviços**: sugestões pré-preenchidas por segmento
      (`src/lib/onboarding-suggestions.ts`), totalmente editáveis.
    - **Horários**: mesmo formulário/validação de `/dashboard/hours`.
-   - **Aparência**: logo, capa e tema reaproveitam os componentes de
-     `/dashboard/customization`; descrição é salva à parte.
+   - **Aparência**: logo, capa e cores reaproveitam os componentes de
+     `/dashboard/personalizacao`; descrição é salva à parte.
    - **Publicar**: define `is_published = true` e mostra o link público
      com opção de copiar/visualizar/ir para o painel.
    - O progresso fica em `businesses.onboarding_step` (nunca regride,
@@ -114,6 +115,47 @@ agendamento chama diretamente, do navegador, as RPCs públicas
 empresa do slug, respeitar horários/bloqueios/antecedência mínima, impedir
 overbooking) é resolvido no Postgres, nunca confiando em nada que o cliente
 tenha enviado além do slug + ids escolhidos na UI.
+
+## Motor de página pública (temas e seções)
+
+`/[slug]` não é mais um layout fixo: é um pipeline
+`PublicPageRenderer → ThemeProvider → SectionRenderer → {HeroSection,
+AboutSection, ServicesSection, TeamSection, GallerySection, BookingSection,
+LocationSection, SocialSection, FooterSection}`, em
+[`src/app/[slug]/renderer/`](../src/app/[slug]/renderer/). O mesmo
+`PublicPageRenderer` é usado, sem duplicar nenhum HTML, por `/[slug]/page.tsx`
+(visitante real) e por `/dashboard/preview` (dono autenticado) — os dois só
+diferem em como buscam os dados (`getBusinessPageData()` público vs.
+`getCurrentBusiness()`) e se passam `previewMode`.
+
+- **Temas**: `themes.preset` (`premium`/`moderno`/`minimalista`/`barbearia`/
+  `elegante`) seleciona um conjunto de tokens em
+  [`src/lib/theme-presets.ts`](../src/lib/theme-presets.ts) — fonte
+  (`font-serif`/`font-sans`, só famílias do sistema já embutidas no
+  Tailwind, nenhuma fonte é buscada de fora), peso/tracking do título,
+  raio de borda, estilo de card/botão, densidade e composição do hero
+  (`overlay`/`split`/`centered`/`bold`/`soft`). Cada seção lê esses tokens
+  em vez de ter estilo fixo — é um sistema de tokens compartilhado, não 5
+  páginas paralelas. `primary_color`/`secondary_color` continuam por
+  empresa, aplicados como CSS custom properties (`--brand-primary`/
+  `--brand-secondary`) pelo `ThemeProvider`.
+- **Seções**: `themes.sections` (jsonb) guarda a ordem e visibilidade das 9
+  seções. [`src/lib/sections.ts`](../src/lib/sections.ts) é a única fonte
+  de verdade de quais seções existem; `normalizeSectionsConfig()` nunca
+  confia no formato armazenado — revalida, preenche o que faltar e sempre
+  fixa `hero` primeiro, `footer` por último e `booking` visível,
+  independente do que está salvo. É chamada tanto antes de salvar
+  (`/dashboard/personalizacao`) quanto na renderização (defesa em
+  profundidade).
+- **Galeria**: `business_gallery` (nova tabela) guarda fotos extras,
+  reaproveitando o bucket `business-assets` e as policies de storage já
+  existentes (path `{business_id}/...`) — sem nenhuma migration de storage
+  nova.
+- **Agendamento**: a seção `BookingSection` só embrulha o `BookingWidget`
+  existente — nenhuma lógica de disponibilidade/criação de agendamento foi
+  duplicada ou alterada. `/dashboard/preview` passa `previewMode`, que faz
+  o formulário nunca chamar `create_public_appointment` (mostra a tela de
+  "confirmado" sem nenhuma escrita real).
 
 ## Subdomínios
 

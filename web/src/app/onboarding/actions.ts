@@ -136,8 +136,8 @@ export async function saveOnboardingHours(
   return result;
 }
 
-/** Step 4 -- only the description is unique to this step; logo/capa/tema
- * already have their own dedicated forms (ImageUploader, ThemeForm) that
+/** Step 4 -- only the description is unique to this step; logo/capa/cores
+ * already have their own dedicated forms (ImageUploader, ColorsForm) that
  * this step embeds and reuses as-is. "Continuar" just advances -- nothing
  * here is required. */
 const appearanceSchema = z.object({

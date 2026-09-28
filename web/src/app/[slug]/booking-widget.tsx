@@ -29,6 +29,7 @@ export function BookingWidget({
   professionals,
   servicesByProfessional,
   primaryColor,
+  previewMode = false,
 }: {
   businessSlug: string;
   timezone: string;
@@ -36,6 +37,12 @@ export function BookingWidget({
   professionals: Professional[];
   servicesByProfessional: Map<string, string[]>;
   primaryColor: string;
+  /** Only set by /dashboard/preview -- renders the exact same widget UI
+   * (including real available slots, since reading them is harmless) but
+   * BookingDetailsForm never calls create_public_appointment while this
+   * is true. Defaults to false, so the real public page's behavior is
+   * byte-for-byte what it was before Etapa 2. */
+  previewMode?: boolean;
 }) {
   const [serviceId, setServiceId] = useState("");
   const [professionalId, setProfessionalId] = useState("");
@@ -88,13 +95,15 @@ export function BookingWidget({
     return (
       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6">
         <h3 className="font-medium text-emerald-900">
-          Agendamento confirmado!
+          {previewMode ? "Pré-visualização do agendamento" : "Agendamento confirmado!"}
         </h3>
         <p className="mt-2 text-sm text-emerald-800">
           {formatDateTime(confirmed.slot_start, timezone)}
         </p>
         <p className="mt-1 text-sm text-emerald-700">
-          Você receberá a confirmação diretamente com a empresa.
+          {previewMode
+            ? "Nenhum agendamento real foi criado -- isto é só uma prévia de como a confirmação aparece para o cliente."
+            : "Você receberá a confirmação diretamente com a empresa."}
         </p>
       </div>
     );
@@ -210,6 +219,7 @@ export function BookingWidget({
             error={error}
             setError={setError}
             onSuccess={() => setConfirmed(selectedSlot)}
+            previewMode={previewMode}
           />
         )}
       </div>
@@ -227,6 +237,7 @@ function BookingDetailsForm({
   error,
   setError,
   onSuccess,
+  previewMode = false,
 }: {
   businessSlug: string;
   serviceId: string;
@@ -237,6 +248,7 @@ function BookingDetailsForm({
   error: string | null;
   setError: (v: string | null) => void;
   onSuccess: () => void;
+  previewMode?: boolean;
 }) {
   async function handleSubmit(formData: FormData) {
     setError(null);
@@ -253,6 +265,17 @@ function BookingDetailsForm({
 
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? "Dados inválidos");
+      return;
+    }
+
+    // Preview mode never calls create_public_appointment -- the form is
+    // fully validated (so the "confirmed" screen looks the same), but no
+    // row is ever inserted, no notification fires, no customer is
+    // created. This is enforced here in the client, not just by relying
+    // on the owner not clicking "confirm" -- there is no code path from
+    // previewMode=true to the RPC call at all.
+    if (previewMode) {
+      onSuccess();
       return;
     }
 
@@ -290,6 +313,11 @@ function BookingDetailsForm({
       action={handleSubmit}
       className="flex flex-col gap-3 border-t border-zinc-100 pt-4"
     >
+      {previewMode && (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+          Modo de visualização: nenhum agendamento real será criado.
+        </p>
+      )}
       <div>
         <Label htmlFor="customer_name">Seu nome</Label>
         <Input id="customer_name" name="customer_name" required />
