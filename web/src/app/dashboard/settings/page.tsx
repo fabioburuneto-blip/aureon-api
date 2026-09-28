@@ -6,11 +6,25 @@ import { NotificationSettingsForm } from "./notification-settings-form";
 export default async function SettingsPage() {
   const { supabase, business, role } = await getCurrentBusiness();
 
-  const { data: settings } = await supabase
-    .from("business_settings")
-    .select("*")
-    .eq("business_id", business.id)
-    .single();
+  // phone/email are no longer part of the businesses SELECT grant for
+  // authenticated (see supabase/migrations/
+  // 20250924120010_fix_businesses_authenticated_grant.sql) -- fetched
+  // separately here, authorization-checked per business_id inside the
+  // function itself instead of relying on a column grant.
+  const [{ data: settings }, { data: contact }] = await Promise.all([
+    supabase
+      .from("business_settings")
+      .select("*")
+      .eq("business_id", business.id)
+      .single(),
+    supabase.rpc("get_business_contact", { p_business_id: business.id }),
+  ]);
+
+  const businessWithContact = {
+    ...business,
+    phone: contact?.[0]?.phone ?? null,
+    email: contact?.[0]?.email ?? null,
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -23,7 +37,7 @@ export default async function SettingsPage() {
 
       <Card>
         {role === "owner" ? (
-          <SettingsForm business={business} />
+          <SettingsForm business={businessWithContact} />
         ) : (
           <p className="text-sm text-zinc-500">
             Apenas o proprietário pode alterar as configurações da empresa.

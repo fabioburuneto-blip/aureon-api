@@ -506,6 +506,19 @@ export interface Database {
         };
         Returns: Database["public"]["Tables"]["appointments"]["Row"];
       };
+      reschedule_appointment: {
+        Args: {
+          p_appointment_id: string;
+          p_starts_at: string;
+        };
+        Returns: Database["public"]["Tables"]["appointments"]["Row"];
+      };
+      get_business_contact: {
+        Args: {
+          p_business_id: string;
+        };
+        Returns: { phone: string | null; email: string | null }[];
+      };
     };
   };
 }

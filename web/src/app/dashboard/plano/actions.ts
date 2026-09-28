@@ -14,8 +14,16 @@ export async function startCheckoutAction(formData: FormData) {
     return;
   }
 
-  const { user, business, role } = await getCurrentBusiness();
+  const { supabase, user, business, role } = await getCurrentBusiness();
   requireOwner(role);
+
+  // business.email is no longer part of the businesses SELECT grant for
+  // authenticated (see supabase/migrations/
+  // 20250924120010_fix_businesses_authenticated_grant.sql) -- fetched
+  // separately here, same as settings/page.tsx.
+  const { data: contact } = await supabase.rpc("get_business_contact", {
+    p_business_id: business.id,
+  });
 
   const provider = getBillingProvider();
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
@@ -25,7 +33,7 @@ export async function startCheckoutAction(formData: FormData) {
     result = await provider.createCheckoutSession({
       businessId: business.id,
       planId,
-      customerEmail: business.email ?? user.email ?? "",
+      customerEmail: contact?.[0]?.email ?? user.email ?? "",
       customerName: business.name,
       returnUrl: `${siteUrl}/dashboard/plano`,
     });

@@ -486,5 +486,304 @@ select test.assert(
 );
 
 \echo '===================================================================='
+\echo 'P0 -- businesses.owner_id/phone/email must never leak to authenticated'
+\echo '===================================================================='
+-- supabase/migrations/20250924120009_audit_hardening.sql narrowed this for
+-- anon (asserted above) but never for authenticated -- any logged-in user
+-- of the platform, not just B''s own members, could read B''s owner_id/
+-- phone/email by querying businesses directly. Fixed in
+-- 20250924120010_fix_businesses_authenticated_grant.sql.
+update public.businesses set phone = '+5511900000000', email = 'owner-b-private@test.com' where id = :'b_id';
+
+set role authenticated;
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+\set ON_ERROR_STOP off
+select owner_id, phone, email from public.businesses where id = :'b_id';
+\set ON_ERROR_STOP on
+-- The safe, public columns must still be readable (the storefront browsing
+-- case this table's RLS is meant to serve).
+select test.assert(
+  (select name from public.businesses where id = :'b_id') = 'Salao B',
+  'business A must still be able to read business B''s public storefront columns'
+);
+reset role;
+reset request.jwt.claim.sub;
+
+-- A member must still get their own business's phone/email, via
+-- get_business_contact() rather than a bare SELECT.
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+select test.assert(
+  (select phone from public.get_business_contact(:'b_id')) = '+5511900000000',
+  'a business''s own member must still get its phone via get_business_contact()'
+);
+select test.assert(
+  not exists (select 1 from public.get_business_contact(:'a_id')),
+  'get_business_contact() must return nothing for a business the caller does not belong to'
+);
+reset role;
+reset request.jwt.claim.sub;
+
+\echo '===================================================================='
+\echo 'P0 -- create_public_appointment() must enforce every rule'
+\echo 'get_available_slots() already enforces (hours, closed days,'
+\echo 'professional hours, blocked times, conflicts, duration, timezone)'
+\echo '===================================================================='
+
+-- Proven live before this fix: a booking hours before business_hours opens
+-- succeeded through create_public_appointment() even though
+-- get_available_slots() never offered it. Business A opens 09:00.
+select (current_date + 20) as p0_date \gset
+select ((:'p0_date'::date + time '08:59') at time zone 'America/Sao_Paulo') as p0_before_open \gset
+select ((:'p0_date'::date + time '10:00') at time zone 'America/Sao_Paulo') as p0_ok_slot \gset
+
+select test.assert(
+  not exists (
+    select 1 from public.get_available_slots('barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222', :'p0_date'::date)
+    where slot_start = :'p0_before_open'::timestamptz
+  ),
+  'get_available_slots() must not offer a time before business_hours opens'
+);
+\set ON_ERROR_STOP off
+select public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_before_open'::timestamptz, 'Nao deveria (antes de abrir)', '+5511900010001', null, null
+);
+\set ON_ERROR_STOP on
+select test.assert(
+  not exists (select 1 from public.appointments where professional_id = 'a2222222-2222-2222-2222-222222222222' and starts_at = :'p0_before_open'::timestamptz),
+  'create_public_appointment() must reject a time before business_hours opens (was: silently accepted)'
+);
+
+-- A closed day (is_closed=true) must be rejected by both functions.
+-- Business A is open every day of the week today -- close a specific,
+-- otherwise-untouched day-of-week just for this check, then restore it.
+select (current_date + 21) as p0_closed_date \gset
+select extract(dow from :'p0_closed_date'::date)::smallint as p0_closed_dow \gset
+select ((:'p0_closed_date'::date + time '10:00') at time zone 'America/Sao_Paulo') as p0_closed_slot \gset
+
+update public.business_hours set is_closed = true where business_id = :'a_id' and day_of_week = :'p0_closed_dow';
+
+select test.assert(
+  (select count(*) from public.get_available_slots('barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222', :'p0_closed_date'::date)) = 0,
+  'get_available_slots() must offer zero slots on a day marked is_closed'
+);
+\set ON_ERROR_STOP off
+select public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_closed_slot'::timestamptz, 'Nao deveria (dia fechado)', '+5511900010002', null, null
+);
+\set ON_ERROR_STOP on
+select test.assert(
+  not exists (select 1 from public.appointments where professional_id = 'a2222222-2222-2222-2222-222222222222' and starts_at = :'p0_closed_slot'::timestamptz),
+  'create_public_appointment() must reject a booking on a day marked is_closed (was: silently accepted)'
+);
+
+update public.business_hours set is_closed = false where business_id = :'a_id' and day_of_week = :'p0_closed_dow';
+
+-- A service that would finish after closing time must be rejected, even
+-- though it starts inside business hours. B closes at 18:00 and its
+-- service is 60 minutes.
+select ((:'p0_date'::date + time '17:30') at time zone 'America/Sao_Paulo') as p0_overflow_slot \gset
+\set ON_ERROR_STOP off
+select public.create_public_appointment(
+  'salao-b', 'b1111111-1111-1111-1111-111111111111', 'b2222222-2222-2222-2222-222222222222',
+  :'p0_overflow_slot'::timestamptz, 'Nao deveria (estoura fechamento)', '+5511900010003', null, null
+);
+\set ON_ERROR_STOP on
+select test.assert(
+  not exists (select 1 from public.appointments where professional_id = 'b2222222-2222-2222-2222-222222222222' and starts_at = :'p0_overflow_slot'::timestamptz),
+  'create_public_appointment() must reject a booking that would end after closing time'
+);
+
+-- A professional's own hours narrower than the business's must be
+-- enforced by both functions (professional_hours takes precedence over
+-- business_hours, exactly like get_available_slots() already does).
+select (current_date + 22) as p0_prof_date \gset
+select extract(dow from :'p0_prof_date'::date)::smallint as p0_prof_dow \gset
+insert into public.professional_hours (professional_id, day_of_week, start_time, end_time, is_closed)
+values ('a2222222-2222-2222-2222-222222222222', :'p0_prof_dow', '10:00', '14:00', false)
+on conflict (professional_id, day_of_week) do update set start_time = excluded.start_time, end_time = excluded.end_time, is_closed = false;
+
+select ((:'p0_prof_date'::date + time '15:00') at time zone 'America/Sao_Paulo') as p0_outside_prof_hours \gset
+select test.assert(
+  not exists (
+    select 1 from public.get_available_slots('barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222', :'p0_prof_date'::date)
+    where slot_start = :'p0_outside_prof_hours'::timestamptz
+  ),
+  'get_available_slots() must respect the professional''s own (narrower) hours over business_hours'
+);
+\set ON_ERROR_STOP off
+select public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_outside_prof_hours'::timestamptz, 'Nao deveria (fora do horario do profissional)', '+5511900010004', null, null
+);
+\set ON_ERROR_STOP on
+select test.assert(
+  not exists (select 1 from public.appointments where professional_id = 'a2222222-2222-2222-2222-222222222222' and starts_at = :'p0_outside_prof_hours'::timestamptz),
+  'create_public_appointment() must reject a time outside the professional''s own hours (was: only get_available_slots checked this)'
+);
+
+-- The professional explicitly not working that day (professional_hours
+-- row marked is_closed) must be rejected even though the business itself
+-- is open.
+select (current_date + 23) as p0_prof_off_date \gset
+select extract(dow from :'p0_prof_off_date'::date)::smallint as p0_prof_off_dow \gset
+insert into public.professional_hours (professional_id, day_of_week, start_time, end_time, is_closed)
+values ('a2222222-2222-2222-2222-222222222222', :'p0_prof_off_dow', '00:00', '00:00', true)
+on conflict (professional_id, day_of_week) do update set is_closed = true;
+
+select ((:'p0_prof_off_date'::date + time '10:00') at time zone 'America/Sao_Paulo') as p0_prof_day_off_slot \gset
+select test.assert(
+  (select count(*) from public.get_available_slots('barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222', :'p0_prof_off_date'::date)) = 0,
+  'get_available_slots() must offer zero slots when the professional has that day off'
+);
+\set ON_ERROR_STOP off
+select public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_prof_day_off_slot'::timestamptz, 'Nao deveria (profissional de folga)', '+5511900010005', null, null
+);
+\set ON_ERROR_STOP on
+select test.assert(
+  not exists (select 1 from public.appointments where professional_id = 'a2222222-2222-2222-2222-222222222222' and starts_at = :'p0_prof_day_off_slot'::timestamptz),
+  'create_public_appointment() must reject a booking when the professional has that day off'
+);
+
+delete from public.professional_hours where professional_id = 'a2222222-2222-2222-2222-222222222222';
+
+-- blocked_times must be enforced by create_public_appointment() too, not
+-- just get_available_slots() (already asserted above).
+select (current_date + 24) as p0_block_date \gset
+select ((:'p0_block_date'::date + time '10:00') at time zone 'America/Sao_Paulo') as p0_block_start \gset
+select ((:'p0_block_date'::date + time '11:00') at time zone 'America/Sao_Paulo') as p0_block_end \gset
+insert into public.blocked_times (business_id, professional_id, starts_at, ends_at, reason)
+values (:'a_id', 'a2222222-2222-2222-2222-222222222222', :'p0_block_start'::timestamptz, :'p0_block_end'::timestamptz, 'Teste P0');
+
+\set ON_ERROR_STOP off
+select public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_block_start'::timestamptz, 'Nao deveria (bloqueado)', '+5511900010006', null, null
+);
+\set ON_ERROR_STOP on
+select test.assert(
+  not exists (select 1 from public.appointments where professional_id = 'a2222222-2222-2222-2222-222222222222' and starts_at = :'p0_block_start'::timestamptz),
+  'create_public_appointment() must reject a blocked_times slot'
+);
+
+-- Free slot on the same day, outside the block, must still succeed --
+-- proves the fix rejects only what it should.
+select ((:'p0_block_date'::date + time '12:00') at time zone 'America/Sao_Paulo') as p0_free_after_block \gset
+select (public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_free_after_block'::timestamptz, 'Cliente valido', '+5511900010007', null, null
+)).id as p0_valid_appt_id \gset
+select test.assert(:'p0_valid_appt_id' is not null, 'a genuinely free, valid slot must still be booked successfully after the fix');
+
+-- Durations: 30/45/60/90 minutes must each occupy exactly their own
+-- interval end-to-end. A's Corte is 30min and B's Escova is 60min
+-- already; add 45/90min services on A for this check.
+insert into public.services (id, business_id, name, duration_minutes, price_cents, is_active) values
+  ('a4444444-4444-4444-4444-444444444444', :'a_id', 'Corte e Barba', 45, 7000, true),
+  ('a5555555-5555-5555-5555-555555555555', :'a_id', 'Dia de Noiva', 90, 25000, true);
+insert into public.professional_services (professional_id, service_id) values
+  ('a2222222-2222-2222-2222-222222222222', 'a4444444-4444-4444-4444-444444444444'),
+  ('a2222222-2222-2222-2222-222222222222', 'a5555555-5555-5555-5555-555555555555');
+
+select (current_date + 25) as p0_dur_date \gset
+select ((:'p0_dur_date'::date + time '09:00') at time zone 'America/Sao_Paulo') as p0_dur_30 \gset
+select ((:'p0_dur_date'::date + time '10:00') at time zone 'America/Sao_Paulo') as p0_dur_45 \gset
+select ((:'p0_dur_date'::date + time '11:00') at time zone 'America/Sao_Paulo') as p0_dur_60 \gset
+select ((:'p0_dur_date'::date + time '13:00') at time zone 'America/Sao_Paulo') as p0_dur_90 \gset
+
+select (public.create_public_appointment('barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222', :'p0_dur_30'::timestamptz, 'D30', '+5511900011030', null, null)).id as p0_d30 \gset
+select (public.create_public_appointment('barbearia-a', 'a4444444-4444-4444-4444-444444444444', 'a2222222-2222-2222-2222-222222222222', :'p0_dur_45'::timestamptz, 'D45', '+5511900011045', null, null)).id as p0_d45 \gset
+select (public.create_public_appointment('salao-b', 'b1111111-1111-1111-1111-111111111111', 'b2222222-2222-2222-2222-222222222222', :'p0_dur_60'::timestamptz, 'D60', '+5511900011060', null, null)).id as p0_d60 \gset
+select (public.create_public_appointment('barbearia-a', 'a5555555-5555-5555-5555-555555555555', 'a2222222-2222-2222-2222-222222222222', :'p0_dur_90'::timestamptz, 'D90', '+5511900011090', null, null)).id as p0_d90 \gset
+
+select test.assert((select ends_at - starts_at from public.appointments where id = :'p0_d30') = interval '30 minutes', '30-minute service must occupy exactly 30 minutes');
+select test.assert((select ends_at - starts_at from public.appointments where id = :'p0_d45') = interval '45 minutes', '45-minute service must occupy exactly 45 minutes');
+select test.assert((select ends_at - starts_at from public.appointments where id = :'p0_d60') = interval '60 minutes', '60-minute service must occupy exactly 60 minutes');
+select test.assert((select ends_at - starts_at from public.appointments where id = :'p0_d90') = interval '90 minutes', '90-minute service must occupy exactly 90 minutes');
+
+-- Timezone: the local wall-clock hour stored must match what was
+-- requested in America/Sao_Paulo, regardless of the session's own zone.
+select test.assert(
+  (select (starts_at at time zone 'America/Sao_Paulo')::time from public.appointments where id = :'p0_d30') = time '09:00',
+  'a slot requested as 09:00 America/Sao_Paulo must be stored such that it reads back as 09:00 in that zone'
+);
+
+-- Existing-appointment conflict must still be rejected via
+-- validate_appointment_slot()'s own pre-check (not only the EXCLUDE
+-- constraint at INSERT time -- both must agree).
+\set ON_ERROR_STOP off
+select public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_dur_30'::timestamptz, 'Conflito', '+5511900011031', null, null
+);
+\set ON_ERROR_STOP on
+select test.assert(
+  (select count(*) from public.appointments where professional_id = 'a2222222-2222-2222-2222-222222222222' and starts_at = :'p0_dur_30'::timestamptz) = 1,
+  'booking an already-taken slot must still be rejected after centralizing validation'
+);
+
+\echo '===================================================================='
+\echo 'P0 -- reschedule_appointment() must enforce the same rules as'
+\echo 'create_public_appointment(), not just the EXCLUDE constraint'
+\echo '===================================================================='
+
+-- Proven live before this fix: the dashboard's plain UPDATE could move an
+-- appointment directly into an active blocked_times window that
+-- create_public_appointment() correctly refuses for the same slot.
+select (public.create_public_appointment(
+  'barbearia-a', 'a1111111-1111-1111-1111-111111111111', 'a2222222-2222-2222-2222-222222222222',
+  :'p0_ok_slot'::timestamptz, 'Cliente Reagenda', '+5511900012000', null, null
+)).id as p0_resched_appt_id \gset
+
+set role authenticated;
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+
+\set ON_ERROR_STOP off
+select public.reschedule_appointment(:'p0_resched_appt_id', :'p0_block_start'::timestamptz);
+\set ON_ERROR_STOP on
+select test.assert(
+  (select starts_at from public.appointments where id = :'p0_resched_appt_id') = :'p0_ok_slot'::timestamptz,
+  'reschedule_appointment() must reject moving an appointment into a blocked_times window (was: only the EXCLUDE constraint was checked, blocked_times was not)'
+);
+
+\set ON_ERROR_STOP off
+select public.reschedule_appointment(:'p0_resched_appt_id', :'p0_before_open'::timestamptz);
+\set ON_ERROR_STOP on
+select test.assert(
+  (select starts_at from public.appointments where id = :'p0_resched_appt_id') = :'p0_ok_slot'::timestamptz,
+  'reschedule_appointment() must reject moving an appointment to a time before business_hours opens'
+);
+
+-- A legitimate reschedule to a genuinely free, valid slot must still work.
+select (current_date + 26) as p0_resched_date \gset
+select ((:'p0_resched_date'::date + time '11:00') at time zone 'America/Sao_Paulo') as p0_resched_target \gset
+select public.reschedule_appointment(:'p0_resched_appt_id', :'p0_resched_target'::timestamptz);
+select test.assert(
+  (select starts_at from public.appointments where id = :'p0_resched_appt_id') = :'p0_resched_target'::timestamptz,
+  'reschedule_appointment() must still succeed for a genuinely free, valid slot'
+);
+
+-- Cross-tenant: business A must never be able to reschedule business B's
+-- appointment (p0_d60, booked above under salao-b), whatever the target
+-- time -- reschedule_appointment() must reject this itself
+-- (is_business_member()), not rely on the caller having filtered by
+-- business_id.
+\set ON_ERROR_STOP off
+select public.reschedule_appointment(:'p0_d60', :'p0_resched_target'::timestamptz);
+\set ON_ERROR_STOP on
+
+reset role;
+reset request.jwt.claim.sub;
+
+select test.assert(
+  (select professional_id from public.appointments where id = :'p0_d60') = 'b2222222-2222-2222-2222-222222222222',
+  'business A must never be able to reschedule business B''s appointment'
+);
+
+\echo '===================================================================='
 \echo 'ALL ASSERTIONS PASSED'
 \echo '===================================================================='

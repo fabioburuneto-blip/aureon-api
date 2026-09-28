@@ -6,7 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
 import type { Database } from "@/types/database";
 
-type Business = Database["public"]["Tables"]["businesses"]["Row"];
+// owner_id is never read here (or displayed anywhere in the dashboard) --
+// the caller passes the safe columns from getCurrentBusiness() plus
+// phone/email fetched separately via get_business_contact(), see
+// settings/page.tsx for why those two can't come from the same query
+// anymore.
+type Business = Omit<
+  Database["public"]["Tables"]["businesses"]["Row"],
+  "owner_id"
+>;
 
 export function SettingsForm({ business }: { business: Business }) {
   const [state, formAction, pending] = useActionState<

@@ -3,7 +3,33 @@ import { cache } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { logError } from "@/lib/logger";
-import type { MemberRole } from "@/types/database";
+import type { Database, MemberRole } from "@/types/database";
+
+// The exact column subset `authenticated` has SELECT grant on (see
+// supabase/migrations/20250924120010_fix_businesses_authenticated_grant.sql)
+// -- owner_id/phone/email are never readable this way, even for a member of
+// the business itself, because a column grant can't be conditioned on
+// "whose business is this". A member's own phone/email come from
+// get_business_contact() instead (see settings/page.tsx). Typed explicitly
+// so adding business.phone/business.email back here later is a compile
+// error, not a silent runtime "permission denied for table businesses".
+type MemberBusinessRow = Pick<
+  Database["public"]["Tables"]["businesses"]["Row"],
+  | "id"
+  | "name"
+  | "slug"
+  | "segment"
+  | "description"
+  | "timezone"
+  | "logo_url"
+  | "cover_url"
+  | "is_published"
+  | "created_at"
+  | "updated_at"
+>;
+
+const BUSINESS_COLUMNS =
+  "id, name, slug, segment, description, timezone, logo_url, cover_url, is_published, created_at, updated_at";
 
 /**
  * Server-side guards for dashboard routes and server actions. These never
@@ -45,8 +71,9 @@ export async function requireBusinessAccess(
 
   const { data: business, error: businessError } = await supabase
     .from("businesses")
-    .select("*")
+    .select(BUSINESS_COLUMNS)
     .eq("slug", businessSlug)
+    .returns<MemberBusinessRow[]>()
     .maybeSingle();
 
   if (businessError || !business) {
@@ -102,8 +129,9 @@ export const getCurrentBusiness = cache(async () => {
 
   const { data: business, error: businessError } = await supabase
     .from("businesses")
-    .select("*")
+    .select(BUSINESS_COLUMNS)
     .eq("id", membership.business_id)
+    .returns<MemberBusinessRow[]>()
     .single();
 
   if (businessError) {

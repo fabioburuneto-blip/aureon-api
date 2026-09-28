@@ -6,6 +6,16 @@ import { getCurrentBusiness } from "@/lib/auth";
 import { zonedDateTimeToUtcISO } from "@/lib/date-utils";
 import { logError } from "@/lib/logger";
 
+/** Postgres error codes raised by reschedule_appointment() (see
+ * supabase/migrations/20250924120011_centralize_appointment_validation.sql)
+ * mapped to messages a business owner can act on. */
+const RESCHEDULE_ERROR_MESSAGES: Record<string, string> = {
+  "23P01": "Esse horário conflita com outro agendamento deste profissional.",
+  P0001:
+    "Esse horário não está disponível (fora do expediente ou bloqueado).",
+  P0002: "Agendamento, serviço ou profissional não encontrado.",
+};
+
 const statusSchema = z.enum([
   "pending",
   "confirmed",
@@ -73,7 +83,7 @@ export async function rescheduleAppointment(
 
   const { data: appointment } = await supabase
     .from("appointments")
-    .select("id, service_id")
+    .select("id")
     .eq("id", id)
     .eq("business_id", business.id)
     .maybeSingle();
@@ -82,33 +92,26 @@ export async function rescheduleAppointment(
     return { error: "Agendamento não encontrado." };
   }
 
-  const { data: service } = await supabase
-    .from("services")
-    .select("duration_minutes")
-    .eq("id", appointment.service_id)
-    .maybeSingle();
-
-  const durationMinutes = service?.duration_minutes ?? 30;
   // The owner picks date/time as wall-clock in the business's own
   // timezone (that's what the form is prefilled with and what the rest of
   // the page displays) -- converting via the server's local zone instead
   // would silently shift the appointment by whatever offset separates the
   // two (e.g. 3h off for an America/Sao_Paulo business on a UTC server).
   const startsAtISO = zonedDateTimeToUtcISO(date, time, business.timezone);
-  const startsAt = new Date(startsAtISO);
-  if (Number.isNaN(startsAt.getTime())) {
+  if (Number.isNaN(new Date(startsAtISO).getTime())) {
     return { error: "Data ou horário inválido." };
   }
-  const endsAt = new Date(startsAt.getTime() + durationMinutes * 60_000);
 
-  const { error } = await supabase
-    .from("appointments")
-    .update({
-      starts_at: startsAtISO,
-      ends_at: endsAt.toISOString(),
-    })
-    .eq("id", id)
-    .eq("business_id", business.id);
+  // reschedule_appointment() revalidates business/professional hours,
+  // is_closed and blocked_times before moving the appointment -- this used
+  // to be a plain UPDATE relying only on the appointments EXCLUDE
+  // constraint, which let a reschedule land inside an active blocked_times
+  // window (see supabase/migrations/
+  // 20250924120011_centralize_appointment_validation.sql).
+  const { error } = await supabase.rpc("reschedule_appointment", {
+    p_appointment_id: id,
+    p_starts_at: startsAtISO,
+  });
 
   if (error) {
     logError(
@@ -116,13 +119,9 @@ export async function rescheduleAppointment(
       { business_id: business.id, appointment_id: id, code: error.code },
       error,
     );
-    if (error.code === "23P01") {
-      return {
-        error:
-          "Esse horário conflita com outro agendamento deste profissional.",
-      };
-    }
-    return { error: "Não foi possível reagendar." };
+    return {
+      error: RESCHEDULE_ERROR_MESSAGES[error.code ?? ""] ?? "Não foi possível reagendar.",
+    };
   }
 
   revalidateAppointmentPaths(id);
