@@ -13,6 +13,7 @@ import type { NotificationChannel, NotificationProvider } from "../_shared/notif
 import { dispatchDelivery } from "../_shared/notifications/dispatch.ts";
 import { WhatsAppProvider } from "../_shared/notifications/providers/whatsapp.ts";
 import { EmailProvider } from "../_shared/notifications/providers/email.ts";
+import { createEligibilityChecker, PLAN_INELIGIBLE_ERROR } from "../_shared/notifications/plan-gate.ts";
 
 const BATCH_SIZE = 50;
 
@@ -58,9 +59,33 @@ Deno.serve(async (req) => {
 
   const providers = buildProviders();
 
+  // Send-time plan revalidation (ETAPA-4-NOTIFICATIONS-AUDIT.md finding 2):
+  // a delivery can be enqueued while the business was eligible for
+  // advanced_notifications and still be sitting in the queue after a
+  // downgrade. is_advanced_notifications_allowed is the same SQL function
+  // the business_settings trigger uses, so eligibility is decided in
+  // exactly one place either way.
+  const isEligible = createEligibilityChecker(async (businessId) => {
+    const { data, error } = await supabase.rpc("is_advanced_notifications_allowed", {
+      p_business_id: businessId,
+    });
+    if (error) {
+      // Fail open, matching the fail-open policy the eligibility check
+      // itself implements for billing hiccups -- an RPC/network blip here
+      // must never silently drop a legitimate business's notifications.
+      console.error(JSON.stringify({
+        level: "error",
+        event: "notification_queue.eligibility_check_failed",
+        error_message: error.message,
+      }));
+      return true;
+    }
+    return data === true;
+  });
+
   const { data: rows, error: fetchError } = await supabase
     .from("notification_deliveries")
-    .select("id, channel, event_type, recipient, payload, attempts")
+    .select("id, business_id, channel, event_type, recipient, payload, attempts")
     .in("status", ["pending", "retrying"])
     .lte("next_attempt_at", new Date().toISOString())
     .order("created_at", { ascending: true })
@@ -82,6 +107,20 @@ Deno.serve(async (req) => {
     summary.processed += 1;
 
     try {
+      if (!(await isEligible(row.business_id))) {
+        // Terminal, not retried: this isn't a transient failure, it's the
+        // business no longer having the plan feature -- retrying every
+        // batch until an upgrade would just burn provider calls for
+        // nothing. Reuses the existing 'failed' status; no new status
+        // invented for this case.
+        await supabase
+          .from("notification_deliveries")
+          .update({ status: "failed", last_error: PLAN_INELIGIBLE_ERROR })
+          .eq("id", row.id);
+        summary.failed += 1;
+        continue;
+      }
+
       const outcome = await dispatchDelivery(providers, {
         channel: row.channel,
         recipient: row.recipient,
