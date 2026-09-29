@@ -56,6 +56,48 @@ Cada evento também respeita o toggle específico em
 `notify_reschedule`, `notify_reminder_24h`, `notify_reminder_2h`) — o
 empresário desliga em `/dashboard/settings`.
 
+## Plan gate: WhatsApp/e-mail exigem plano Pro ou Business
+
+`whatsapp_enabled`/`notify_email_enabled` (os toggles que efetivamente
+ligam os canais externos) só podem ficar `true` para um negócio elegível
+ao feature `advanced_notifications` (ver `src/lib/plans/config.ts`). Duas
+camadas independentes garantem isso, de propósito (defesa em profundidade
+— ver `docs/audit/ETAPA-4-NOTIFICATIONS-AUDIT.md` para o histórico de por
+que a primeira sozinha não bastava):
+
+1. **Ao salvar (Server Action)** — `updateNotificationSettings()` em
+   `src/app/dashboard/settings/actions.ts` chama `canUseFeature(...,
+   "advanced_notifications")` antes de gravar.
+2. **No banco (trigger)** — `trg_business_settings_notification_gate`
+   (ver `supabase/migrations/20250924120015_notifications_plan_gate.sql`)
+   repete exatamente a mesma checagem na transição de `false` para `true`
+   dessas duas colunas, chamando `is_advanced_notifications_allowed(business_id)`.
+   Isso fecha o caminho que a Server Action sozinha não cobria: uma
+   chamada direta à REST API do Supabase (`PATCH .../business_settings`)
+   com a sessão do próprio dono, sem passar pelo Next.js.
+
+`is_advanced_notifications_allowed()` espelha `src/lib/plans/evaluate.ts`
+byte a byte, incluindo a política de **fail-open** já existente e
+deliberada: enquanto `subscriptions.status` não estiver em
+`('trialing', 'active')` (ou seja, `past_due`, `canceled`, `incomplete`,
+ou nenhuma assinatura), o gate **permite** — billing com problema nunca
+tranca o dono fora de um recurso que já usa. Isso não é um bug, é a mesma
+decisão de produto de todo outro `canUseFeature(...)` do app; mude os dois
+lados juntos se essa política mudar algum dia.
+
+**Revalidação no envio.** O gate acima só impede *ligar* o canal — ele não
+desliga um canal que já estava ligado quando o plano muda depois (não
+existe, hoje, nenhum código que reaja a um downgrade desligando
+`whatsapp_enabled` sozinho). Quem cobre esse caso é o worker
+`process-notifications`: antes de chamar qualquer provider, ele chama a
+mesma `is_advanced_notifications_allowed(business_id)` (via RPC, com
+resultado cacheado por `business_id` dentro do lote — ver
+`supabase/functions/_shared/notifications/plan-gate.ts`) para a entrega
+que está prestes a processar. Se o plano não for mais elegível, a entrega
+vai direto para `status = 'failed'`, `last_error = 'plan_ineligible'` —
+sem tentar enviar, sem consumir uma tentativa de retry (não é uma falha
+transitória, é uma feature que a empresa não tem mais).
+
 ## Onde vive cada parte
 
 ```
@@ -210,7 +252,9 @@ Cada linha de `notification_deliveries` tem um `status`:
   (backoff exponencial: 1min, 5min, 20min, 60min).
 - **`failed`** — falha definitiva: ou esgotou as 5 tentativas, ou o erro é
   do tipo que não adianta tentar de novo (token inválido, destinatário
-  inválido) — nesses dois casos falha já na primeira tentativa.
+  inválido, ou `plan_ineligible` — o plano não tem mais direito ao canal,
+  ver seção "Plan gate" acima) — nesses casos falha já na primeira
+  tentativa, sem consumir retries.
 
 `last_error` guarda só uma palavra-chave segura (`timeout`,
 `provider_unavailable`, `invalid_token`, `invalid_recipient`,

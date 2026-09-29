@@ -351,6 +351,17 @@ reset request.jwt.claim.sub;
 \echo 'recipient-scoped RLS'
 \echo '===================================================================='
 
+-- ETAPA 4: turning whatsapp_enabled/notify_email_enabled on now requires
+-- an eligible plan (trg_business_settings_notification_gate, see
+-- 20250924120015_notifications_plan_gate.sql) -- business A is still on
+-- the default trial/start plan from create_business() at this point in the
+-- suite, which is not eligible, so it must be upgraded first for this
+-- section's existing assertions to keep working. Restored back to its
+-- original trial state right before the BILLING section below, so that
+-- section's "a freshly created business must start out trialing" assertion
+-- still reflects reality rather than a state this suite created.
+update public.subscriptions set plan_id = 'pro', status = 'active' where business_id = :'a_id';
+
 update public.business_settings
   set whatsapp_enabled = true, whatsapp_phone = '+5511999990000',
       notify_email_enabled = true, notify_email_address = 'owner-a@test.com'
@@ -400,6 +411,10 @@ select test.assert(
 );
 reset role;
 reset request.jwt.claim.sub;
+
+-- Restore business A to its original trial/start state (see the ETAPA 4
+-- comment above) before the BILLING section asserts a fresh trial.
+update public.subscriptions set plan_id = 'start', status = 'trialing' where business_id = :'a_id';
 
 \echo '===================================================================='
 \echo 'BILLING -- duplicate webhook, invalid target, status change'
@@ -451,6 +466,152 @@ set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
 \set ON_ERROR_STOP off
 update public.subscriptions set status = 'active' where business_id = :'a_id';
 \set ON_ERROR_STOP on
+reset role;
+reset request.jwt.claim.sub;
+
+\echo '===================================================================='
+\echo 'ETAPA 4 -- advanced_notifications plan gate: DB-level enforcement +'
+\echo 'send-time revalidation (closes ETAPA-4-NOTIFICATIONS-AUDIT.md findings'
+\echo '1 and 2). Business B is untouched so far: still on the default'
+\echo 'trial/start plan from create_business().'
+\echo '===================================================================='
+
+select test.assert(
+  (select status from public.subscriptions where business_id = :'b_id') = 'trialing'
+  and (select plan_id from public.subscriptions where business_id = :'b_id') = 'start',
+  'sanity check: business B must still be on the default trial/start plan here'
+);
+select test.assert(
+  (select whatsapp_enabled from public.business_settings where business_id = :'b_id') = false,
+  'sanity check: business B must not have whatsapp enabled yet'
+);
+
+-- FINDING 1 reproduced and closed: previously the ONLY gate was the
+-- Server Action (updateNotificationSettings), so a client calling the
+-- Supabase REST/client API directly -- exactly what this UPDATE simulates,
+-- run as the legitimate owner but bypassing the Next.js layer entirely --
+-- could turn WhatsApp/email on regardless of plan. It must now be rejected
+-- at the database layer itself.
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+\set ON_ERROR_STOP off
+update public.business_settings
+  set whatsapp_enabled = true, whatsapp_phone = '+5511988887777'
+  where business_id = :'b_id';
+\set ON_ERROR_STOP on
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select whatsapp_enabled from public.business_settings where business_id = :'b_id') = false,
+  'a business on an ineligible plan (start/trialing) must be blocked from enabling WhatsApp even via a direct table update, not just the Server Action'
+);
+
+-- Same bypass attempt for email, same business, same result.
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+\set ON_ERROR_STOP off
+update public.business_settings
+  set notify_email_enabled = true, notify_email_address = 'owner-b@test.com'
+  where business_id = :'b_id';
+\set ON_ERROR_STOP on
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select notify_email_enabled from public.business_settings where business_id = :'b_id') = false,
+  'a business on an ineligible plan (start/trialing) must be blocked from enabling email notifications too'
+);
+
+-- Once genuinely upgraded (webhook path, service role -- never the
+-- client), the exact same update must now succeed: the gate checks live
+-- eligibility, it does not just always deny.
+update public.subscriptions set plan_id = 'pro', status = 'active' where business_id = :'b_id';
+
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+update public.business_settings
+  set whatsapp_enabled = true, whatsapp_phone = '+5511988887777',
+      notify_email_enabled = true, notify_email_address = 'owner-b@test.com'
+  where business_id = :'b_id';
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select whatsapp_enabled and notify_email_enabled from public.business_settings where business_id = :'b_id'),
+  'an eligible business (pro/active) must be able to enable both channels normally'
+);
+
+-- FINDING 2, half A (the fail-open policy itself, unchanged by design --
+-- confirmed with the user before implementing): a business whose status
+-- falls out of the enforced set (past_due/canceled/incomplete) must still
+-- be able to toggle these settings, exactly like every other plan gate in
+-- src/lib/plans/evaluate.ts (isLimitEnforced). This is not a bug this
+-- migration introduces or leaves unfixed -- it is the existing, documented
+-- product decision, now enforced consistently at the DB layer too.
+update public.subscriptions set status = 'past_due' where business_id = :'b_id';
+update public.business_settings set whatsapp_enabled = false, notify_email_enabled = false where business_id = :'b_id';
+
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+update public.business_settings set notify_email_enabled = true where business_id = :'b_id';
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select notify_email_enabled from public.business_settings where business_id = :'b_id') = true,
+  'past_due must fail OPEN (billing hiccups must never lock an owner out of a feature), matching isLimitEnforced()'
+);
+
+update public.subscriptions set status = 'canceled' where business_id = :'b_id';
+select test.assert(
+  public.is_advanced_notifications_allowed(:'b_id'::uuid) = true,
+  'canceled must also fail OPEN, same policy as past_due'
+);
+
+update public.subscriptions set status = 'incomplete' where business_id = :'b_id';
+select test.assert(
+  public.is_advanced_notifications_allowed(:'b_id'::uuid) = true,
+  'incomplete must also fail OPEN, same policy'
+);
+
+-- Unknown/nonexistent business_id (e.g. a stale delivery row after a
+-- business was deleted) must fail safe -- true, never an error, never a
+-- false that could somehow read as "block silently forever".
+select test.assert(
+  public.is_advanced_notifications_allowed('00000000-0000-0000-0000-000000000000'::uuid) = true,
+  'an unknown business_id must fail safe (open), never raise or crash the caller'
+);
+
+-- Restore B to active/pro so the transition check below is meaningful,
+-- then downgrade plan_id only (status stays enforced) -- this is FINDING 2,
+-- half B: the actual downgrade-while-still-active gap the audit found.
+-- The already-on flags must NOT flip themselves off (no code path does
+-- that -- see the audit's Achado 2), but the gate function itself, which
+-- is what the worker calls at send time, must now say false for this
+-- business.
+update public.subscriptions set status = 'active', plan_id = 'pro' where business_id = :'b_id';
+update public.business_settings set whatsapp_enabled = true, whatsapp_phone = '+5511988887777' where business_id = :'b_id';
+update public.subscriptions set plan_id = 'start' where business_id = :'b_id';
+select test.assert(
+  (select whatsapp_enabled from public.business_settings where business_id = :'b_id') = true,
+  'a downgrade must not retroactively flip an already-enabled channel off by itself (no such code path exists, matching the audit)'
+);
+select test.assert(
+  public.is_advanced_notifications_allowed(:'b_id'::uuid) = false,
+  'FINDING 2 closed: send-time eligibility (what process-notifications checks before calling a provider) must reflect the CURRENT plan_id/status, not the plan at the moment the channel was enabled'
+);
+
+-- An unrelated settings save while a stale whatsapp_enabled=true sits on
+-- an now-ineligible business must NOT be blocked by the turn-on trigger --
+-- only the off->on transition is gated (send-time revalidation is what
+-- actually protects an already-on channel, not this trigger).
+set role authenticated;
+set request.jwt.claim.sub = 'b0000000-0000-0000-0000-00000000000b';
+update public.business_settings set notify_reminder_24h = false where business_id = :'b_id';
+reset role;
+reset request.jwt.claim.sub;
+select test.assert(
+  (select notify_reminder_24h from public.business_settings where business_id = :'b_id') = false,
+  'an unrelated settings save must never be blocked by a stale already-on channel from before a downgrade'
+);
+
 reset role;
 reset request.jwt.claim.sub;
 
