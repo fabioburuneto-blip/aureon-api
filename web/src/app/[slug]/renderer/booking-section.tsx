@@ -26,6 +26,7 @@ export function BookingSection({
       <div className="max-w-md">
         <BookingWidget
           businessSlug={business.slug}
+          businessName={business.name}
           timezone={business.timezone}
           services={services}
           professionals={professionals}

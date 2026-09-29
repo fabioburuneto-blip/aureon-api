@@ -180,6 +180,15 @@ export const businessImageSchema = z.object({
   url: z.string().trim().max(2048).url(),
 });
 
+export const publicTokenSchema = z.object({
+  token: z.string().trim().min(1).max(200),
+});
+
+export const publicRescheduleSchema = z.object({
+  token: z.string().trim().min(1).max(200),
+  starts_at: z.string().trim().min(1).max(40),
+});
+
 export const publicBookingSchema = z.object({
   service_id: z.string().uuid(),
   professional_id: z.string().uuid(),

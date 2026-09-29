@@ -13,6 +13,8 @@ export default function robots(): MetadataRoute.Robots {
         "/login",
         "/criar-conta",
         "/onboarding",
+        "/agendamento",
+        "/agendamento/",
       ],
     },
     sitemap: `${process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"}/sitemap.xml`,

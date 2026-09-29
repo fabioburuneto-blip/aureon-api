@@ -144,6 +144,11 @@ export interface Database {
           slot_interval_minutes: number;
           require_customer_phone: boolean;
           allow_same_day_booking: boolean;
+          // Central config (Etapa 3): how much notice a customer must give
+          // to cancel/reschedule their own booking via /agendamento/[token]
+          // -- read by cancel_public_appointment()/reschedule_public_appointment()/
+          // get_public_appointment(), never hardcoded at any call site.
+          client_cancellation_min_hours: number;
           whatsapp_enabled: boolean;
           whatsapp_phone: string | null;
           notify_email_enabled: boolean;
@@ -362,6 +367,11 @@ export interface Database {
           notes: string | null;
           reminder_24h_sent_at: string | null;
           reminder_2h_sent_at: string | null;
+          // High-entropy public identifier (Etapa 3) -- the only way an
+          // anonymous customer looks up/cancels/reschedules this row later,
+          // via get_public_appointment()/cancel_public_appointment()/
+          // reschedule_public_appointment(). Never the internal `id`.
+          client_token: string;
           created_at: string;
           updated_at: string;
         };
@@ -374,6 +384,7 @@ export interface Database {
           | "notes"
           | "reminder_24h_sent_at"
           | "reminder_2h_sent_at"
+          | "client_token"
         > &
           Partial<
             Pick<
@@ -595,6 +606,44 @@ export interface Database {
           p_business_id: string;
         };
         Returns: { phone: string | null; email: string | null }[];
+      };
+      get_public_appointment: {
+        Args: {
+          p_token: string;
+        };
+        Returns: {
+          business_name: string;
+          business_slug: string;
+          business_address: string | null;
+          business_city: string | null;
+          business_whatsapp: string | null;
+          business_timezone: string;
+          service_id: string;
+          service_name: string;
+          service_duration_minutes: number;
+          service_price_cents: number;
+          professional_id: string;
+          professional_name: string;
+          starts_at: string;
+          ends_at: string;
+          status: AppointmentStatus;
+          can_cancel: boolean;
+          can_reschedule: boolean;
+          client_min_notice_hours: number;
+        }[];
+      };
+      cancel_public_appointment: {
+        Args: {
+          p_token: string;
+        };
+        Returns: Database["public"]["Tables"]["appointments"]["Row"];
+      };
+      reschedule_public_appointment: {
+        Args: {
+          p_token: string;
+          p_starts_at: string;
+        };
+        Returns: Database["public"]["Tables"]["appointments"]["Row"];
       };
     };
   };

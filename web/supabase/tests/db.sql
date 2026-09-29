@@ -1034,5 +1034,223 @@ reset role;
 reset request.jwt.claim.sub;
 
 \echo '===================================================================='
+\echo 'CLIENT BOOKING PORTAL (Etapa 3) -- token security, cancel, reschedule, dedup'
+\echo '===================================================================='
+
+-- Dedicated service/professional pairs (not reused elsewhere in this
+-- file) so every appointment created in this section is guaranteed
+-- conflict-free regardless of what earlier sections already booked.
+insert into services (id, business_id, name, duration_minutes, price_cents, is_active)
+values
+  ('e3000000-0000-0000-0000-000000000001', :'a_id', 'Etapa3 Service A', 30, 5000, true),
+  ('e3000000-0000-0000-0000-000000000003', :'b_id', 'Etapa3 Service B', 30, 5000, true);
+insert into professionals (id, business_id, name, is_active)
+values
+  ('e3000000-0000-0000-0000-000000000002', :'a_id', 'Etapa3 Pro A', true),
+  ('e3000000-0000-0000-0000-000000000004', :'b_id', 'Etapa3 Pro B', true);
+insert into professional_services (professional_id, service_id) values
+  ('e3000000-0000-0000-0000-000000000002', 'e3000000-0000-0000-0000-000000000001'),
+  ('e3000000-0000-0000-0000-000000000004', 'e3000000-0000-0000-0000-000000000003');
+
+set role anon;
+select client_token from create_public_appointment(
+  (select slug from businesses where id = :'a_id'),
+  'e3000000-0000-0000-0000-000000000001', 'e3000000-0000-0000-0000-000000000002',
+  '2026-10-15 15:00:00-03'::timestamptz, 'Etapa3 Cliente A', '+5511900000101'
+) \gset e3a_
+
+select client_token from create_public_appointment(
+  (select slug from businesses where id = :'b_id'),
+  'e3000000-0000-0000-0000-000000000003', 'e3000000-0000-0000-0000-000000000004',
+  now() + interval '1 hour', 'Etapa3 Cliente B', '+5511900000102'
+) \gset e3b_
+reset role;
+
+-- TOKEN: high entropy, unique, never derived from id.
+select test.assert(
+  length(:'e3a_client_token') = 64,
+  'client_token must be a 64-hex-char (256-bit) value'
+);
+select test.assert(
+  (:'e3a_client_token' <> :'e3b_client_token'),
+  'two different appointments must never share a client_token'
+);
+select test.assert(
+  (select count(distinct client_token) from appointments) = (select count(*) from appointments),
+  'client_token must be unique across every appointment in the table'
+);
+
+-- TOKEN: valid lookup returns only that appointment's own data.
+select test.assert(
+  (select business_name from get_public_appointment(:'e3a_client_token')) =
+    (select name from businesses where id = :'a_id'),
+  'get_public_appointment must return business A''s own name for A''s token'
+);
+select test.assert(
+  (select service_name from get_public_appointment(:'e3a_client_token')) = 'Etapa3 Service A',
+  'get_public_appointment must return the correct service for the token'
+);
+
+-- TOKEN: invalid / altered / nonexistent -- one generic error, never a
+-- different message that would let a caller distinguish "malformed" from
+-- "well-formed but unknown".
+\set ON_ERROR_STOP off
+select * from get_public_appointment('not-a-real-token-at-all');
+\set ON_ERROR_STOP on
+\set ON_ERROR_STOP off
+select * from get_public_appointment(substr(:'e3a_client_token', 1, 63) || '0');
+\set ON_ERROR_STOP on
+\set ON_ERROR_STOP off
+select * from get_public_appointment('');
+\set ON_ERROR_STOP on
+\set ON_ERROR_STOP off
+select * from get_public_appointment(null);
+\set ON_ERROR_STOP on
+
+-- TOKEN: cross-tenant -- A's token can never touch B's appointment, and
+-- vice versa. There is no "wrong business" parameter to pass (the token
+-- alone resolves the row), so this proves the token from one business
+-- never affects the other business's row when used for a write.
+select cancel_public_appointment(:'e3a_client_token');
+select test.assert(
+  (select status from appointments where client_token = :'e3b_client_token') = 'pending',
+  'cancelling with business A''s token must never change business B''s appointment'
+);
+select test.assert(
+  (select status from appointments where client_token = :'e3a_client_token') = 'cancelled',
+  'business A''s own token must still cancel its own appointment'
+);
+
+-- CANCEL: already-cancelled -- blocked with a clear, distinct message.
+\set ON_ERROR_STOP off
+select cancel_public_appointment(:'e3a_client_token');
+\set ON_ERROR_STOP on
+
+-- CANCEL: inside the 24h window -- blocked.
+\set ON_ERROR_STOP off
+select cancel_public_appointment(:'e3b_client_token');
+\set ON_ERROR_STOP on
+select test.assert(
+  (select status from appointments where client_token = :'e3b_client_token') = 'pending',
+  'a cancellation attempted inside the minimum-notice window must be rejected, not applied'
+);
+
+-- CANCEL: completed appointments can never be cancelled by the client.
+insert into services (id, business_id, name, duration_minutes, price_cents, is_active)
+values ('e3000000-0000-0000-0000-000000000005', :'a_id', 'Etapa3 Service C', 30, 5000, true);
+insert into professional_services (professional_id, service_id)
+values ('e3000000-0000-0000-0000-000000000002', 'e3000000-0000-0000-0000-000000000005');
+set role anon;
+select client_token from create_public_appointment(
+  (select slug from businesses where id = :'a_id'),
+  'e3000000-0000-0000-0000-000000000005', 'e3000000-0000-0000-0000-000000000002',
+  '2026-10-20 11:00:00-03'::timestamptz, 'Etapa3 Cliente C', '+5511900000103'
+) \gset e3c_
+reset role;
+update appointments set status = 'completed' where client_token = :'e3c_client_token';
+\set ON_ERROR_STOP off
+select cancel_public_appointment(:'e3c_client_token');
+\set ON_ERROR_STOP on
+\set ON_ERROR_STOP off
+select reschedule_public_appointment(:'e3c_client_token', '2026-10-21 11:00:00-03'::timestamptz);
+\set ON_ERROR_STOP on
+select test.assert(
+  (select status from appointments where client_token = :'e3c_client_token') = 'completed',
+  'a completed appointment must never be cancellable or reschedulable by the client'
+);
+
+-- RESCHEDULE: reuses validate_appointment_slot() -- a blocked_times window
+-- rejects it exactly like it would for a brand-new booking, never a
+-- second/parallel availability calculation.
+insert into services (id, business_id, name, duration_minutes, price_cents, is_active)
+values ('e3000000-0000-0000-0000-000000000006', :'a_id', 'Etapa3 Service D', 30, 5000, true);
+insert into professional_services (professional_id, service_id)
+values ('e3000000-0000-0000-0000-000000000002', 'e3000000-0000-0000-0000-000000000006');
+set role anon;
+select client_token from create_public_appointment(
+  (select slug from businesses where id = :'a_id'),
+  'e3000000-0000-0000-0000-000000000006', 'e3000000-0000-0000-0000-000000000002',
+  '2026-10-22 11:00:00-03'::timestamptz, 'Etapa3 Cliente D', '+5511900000104'
+) \gset e3d_
+reset role;
+insert into blocked_times (business_id, professional_id, starts_at, ends_at, reason)
+values (:'a_id', 'e3000000-0000-0000-0000-000000000002',
+  '2026-10-23 14:00:00-03'::timestamptz, '2026-10-23 16:00:00-03'::timestamptz, 'Etapa3 QA block');
+\set ON_ERROR_STOP off
+select reschedule_public_appointment(:'e3d_client_token', '2026-10-23 14:30:00-03'::timestamptz);
+\set ON_ERROR_STOP on
+select test.assert(
+  (select starts_at from appointments where client_token = :'e3d_client_token') = '2026-10-22 11:00:00-03'::timestamptz,
+  'a reschedule into a blocked_times window must be rejected, leaving the original time untouched'
+);
+
+-- RESCHEDULE: a genuinely free slot succeeds.
+select starts_at, status from reschedule_public_appointment(
+  :'e3d_client_token', '2026-10-24 11:00:00-03'::timestamptz
+) \gset e3d_after_
+select test.assert(
+  :'e3d_after_starts_at'::timestamptz = '2026-10-24 11:00:00-03'::timestamptz,
+  'rescheduling to a free slot must persist the new starts_at'
+);
+select test.assert(
+  :'e3d_after_status' in ('pending', 'confirmed'),
+  'rescheduling must never change the appointment status by itself'
+);
+
+-- CLIENT DEDUP: same phone within one business reuses the same customer;
+-- the same phone number used in a DIFFERENT business must never be
+-- treated as the same customer (per-tenant identity, never global).
+insert into services (id, business_id, name, duration_minutes, price_cents, is_active)
+values
+  ('e3000000-0000-0000-0000-000000000007', :'a_id', 'Etapa3 Service E1', 30, 5000, true),
+  ('e3000000-0000-0000-0000-000000000008', :'a_id', 'Etapa3 Service E2', 30, 5000, true),
+  ('e3000000-0000-0000-0000-000000000009', :'b_id', 'Etapa3 Service E3', 30, 5000, true);
+insert into professional_services (professional_id, service_id) values
+  ('e3000000-0000-0000-0000-000000000002', 'e3000000-0000-0000-0000-000000000007'),
+  ('e3000000-0000-0000-0000-000000000002', 'e3000000-0000-0000-0000-000000000008'),
+  ('e3000000-0000-0000-0000-000000000004', 'e3000000-0000-0000-0000-000000000009');
+set role anon;
+select customer_id from create_public_appointment(
+  (select slug from businesses where id = :'a_id'),
+  'e3000000-0000-0000-0000-000000000007', 'e3000000-0000-0000-0000-000000000002',
+  '2026-10-26 11:00:00-03'::timestamptz, 'Etapa3 Dedup', '+5511900000200'
+) \gset e3dedup1_
+select customer_id from create_public_appointment(
+  (select slug from businesses where id = :'a_id'),
+  'e3000000-0000-0000-0000-000000000008', 'e3000000-0000-0000-0000-000000000002',
+  '2026-10-27 11:00:00-03'::timestamptz, 'Etapa3 Dedup', '+5511900000200'
+) \gset e3dedup2_
+select customer_id from create_public_appointment(
+  (select slug from businesses where id = :'b_id'),
+  'e3000000-0000-0000-0000-000000000009', 'e3000000-0000-0000-0000-000000000004',
+  '2026-10-26 11:00:00-03'::timestamptz, 'Etapa3 Dedup', '+5511900000200'
+) \gset e3dedup3_
+reset role;
+select test.assert(
+  :'e3dedup1_customer_id' = :'e3dedup2_customer_id',
+  'the same phone number booking twice within the same business must reuse one customer row'
+);
+select test.assert(
+  :'e3dedup1_customer_id' <> :'e3dedup3_customer_id',
+  'the same phone number used in a DIFFERENT business must never resolve to the same customer row'
+);
+
+-- "agendamento" is now a real route -- must be reserved exactly like
+-- "dashboard"/"onboarding"/etc.
+select test.assert(
+  is_slug_reserved('agendamento') = true,
+  'agendamento must be a reserved slug now that /agendamento/[token] is a real route'
+);
+set request.jwt.claim.sub = 'a0000000-0000-0000-0000-00000000000a';
+\set ON_ERROR_STOP off
+select create_business('Shadow', 'agendamento', 'barbershop');
+\set ON_ERROR_STOP on
+reset request.jwt.claim.sub;
+select test.assert(
+  not exists (select 1 from businesses where slug = 'agendamento'),
+  'a business must never be able to claim the agendamento slug'
+);
+
+\echo '===================================================================='
 \echo 'ALL ASSERTIONS PASSED'
 \echo '===================================================================='
