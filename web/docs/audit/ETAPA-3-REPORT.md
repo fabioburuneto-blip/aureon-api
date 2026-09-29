@@ -246,6 +246,21 @@ a Etapa 2 (erro `column "client_token" does not exist` na primeira
 asserção nova) e **passando** integralmente com esta migration aplicada
 — mesma dupla verificação usada desde a P0.
 
+**Correção pós-validação (achado real, não hipotético):** numa nova
+rodada de verificação da suíte completa contra um Postgres descartável
+recém-criado, o fixture do agendamento de teste de Salão B usava
+`now() + interval '1 hour'` como horário de criação — um valor não
+determinístico, que depende do horário real em que a suíte é executada
+e pode cair fora do expediente (09:00-18:00) da empresa, causando uma
+falha intermitente (`outside business hours`) sem relação nenhuma com
+nenhuma proteção P0/Etapa 3. Corrigido: o agendamento de teste agora é
+criado num horário fixo e válido (`2026-10-16 15:00:00-03`) dentro do
+expediente, e só depois tem `starts_at` movido para `now() + 1h` via um
+`UPDATE` direto (contornando de propósito `validate_appointment_slot()`
+só nesta montagem de estado de teste, não na função testada) — a suíte
+completa foi reexecutada do zero duas vezes após a correção, ambas com
+`ALL ASSERTIONS PASSED`.
+
 **TypeScript, permanentes** (Vitest): `errors.test.ts` (8 casos —
 mapeamento de cada mensagem de erro do Postgres para uma mensagem
 amigável, incluindo que uma mensagem desconhecida nunca vaza),

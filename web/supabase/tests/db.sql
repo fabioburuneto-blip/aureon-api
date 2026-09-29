@@ -1062,9 +1062,20 @@ select client_token from create_public_appointment(
 select client_token from create_public_appointment(
   (select slug from businesses where id = :'b_id'),
   'e3000000-0000-0000-0000-000000000003', 'e3000000-0000-0000-0000-000000000004',
-  now() + interval '1 hour', 'Etapa3 Cliente B', '+5511900000102'
+  '2026-10-16 15:00:00-03'::timestamptz, 'Etapa3 Cliente B', '+5511900000102'
 ) \gset e3b_
 reset role;
+
+-- Push B's appointment to "starting very soon" directly (bypassing
+-- validate_appointment_slot on purpose -- this is fixture setup for the
+-- cancellation-window test below, not a test of the creation path, and a
+-- plain UPDATE here can't be flaky the way computing "now() + 1 hour" as
+-- the *original* booking time would be: that value has to also satisfy
+-- business_hours at whatever wall-clock time this suite happens to run,
+-- which is exactly what made an earlier version of this fixture flaky).
+update appointments
+  set starts_at = now() + interval '1 hour', ends_at = now() + interval '1 hour 30 minutes'
+  where client_token = :'e3b_client_token';
 
 -- TOKEN: high entropy, unique, never derived from id.
 select test.assert(
